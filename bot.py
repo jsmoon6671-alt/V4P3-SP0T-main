@@ -1665,15 +1665,15 @@ async def update_leaderboard(guild_id: int):
         top_users = await conn.fetch('SELECT user_id, total_spent FROM user_info WHERE total_spent > 0 ORDER BY total_spent DESC LIMIT 5')
         tiers = await conn.fetch('SELECT role_id, required_amount FROM vip_tiers WHERE guild_id = $1 ORDER BY required_amount DESC', guild_id)
 
-    content = "## <a:267042fire:1541445181176287342> VAPE SP0T 누적 구매 랭킹 TOP 5\n\n"
+    content = "## <a:267042fire:1553325691582292049> VAPE SP0T 누적 구매 랭킹 TOP 5\n\n"
     
     if not top_users:
         content += "아직 구매 내역이 존재하지 않습니다."
     else:
         emojis = [
-            "<a:24171stplace:1541444890032873532>", 
-            "<:63082nd:1541445060242186363>", 
-            "<:48023rd:1541445059134627840>", 
+            "<a:24171stplace:1553325685827833926>", 
+            "<:63082nd:1553325689049055272>", 
+            "<:48023rd:1553325687337783346>", 
             "4️⃣", 
             "5️⃣"
         ]
@@ -1729,7 +1729,7 @@ async def send_leaderboard_panel(interaction: discord.Interaction):
         
     await interaction.response.defer(ephemeral=True)
     
-    content = "## 🏆 VAPE SP0T 구매 랭킹 TOP 5\n\n랭킹 데이터를 불러오는 중입니다..."
+    content = "## <a:267042fire:1553325691582292049> VAPE SP0T 누적 구매 랭킹 TOP 5\n\n랭킹 데이터를 불러오는 중입니다..."
     
     payload = {
         "flags": 1 << 15,
