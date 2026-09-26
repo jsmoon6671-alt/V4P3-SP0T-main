@@ -12,6 +12,7 @@ import chat_exporter
 import io
 import asyncio
 from bs4 import BeautifulSoup
+from event_broadcast import register_event_command
 from delivery_tracking import (
     DeliveryTrackingError, fetch_carriers, format_tracking_result,
     normalize_waybill, safe_text, track_shipment,
@@ -198,6 +199,7 @@ class MyBot(commands.Bot):
         print('✅ 슬래시 명령어 동기화 및 랭킹/인기 시스템이 시작되었습니다!')
 
 bot = MyBot()
+register_event_command(bot)
 
 
 # ==========================================
