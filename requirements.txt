@@ -1,0 +1,6 @@
+discord.py
+asyncpg
+aiohttp
+chat-exporter
+beautifulsoup4
+PyNaCl
