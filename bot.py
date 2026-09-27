@@ -245,9 +245,9 @@ async def send_tracking_panel(interaction: discord.Interaction):
     await interaction.response.defer()
     carriers = [
         {"name": "GS반값택배", "id": "kr.cvsnet", "emoji": "🏪"},
-        {"name": "CU", "id": "kr.cupost", "emoji": "🏪"},
+        {"name": "CU알뜰택배", "id": "kr.cupost", "emoji": "🏪"},
         {"name": "CJ대한통운", "id": "kr.cjlogistics", "emoji": "🚚"},
-        {"name": "우체국", "id": "kr.epost", "emoji": "📮"},
+        {"name": "우체국택배", "id": "kr.epost", "emoji": "📮"},
     ]
 
     main_content = (
