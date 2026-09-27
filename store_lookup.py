@@ -26,7 +26,7 @@ def normalize_query(brand, value):
     value = re.sub(r"\s+", " ", str(value)).strip()
     value = re.sub(r"^" + brand + r"\s*", "", value, flags=re.I).strip()
     if not 2 <= len(value) <= 60:
-        raise StoreLookupError("브랜드명을 제외한 지점명을 2~60자로 입력해 주세요. 예: 태백진주점")
+        raise StoreLookupError("브랜드명을 제외한 지점명을 2~60자로 입력해 주세요.")
     return value
 
 
@@ -183,7 +183,7 @@ class StoreNameModal(discord.ui.Modal):
     def __init__(self, brand):
         super().__init__(title=f"{brand} 편의점 주소 조회", timeout=300)
         self.brand = brand
-        self.store_name = discord.ui.TextInput(label="편의점 지점명", placeholder="예: 태백진주점 (브랜드명은 생략 가능)",
+        self.store_name = discord.ui.TextInput(label="편의점 지점명", placeholder="편의점 지점명을 입력해 주세요. (브랜드명은 생략 가능)",
                                              min_length=2, max_length=60)
         self.add_item(self.store_name)
 
