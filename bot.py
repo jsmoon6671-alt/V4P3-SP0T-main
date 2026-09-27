@@ -13,6 +13,11 @@ import io
 import asyncio
 from bs4 import BeautifulSoup
 from event_broadcast import register_event_command
+from store_lookup import brand_selector, lookup_panel, handle_brand_selection
+from chat_points import (
+    initialize_chat_points_schema, ChatPointsCog,
+    configure_chat_points, handle_reward_interaction,
+)
 from loyalty_points import (
     REVIEW_GUIDE, PointsError, initialize_points_schema, get_balance,
     award_review_points, parse_amount, parse_points, request_payment,
@@ -219,10 +224,13 @@ class MyBot(commands.Bot):
                     except Exception:
                         pass
                 await initialize_points_schema(conn)
+                await initialize_chat_points_schema(conn)
         else:
             print("⚠️ DATABASE_URL이 설정되지 않아 DB 기능을 사용할 수 없습니다.")
 
         await self.tree.sync()
+        if self.db_pool is not None:
+            await self.add_cog(ChatPointsCog(self))
         leaderboard_updater.start()  # 실시간 랭킹 및 인기 품목 루프 시작
         print('✅ 슬래시 명령어 동기화 및 랭킹/인기 시스템이 시작되었습니다!')
 
@@ -506,18 +514,7 @@ class UserInfoModal(discord.ui.Modal):
 @bot.tree.command(name="정보패널", description="배송 정보 등록 및 관리 패널을 생성합니다.")
 async def send_info_panel(interaction: discord.Interaction):
     info_content = (
-        "## VAPE SP0T USER INFO\n\n"
-        "구매를 위해 정보를 입력해 주시기 바랍니다.\n"
-        "해당 정보는 상품을 주문할 때만 이용됩니다.\n\n"
-        "- ⚠️ 개인정보 유출은 절대 없습니다.\n"
-        "- 🕒 빠른 배송을 위한 필수 절차입니다.\n\n"
-        "** 등록 정보 안내 **\n\n"
-        "`👤`**이름**\n"
-        "`📞`**연락처**\n"
-        "`🏠`**주소**\n"
-        "`🏪`**편의점**\n\n"
-        "-# 💡 [익명 설정] 버튼을 누르면 구매 시 닉네임 대신 익명으로 처리됩니다.\n\n"
-        "🌟 아래 버튼을 눌러 정보를 등록해 주세요."
+        "등록되는 정보는 다음과 같습니다."
     )
     
     info_payload = {
@@ -525,19 +522,28 @@ async def send_info_panel(interaction: discord.Interaction):
         "components": [
             {
                 "type": 17, 
-                "accent_color": 0x32CD32,
+                "accent_color": 0xFFFFFF,
                 "components": [
                     {
                         "type": 10,
                         "content": info_content
                     },
+                    {"type": 14, "divider": True, "spacing": 1},
+                    {"type": 10, "content": "`👤` 이름\n`📞` 전화번호\n`🏪` 편의점명 (또는 주소)"},
+                    {"type": 14, "divider": True, "spacing": 1},
+                    {"type": 10, "content": "등록된 정보는 구매를 위해 티켓을 여셨을 때 자동으로 표시됩니다.\n매번 이름·연락처·편의점명(또는 주소)을 따로 말씀하실 필요가 없습니다."},
+                    {"type": 14, "divider": True, "spacing": 1},
+                    {"type": 10, "content": "🏪 편의점 주소를 확인하려면 아래에서 **GS25 또는 CU**를 선택해 주세요."},
+                    brand_selector(),
+                    {"type": 14, "divider": True, "spacing": 1},
+                    {"type": 10, "content": "정보를 잘못 입력하셨다면,\n아래 **정보 수정** 버튼을 클릭하시면 정보를 변경하실 수 있습니다.\n-# 💡 익명 설정 버튼으로 구매 시 닉네임 표시 여부를 변경할 수 있습니다."},
                     {
                         "type": 1,
                         "components": [
                             {
                                 "type": 2,
                                 "style": 1,
-                                "label": "정보 등록",
+                                "label": "정보 설정",
                                 "custom_id": "info_register"
                             },
                             {
@@ -569,6 +575,20 @@ async def send_info_panel(interaction: discord.Interaction):
         discord.http.Route("POST", f"/interactions/{interaction.id}/{interaction.token}/callback"),
         json={"type": 4, "data": info_payload}
     )
+
+
+@bot.tree.command(name="편의점주소", description="GS25와 CU의 편의점 주소 조회 패널을 생성합니다.")
+async def send_store_lookup_panel(interaction: discord.Interaction):
+    await interaction.client.http.request(
+        discord.http.Route("POST", f"/interactions/{interaction.id}/{interaction.token}/callback"),
+        json={"type": 4, "data": lookup_panel()}
+    )
+
+
+@bot.tree.command(name="채팅포인트채널", description="채팅 보상과 5분 간격 @here 안내 채널을 설정합니다. (관리자 전용)")
+@app_commands.describe(채널="포인트를 적립할 텍스트 채널. 생략하면 현재 채널", 활성화="끄면 적립과 자동 안내를 중지합니다.")
+async def set_chat_points_channel(interaction: discord.Interaction, 채널: discord.TextChannel = None, 활성화: bool = True):
+    await configure_chat_points(interaction, 채널, 활성화)
 
 
 @bot.tree.command(name="유저정보", description="특정 유저가 등록한 배송 및 구매 정보를 조회합니다.")
@@ -2521,6 +2541,14 @@ async def on_interaction(interaction: discord.Interaction):
         
     custom_id = interaction.data.get("custom_id", "")
 
+    if custom_id == "store_address_brand":
+        await handle_brand_selection(interaction)
+        return
+
+    if custom_id == "chat_points_rewards" or custom_id.startswith("chat_points_open_box:"):
+        await handle_reward_interaction(interaction, bot.db_pool)
+        return
+
     # [출퇴근 버튼 처리]
     if custom_id in ["clock_in", "clock_out"]:
         await interaction.response.defer(ephemeral=True)
@@ -2963,6 +2991,7 @@ async def on_interaction(interaction: discord.Interaction):
                 {
                     "type": 17, 
                     "accent_color": color_val, 
+                    
                     "components": [
                         {
                             "type": 10, 
