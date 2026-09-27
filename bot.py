@@ -636,6 +636,43 @@ async def view_user_info(interaction: discord.Interaction, 유저: discord.Membe
 # ==========================================
 # [기능 4] 구매패널 전송 & 유저운송장 & 메시지
 # ==========================================
+async def change_user_points(interaction, 유저, amount, remove=False):
+    if interaction.guild is None or not interaction.user.guild_permissions.administrator:
+        await interaction.response.send_message("❌ 서버 관리자만 포인트를 변경할 수 있습니다.", ephemeral=True)
+        return
+    if not bot.db_pool:
+        await interaction.response.send_message("❌ DB 오류가 발생했습니다.", ephemeral=True)
+        return
+    if amount <= 0:
+        await interaction.response.send_message("❌ 포인트는 1 이상의 정수로 입력해 주세요.", ephemeral=True)
+        return
+    await interaction.response.defer(ephemeral=True)
+    try:
+        async with bot.db_pool.acquire() as conn:
+            balance = await adjust_points(conn, interaction.guild.id, 유저.id, interaction.user.id,
+                                          interaction.id, -amount if remove else amount)
+    except PointsError as exc:
+        await interaction.followup.send(f"❌ {exc}", ephemeral=True)
+        return
+    action = "제거" if remove else "추가"
+    await interaction.followup.send(
+        f"✅ {유저.mention}님의 포인트를 {amount:,}P {action}했습니다.\n현재 잔액: {balance:,}P",
+        ephemeral=True, allowed_mentions=discord.AllowedMentions.none(),
+    )
+
+
+@bot.tree.command(name="포인트추가", description="선택한 유저에게 포인트를 추가합니다. (관리자 전용)")
+@app_commands.describe(유저="포인트를 받을 유저입니다.", 추가할포인트="추가할 포인트를 1 이상의 정수로 입력하세요.")
+async def add_user_points(interaction: discord.Interaction, 유저: discord.Member, 추가할포인트: app_commands.Range[int, 1]):
+    await change_user_points(interaction, 유저, 추가할포인트)
+
+
+@bot.tree.command(name="포인트제거", description="선택한 유저의 포인트를 제거합니다. (관리자 전용)")
+@app_commands.describe(유저="포인트를 제거할 유저입니다.", 제거할포인트="제거할 포인트를 1 이상의 정수로 입력하세요.")
+async def remove_user_points(interaction: discord.Interaction, 유저: discord.Member, 제거할포인트: app_commands.Range[int, 1]):
+    await change_user_points(interaction, 유저, 제거할포인트, remove=True)
+
+
 @bot.tree.command(name="구매패널", description="구매 패널을 생성합니다.")
 @app_commands.describe(포인트사용가능="이 주문의 포인트 사용 허용 여부입니다. 허용하면 500~2,000P를 사용할 수 있습니다.")
 async def send_purchase_panel(interaction: discord.Interaction, 구매자: discord.Member, 입금금액: str, 상품: str, 수량: str, 포인트사용가능: bool = True):
@@ -894,7 +931,7 @@ async def send_tracking_dm(interaction: discord.Interaction, 유저: discord.Mem
         await interaction.followup.send(f"❌ DM 전송 중 오류가 발생했습니다: {e}", ephemeral=True)
 
 
-@bot.tree.command(name="메세지", description="봇이 대신해서 메시지를 전송해 줍니다.")
+@bot.tree.command(name="메시지", description="봇이 대신해서 메시지를 전송해 줍니다.")
 @app_commands.describe(내용="전송할 내용을 입력해 주세요. (미리 복사해 붙여넣거나 \\n 입력 시 줄바꿈 지원)")
 async def send_custom_message(interaction: discord.Interaction, 내용: str):
     real_content = 내용.replace('\\n', '\n') 
