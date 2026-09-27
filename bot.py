@@ -13,6 +13,11 @@ import io
 import asyncio
 from bs4 import BeautifulSoup
 from event_broadcast import register_event_command
+from loyalty_points import (
+    REVIEW_GUIDE, PointsError, initialize_points_schema, get_balance,
+    award_review_points, parse_amount, parse_points, request_payment,
+    reset_failed_payment, resolve_payment, cancel_order_record, payment_summary, maximum_points, adjust_points,
+)
 from delivery_tracking import (
     DeliveryTrackingError, format_tracking_result,
     normalize_waybill, safe_text, track_shipment,
@@ -51,12 +56,10 @@ def create_v2_payload(content: str, color: int = 0x32CD32, extra_components: lis
 class AdminCommandTree(app_commands.CommandTree):
     async def interaction_check(self, interaction: discord.Interaction):
         data = interaction.data or {}
-        # 모든 하위 명령에도 적용하며, 후기작성만 기존 구매자 검사를 따릅니다.
         is_review = data.get("type", 1) == 1 and data.get("name") == "후기작성"
         permissions = getattr(interaction.user, "guild_permissions", None)
         if interaction.guild is not None and (is_review or (permissions and permissions.administrator)):
             return True
-
         if interaction.type == discord.InteractionType.autocomplete:
             await interaction.response.autocomplete([])
         else:
@@ -65,7 +68,6 @@ class AdminCommandTree(app_commands.CommandTree):
         return False
 
     async def sync(self, *, guild=None):
-        # Discord의 명령 목록 권한과 봇 내부의 실행 권한을 함께 설정합니다.
         for command in self.get_commands(guild=guild):
             is_review = isinstance(command, app_commands.Command) and command.name == "후기작성"
             command.default_permissions = None if is_review else discord.Permissions(administrator=True)
@@ -216,6 +218,7 @@ class MyBot(commands.Bot):
                         await conn.execute(query)
                     except Exception:
                         pass
+                await initialize_points_schema(conn)
         else:
             print("⚠️ DATABASE_URL이 설정되지 않아 DB 기능을 사용할 수 없습니다.")
 
@@ -422,6 +425,30 @@ async def set_review_auto_message(interaction: discord.Interaction, 메시지: s
 # ==========================================
 # [기능 3] 정보 등록/수정/조회 (USER INFO)
 # ==========================================
+@bot.tree.command(name="후기안내", description="후기 채널에 포인트 안내를 보내고 후기 등록 때마다 자동 전송하도록 설정합니다.")
+@app_commands.describe(채널="안내와 후기가 등록될 채널입니다. 생략하면 기존 후기 채널 또는 현재 채널을 사용합니다.")
+async def set_review_guide(interaction: discord.Interaction, 채널: discord.TextChannel = None):
+    if not bot.db_pool:
+        await interaction.response.send_message("❌ DB 오류가 발생했습니다.", ephemeral=True)
+        return
+    await interaction.response.defer(ephemeral=True)
+    async with bot.db_pool.acquire() as conn:
+        settings = await conn.fetchrow('SELECT review_channel_id FROM guild_settings WHERE guild_id = $1', interaction.guild.id)
+        target = 채널 or (interaction.guild.get_channel(settings['review_channel_id']) if settings else None) or interaction.channel
+        await conn.execute("""
+            INSERT INTO guild_settings (guild_id, review_channel_id, review_auto_message) VALUES ($1, $2, $3)
+            ON CONFLICT (guild_id) DO UPDATE SET review_channel_id = $2, review_auto_message = $3
+        """, interaction.guild.id, target.id, REVIEW_GUIDE)
+    try:
+        await interaction.client.http.request(
+            discord.http.Route("POST", f"/channels/{target.id}/messages"), json=create_v2_payload(REVIEW_GUIDE),
+        )
+    except discord.HTTPException:
+        await interaction.followup.send("⚠️ 자동 안내는 설정했지만 안내 메시지 전송에 실패했습니다. 채널 권한을 확인해 주세요.", ephemeral=True)
+        return
+    await interaction.followup.send(f"✅ {target.mention}에 후기안내를 설정했습니다. 앞으로 후기 등록마다 자동으로 전송됩니다.", ephemeral=True)
+
+
 class UserInfoModal(discord.ui.Modal):
     def __init__(self, existing_data=None):
         title_str = "📦 배송 정보 수정" if existing_data else "📦 배송 정보 등록"
@@ -553,10 +580,11 @@ async def view_user_info(interaction: discord.Interaction, 유저: discord.Membe
         
     async with bot.db_pool.acquire() as conn:
         user_data = await conn.fetchrow('SELECT * FROM user_info WHERE user_id = $1', 유저.id)
+        point_balance = await get_balance(conn, interaction.guild.id, 유저.id)
         
     if not user_data:
-        await interaction.response.send_message(f"❌ {유저.mention}님은 아직 배송 정보를 등록하지 않았습니다.", ephemeral=True)
-        return
+        user_data = {"name": "미등록", "contact": "미등록", "address": "미등록",
+                     "cvs": "미등록", "is_anonymous": False, "total_spent": 0}
         
     if user_data['is_anonymous']:
         anon_text = "🟢 켜짐 (익명 구매 활성화)"
@@ -578,7 +606,9 @@ async def view_user_info(interaction: discord.Interaction, 유저: discord.Membe
         "`🎭`**익명 모드 상태**\n"
         f"`{anon_text}`\n\n"
         "`💰`**누적 구매액**\n"
-        f"`{total_spent:,}원`"
+        f"`{total_spent:,}원`\n\n"
+        "`🪙`**보유 포인트**\n"
+        f"`{point_balance:,}P`"
     )
     
     view_payload = {
@@ -607,9 +637,16 @@ async def view_user_info(interaction: discord.Interaction, 유저: discord.Membe
 # [기능 4] 구매패널 전송 & 유저운송장 & 메시지
 # ==========================================
 @bot.tree.command(name="구매패널", description="구매 패널을 생성합니다.")
-async def send_purchase_panel(interaction: discord.Interaction, 구매자: discord.Member, 입금금액: str, 상품: str, 수량: str):
+@app_commands.describe(포인트사용가능="이 주문의 포인트 사용 허용 여부입니다. 허용하면 500~2,000P를 사용할 수 있습니다.")
+async def send_purchase_panel(interaction: discord.Interaction, 구매자: discord.Member, 입금금액: str, 상품: str, 수량: str, 포인트사용가능: bool = True):
     if not bot.db_pool: 
         await interaction.response.send_message("❌ DB 오류가 발생했습니다.", ephemeral=True)
+        return
+
+    try:
+        입금금액 = f"{parse_amount(입금금액):,}원"
+    except PointsError as exc:
+        await interaction.response.send_message(f"❌ {exc}", ephemeral=True)
         return
 
     def get_rand(length):
@@ -622,12 +659,12 @@ async def send_purchase_panel(interaction: discord.Interaction, 구매자: disco
         is_anon = user_data['is_anonymous'] if user_data else False
         
         await conn.execute('''
-            INSERT INTO orders (order_id, guild_id, original_channel_id, buyer_id, product, quantity, amount, status, is_anonymous) 
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9);
-        ''', order_id, interaction.guild.id, interaction.channel.id, 구매자.id, 상품, 수량, 입금금액, 'PENDING', is_anon)
+            INSERT INTO orders (order_id, guild_id, original_channel_id, buyer_id, product, quantity, amount, status, is_anonymous, points_allowed) 
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10);
+        ''', order_id, interaction.guild.id, interaction.channel.id, 구매자.id, 상품, 수량, 입금금액, 'PENDING', is_anon, 포인트사용가능)
 
     if is_anon:
-        display_buyer = "<@&1544002074327519343>"
+        display_buyer = "<@&1553595299560161381>"
     else:
         display_buyer = 구매자.mention
         
@@ -648,6 +685,7 @@ async def send_purchase_panel(interaction: discord.Interaction, 구매자: disco
         f"`{수량}`\n\n"
         "`💰`**금액**\n"
         f"`{입금금액}`\n\n"
+        f"{'포인트 사용 가능 (500~2,000P · 1P = 1원)' if 포인트사용가능 else '포인트사용 불가 상품'}\n\n"
         "`⚠️`입금 전 확인해 주세요\n"
         "- 입금자명이 맞는지 정확하게 확인해 주시기 바랍니다.\n"
         "- 주문하신 금액과 일치하게 입금해 주시기 바랍니다.\n"
@@ -691,133 +729,89 @@ async def send_purchase_panel(interaction: discord.Interaction, 구매자: disco
 # 입금자명 입력 모달 
 # ---------------------------------------------------------
 class DepositModal(discord.ui.Modal):
-    def __init__(self, order_id: str, order_data: dict, settings_data: dict):
+    def __init__(self, order_id: str, order_data: dict, settings_data: dict, point_balance: int = 0):
         super().__init__(title="💳 입금 확인")
         self.order_id = order_id
         self.order_data = order_data
         self.settings_data = settings_data
-
+        self.points_allowed = order_data.get('points_allowed', True)
+        maximum = maximum_points(point_balance, parse_amount(order_data['amount']), self.points_allowed)
         self.depositor_name = discord.ui.TextInput(
-            label="입금자명",
-            style=discord.TextStyle.short,
-            placeholder="실제 입금하시는 분의 성함을 입력해 주세요.",
-            required=True,
-            max_length=50
+            label="입금자명", placeholder="실제 입금하시는 분의 성함을 입력해 주세요.", required=True, max_length=50,
+        )
+        self.points = discord.ui.TextInput(
+            label=f"사용할 포인트 (최대 {maximum:,}P)" if self.points_allowed else "사용할 포인트",
+            placeholder="500~2,000P 사용 · 사용하지 않으려면 0" if self.points_allowed else "포인트사용 불가 상품",
+            default=str(maximum) if self.points_allowed else "포인트사용 불가 상품",
+            required=self.points_allowed, max_length=19 if self.points_allowed else 100,
         )
         self.add_item(self.depositor_name)
+        self.add_item(self.points)
 
     async def on_submit(self, interaction: discord.Interaction):
         if not bot.db_pool:
             await interaction.response.send_message("❌ DB 오류가 발생했습니다.", ephemeral=True)
             return
-            
-        async with bot.db_pool.acquire() as conn:
-            await conn.execute('''
-                UPDATE orders SET depositor_name = $1 WHERE order_id = $2
-            ''', self.depositor_name.value, self.order_id)
-        
+        if interaction.guild is None or interaction.guild.id != self.order_data['guild_id'] or interaction.user.id != self.order_data['buyer_id']:
+            await interaction.response.send_message("❌ 이 주문의 구매자만 결제할 수 있습니다.", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True)
+        try:
+            points = parse_points(self.points.value) if self.points_allowed else 0
+            async with bot.db_pool.acquire() as conn:
+                order = await request_payment(conn, self.order_id, interaction.guild.id, interaction.user.id,
+                                              self.depositor_name.value, points)
+        except PointsError as exc:
+            await interaction.followup.send(f"❌ {exc}", ephemeral=True)
+            return
+
+        name = safe_text(order['depositor_name'])
+        formatted_product = "\n".join(f"`{p.strip()}`" for p in order['product'].split(",") if p.strip())
+        summary = payment_summary(order)
+        admin_req = (
+            "## 🔔 새로운 결제 확인 요청\n\n"
+            f"`👤`**구매자**\n<@{order['buyer_id']}>\n\n"
+            f"`✍️`**입금자명**\n`{name}`\n\n"
+            f"`◾`**주문번호**\n`{self.order_id}`\n\n"
+            f"`📦`**상품**\n{formatted_product}\n\n"
+            f"`◾`**수량**\n`{order['quantity']}`\n\n"
+            f"`💰`**결제금액**\n{summary}"
+        )
+        admin_payload = create_v2_payload(admin_req, extra_components=[{
+            "type": 1, "components": [
+                {"type": 2, "style": 3, "label": "승인", "custom_id": f"approve_{self.order_id}"},
+                {"type": 2, "style": 4, "label": "거절", "custom_id": f"reject_{self.order_id}"},
+            ],
+        }])
+        admin_payload['allowed_mentions'] = {"parse": []}
+        try:
+            await interaction.client.http.request(
+                discord.http.Route("POST", f"/channels/{self.settings_data['approval_channel_id']}/messages"), json=admin_payload,
+            )
+        except discord.HTTPException:
+            async with bot.db_pool.acquire() as conn:
+                await reset_failed_payment(conn, self.order_id, interaction.guild.id)
+            await interaction.followup.send("❌ 관리자에게 결제 요청을 보내지 못해 포인트 사용을 취소했습니다. 채널 권한을 확인한 후 다시 시도해 주세요.", ephemeral=True)
+            return
+
         bank_name = self.settings_data.get('bank_name') or "토스뱅크"
         account_number = self.settings_data.get('account_number') or "1002-5778-3501"
         account_holder = self.settings_data.get('account_holder') or "문*서"
-        
-        formatted_product = "\n".join([f"`{p.strip()}`" for p in self.order_data['product'].split(",") if p.strip()])
-        
+        instructions = "포인트로 전액 결제되어 입금할 금액이 없습니다. 관리자 승인을 기다려 주세요." if order['cash_amount'] == 0 else "아래 계좌로 실제 입금금액을 입금해 주세요."
         pay_info = (
-            "## 결제 안내\n\n"
-            "```아래 계좌로 정확한 금액을 입금해 주시기 바랍니다.```\n\n"
-            "`💰`계좌 정보\n"
-            "- 은행\n"
-            f"`{bank_name}`\n\n"
-            "- 계좌번호\n"
-            f"`{account_number}`\n\n"
-            "- 예금주\n"
-            f"`{account_holder}`\n\n"
-            "`🧾`구매상품\n\n"
-            "`📦`**상품**\n"
-            f"{formatted_product}\n\n"
-            "`◾`**수량**\n"
-            f"`{self.order_data['quantity']}`\n\n"
-            "`⚠️`입금 전 확인해 주세요\n"
-            f"- 입력하신 입금자명(`{self.depositor_name.value}`)이 맞는지 정확하게 확인해 주시기 바랍니다.\n"
-            "- 일치하게 입금해 주시기 바랍니다."
+            f"## 결제 안내\n\n{instructions}\n\n"
+            f"`💰`계좌 정보\n- 은행\n`{bank_name}`\n\n"
+            f"- 계좌번호\n`{account_number}`\n\n- 예금주\n`{account_holder}`\n\n"
+            f"`📦`**상품**\n{formatted_product}\n\n"
+            f"`◾`**수량**\n`{order['quantity']}`\n\n"
+            f"`✍️`**입금자명**\n`{name}`\n\n"
+            f"`💰`**결제금액**\n{summary}\n\n"
+            "- 입력한 입금자명과 실제 입금액을 확인해 주세요."
         )
-        
-        pay_payload = {
-            "flags": (1 << 15) | (1 << 6), 
-            "components": [
-                {
-                    "type": 17, 
-                    "accent_color": 0x32CD32, 
-                    "components": [
-                        {
-                            "type": 10, 
-                            "content": pay_info
-                        }
-                    ]
-                }
-            ]
-        }
-        
+        pay_payload = create_v2_payload(pay_info, ephemeral=True)
+        pay_payload['allowed_mentions'] = {"parse": []}
         await interaction.client.http.request(
-            discord.http.Route("POST", f"/interactions/{interaction.id}/{interaction.token}/callback"), 
-            json={"type": 4, "data": pay_payload}
-        )
-        
-        admin_buyer_mention = f"<@{self.order_data['buyer_id']}>"
-        
-        admin_req = (
-            "## 🔔 새로운 결제 확인 요청\n\n"
-            "`👤`**구매자**\n"
-            f"{admin_buyer_mention}\n\n"
-            "`✍️`**입금자명**\n"
-            f"`{self.depositor_name.value}`\n\n"
-            "`◾`**주문번호**\n"
-            f"`{self.order_id}`\n\n"
-            "`📦`**상품**\n"
-            f"{formatted_product}\n\n"
-            "`◾`**수량**\n"
-            f"`{self.order_data['quantity']}`\n\n"
-            "`💰`**금액**\n"
-            f"`{self.order_data['amount']}`"
-        )
-        
-        admin_payload = {
-            "content": "", 
-            "flags": 1 << 15, 
-            "components": [
-                {
-                    "type": 17, 
-                    "accent_color": 0x32CD32, 
-                    "components": [
-                        {
-                            "type": 10, 
-                            "content": admin_req
-                        },
-                        {
-                            "type": 1, 
-                            "components": [
-                                {
-                                    "type": 2, 
-                                    "style": 3, 
-                                    "label": "승인", 
-                                    "custom_id": f"approve_{self.order_id}"
-                                },
-                                {
-                                    "type": 2, 
-                                    "style": 4, 
-                                    "label": "거절", 
-                                    "custom_id": f"reject_{self.order_id}"
-                                }
-                            ]
-                        }
-                    ]
-                }
-            ]
-        }
-        
-        await interaction.client.http.request(
-            discord.http.Route("POST", f"/channels/{self.settings_data['approval_channel_id']}/messages"), 
-            json=admin_payload
+            discord.http.Route("POST", f"/webhooks/{interaction.application_id}/{interaction.token}"), json=pay_payload,
         )
 
 
@@ -1082,24 +1076,15 @@ async def cancel_order(interaction: discord.Interaction, 주문번호: str):
     await interaction.response.defer(ephemeral=True)
     
     async with bot.db_pool.acquire() as conn:
-        order = await conn.fetchrow('SELECT * FROM orders WHERE order_id = $1', 주문번호)
-        
-        if not order:
-            await interaction.followup.send(f"❌ `{주문번호}`에 해당하는 주문을 찾을 수 없습니다.", ephemeral=True)
+        try:
+            order = await cancel_order_record(conn, 주문번호, interaction.guild.id)
+        except PointsError as exc:
+            await interaction.followup.send(f"❌ {exc}", ephemeral=True)
             return
             
         buyer_id = order['buyer_id']
         
         if order['status'] == 'APPROVED':
-            amount_str = str(order['amount'])
-            amount_int = int(''.join(filter(str.isdigit, amount_str)) or 0)
-            
-            await conn.execute('''
-                UPDATE user_info 
-                SET total_spent = GREATEST(total_spent - $1, 0) 
-                WHERE user_id = $2
-            ''', amount_int, buyer_id)
-            
             user_info_row = await conn.fetchrow('SELECT total_spent FROM user_info WHERE user_id = $1', buyer_id)
             current_total = user_info_row['total_spent'] if user_info_row else 0
             
@@ -1140,7 +1125,6 @@ async def cancel_order(interaction: discord.Interaction, 주문번호: str):
                         except Exception:
                             pass
                             
-        await conn.execute('DELETE FROM orders WHERE order_id = $1', 주문번호)
         
     await update_leaderboard(interaction.guild.id)
     
@@ -1364,7 +1348,7 @@ async def set_ticket_log_chan(interaction: discord.Interaction, 채널: discord.
 @bot.tree.command(name="문의패널", description="문의(티켓) 생성 패널을 띄웁니다.")
 async def send_support_panel(interaction: discord.Interaction):
     support_content = (
-        "## VAPRE SP0T SUPPORT\n\n"
+        "## VAPE SP0T SUPPORT\n\n"
         "- 아래에서 문의 유형을 선택하여 티켓을 열어 주시기 바랍니다.\n\n"
         "- `💳`구매문의\n"
         "> 전담, 상단배너 구매를 위한 티켓입니다.\n\n"
@@ -2248,6 +2232,15 @@ async def write_review(
         json=review_payload
     )
     
+    reward_text = ""
+    try:
+        async with bot.db_pool.acquire() as conn:
+            reward, balance = await award_review_points(conn, interaction.guild.id, interaction.user.id, interaction.id)
+        reward_text = f"\n🎁 {reward:,}P 적립 / 현재 보유 포인트: {balance:,}P"
+    except Exception as exc:
+        print(f"후기 포인트 적립 실패 (interaction_id={interaction.id}): {type(exc).__name__}")
+        reward_text = "\n⚠️ 후기는 등록되었으나 포인트 적립에 실패했습니다. 관리자에게 문의해 주세요."
+
     # 2. 관리자가 설정한 후기 자동 안내 메시지가 있으면 추가 전송
     if settings.get('review_auto_message'):
         auto_payload = create_v2_payload(settings['review_auto_message'])
@@ -2259,7 +2252,7 @@ async def write_review(
         except Exception as e:
             print(f"후기 자동 메시 전송 실패: {e}")
     
-    await interaction.followup.send("✅ 후기 등록이 정상적으로 완료되었습니다!", ephemeral=True)
+    await interaction.followup.send("✅ 후기 등록이 정상적으로 완료되었습니다!" + reward_text, ephemeral=True)
 
 
 # ==========================================
@@ -2749,47 +2742,50 @@ async def on_interaction(interaction: discord.Interaction):
 
     # 결제하기 버튼 로직
     if custom_id.startswith("pay_"):
-        order_id = custom_id.replace("pay_", "")
-        
+        if not bot.db_pool:
+            await interaction.response.send_message("❌ DB 오류가 발생했습니다.", ephemeral=True)
+            return
+        order_id = custom_id.removeprefix("pay_")
         async with bot.db_pool.acquire() as conn:
-            order = await conn.fetchrow('SELECT * FROM orders WHERE order_id = $1', order_id)
+            order = await conn.fetchrow('SELECT * FROM orders WHERE order_id = $1 AND guild_id = $2', order_id, interaction.guild.id)
             settings = await conn.fetchrow('SELECT * FROM guild_settings WHERE guild_id = $1', interaction.guild.id)
-            
-        if not order: 
-            await interaction.response.send_message("❌ 조회에 실패했습니다.", ephemeral=True)
+            balance = await get_balance(conn, interaction.guild.id, interaction.user.id)
+        if not order or order['buyer_id'] != interaction.user.id:
+            await interaction.response.send_message("❌ 이 주문의 구매자만 결제할 수 있습니다.", ephemeral=True)
             return
-            
-        if order['status'] != 'PENDING': 
-            await interaction.response.send_message("❌ 이미 처리된 요청입니다.", ephemeral=True)
+        if order['status'] != 'PENDING' or order['payment_requested']:
+            await interaction.response.send_message("❌ 이미 결제를 요청했거나 처리된 주문입니다.", ephemeral=True)
             return
-            
-        await interaction.response.send_modal(DepositModal(order_id, dict(order), dict(settings)))
+        if not settings or not settings.get('approval_channel_id'):
+            await interaction.response.send_message("❌ 관리자가 결제 승인 채널을 설정해야 합니다.", ephemeral=True)
+            return
+        try:
+            modal = DepositModal(order_id, dict(order), dict(settings), balance)
+        except PointsError as exc:
+            await interaction.response.send_message(f"❌ {exc}", ephemeral=True)
+            return
+        await interaction.response.send_modal(modal)
         return
 
     # 결제 승인/거절 버튼 처리
     if custom_id.startswith("approve_") or custom_id.startswith("reject_"):
-        action, order_id = custom_id.split("_")[0], custom_id.split("_")[1]
-        
+        if not interaction.user.guild_permissions.administrator:
+            await interaction.response.send_message("❌ 관리자만 결제를 승인하거나 거절할 수 있습니다.", ephemeral=True)
+            return
+        if not bot.db_pool:
+            await interaction.response.send_message("❌ DB 오류가 발생했습니다.", ephemeral=True)
+            return
+        action, order_id = custom_id.split("_", 1)
+        await interaction.response.defer()
         async with bot.db_pool.acquire() as conn:
-            order = await conn.fetchrow('SELECT * FROM orders WHERE order_id = $1', order_id)
             settings = await conn.fetchrow('SELECT * FROM guild_settings WHERE guild_id = $1', interaction.guild.id)
-            
-            if order['status'] != 'PENDING': 
-                await interaction.response.send_message("❌ 이미 처리된 요청입니다.", ephemeral=True)
+            try:
+                order = await resolve_payment(conn, order_id, interaction.guild.id, action == 'approve')
+            except PointsError as exc:
+                await interaction.followup.send(f"❌ {exc}", ephemeral=True)
                 return
-                
-            new_status = 'APPROVED' if action == 'approve' else 'REJECTED'
-            await conn.execute('UPDATE orders SET status = $1 WHERE order_id = $2', new_status, order_id)
-
             if action == 'approve':
-                amount_int = int(''.join(filter(str.isdigit, order['amount'])) or 0)
-                
-                await conn.execute('''
-                    INSERT INTO user_info (user_id, total_spent) 
-                    VALUES ($1, $2) 
-                    ON CONFLICT (user_id) DO UPDATE SET total_spent = user_info.total_spent + $2
-                ''', order['buyer_id'], amount_int)
-                
+                amount_int = parse_amount(order['amount'])
                 user_info_row = await conn.fetchrow('SELECT total_spent, is_anonymous FROM user_info WHERE user_id = $1', order['buyer_id'])
                 current_total = user_info_row['total_spent'] if user_info_row else amount_int
                 is_anon = user_info_row['is_anonymous'] if user_info_row else False
@@ -2821,7 +2817,7 @@ async def on_interaction(interaction: discord.Interaction):
                             if settings and settings.get('tier_log_channel_id'):
                                 tier_channel = interaction.guild.get_channel(settings['tier_log_channel_id'])
                                 if tier_channel:
-                                    mention_str = "<@&1544002074327519343>" if is_anon else member.mention
+                                    mention_str = "<@&1553595299560161381>" if is_anon else member.mention
                                     tier_msg = (
                                         "## 🎉 VIP 등급 업그레이드!\n\n"
                                         "`👤` **고객**\n"
@@ -2897,7 +2893,7 @@ async def on_interaction(interaction: discord.Interaction):
 
         # 승인/거절 처리 시간 (한국 시간)
         now_str = datetime.datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S")
-        display_buyer = "<@&1544002074327519343>" if order['is_anonymous'] else f"<@{order['buyer_id']}>"
+        display_buyer = "<@&1553595299560161381>" if order['is_anonymous'] else f"<@{order['buyer_id']}>"
         admin_buyer_mention = f"<@{order['buyer_id']}>"
         status_word, color_val = ("✅ 승인", 0x32CD32) if action == 'approve' else ("❌ 거절", 0xFF0000)
         
@@ -2917,7 +2913,7 @@ async def on_interaction(interaction: discord.Interaction):
             "`◾`**수량**\n"
             f"`{order['quantity']}`\n\n"
             "`💰`**금액**\n"
-            f"`{order['amount']}`\n\n"
+            f"{payment_summary(order)}\n\n"
             "`👑`**처리자**\n"
             f"{interaction.user.mention}\n\n"
             "`🕒`**처리시각**\n"
@@ -2941,8 +2937,8 @@ async def on_interaction(interaction: discord.Interaction):
         }
         
         await interaction.client.http.request(
-            discord.http.Route("POST", f"/interactions/{interaction.id}/{interaction.token}/callback"), 
-            json={"type": 7, "data": update_payload}
+            discord.http.Route("PATCH", f"/webhooks/{interaction.application_id}/{interaction.token}/messages/@original"),
+            json=update_payload
         )
 
         if action == 'approve':
@@ -2959,7 +2955,7 @@ async def on_interaction(interaction: discord.Interaction):
                     "`◾`**수량**\n"
                     f"`{order['quantity']}`\n\n"
                     "`💰`**금액**\n"
-                    f"`{order['amount']}`\n\n"
+                    f"{payment_summary(order)}\n\n"
                     "`🕒`**구매시각**\n"
                     f"`{now_str}`\n\n"
                     "**```믿고 구매해 주셔서 감사합니다.```**"
@@ -2996,7 +2992,7 @@ async def on_interaction(interaction: discord.Interaction):
                 "`📦`**상품**\n"
                 f"{formatted_product}\n\n"
                 "`💰`**금액**\n"
-                f"`{order['amount']}`\n\n"
+                f"{payment_summary(order)}\n\n"
                 "```감사합니다.```"
             )
             
