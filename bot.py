@@ -17,7 +17,7 @@ from event_broadcast import register_event_command
 from store_lookup import brand_selector, lookup_panel, handle_brand_selection
 from chat_points import (
     initialize_chat_points_schema, ChatPointsCog,
-    configure_chat_points, handle_reward_interaction,
+    configure_chat_points, handle_reward_interaction, configure_reward_log,
 )
 from loyalty_points import (
     REVIEW_GUIDE, PointsError, initialize_points_schema, get_balance,
@@ -674,6 +674,12 @@ async def send_store_lookup_panel(interaction: discord.Interaction):
 async def set_chat_points_channel(interaction: discord.Interaction, 채널: discord.TextChannel = None, 활성화: bool = True,
                                   지급주기분: app_commands.Range[int, 1, 1440] = 1):
     await configure_chat_points(interaction, 채널, 활성화, 지급주기분)
+
+
+@bot.tree.command(name="지급로그", description="채팅 이벤트의 포인트·랜덤박스 지급로그 채널을 설정합니다. (관리자 전용)")
+@app_commands.describe(채널="채팅 이벤트 지급로그를 보낼 텍스트 채널")
+async def set_reward_log_channel(interaction: discord.Interaction, 채널: discord.TextChannel):
+    await configure_reward_log(interaction, 채널)
 
 
 @bot.tree.command(name="유저정보", description="특정 유저가 등록한 배송 및 구매 정보를 조회합니다.")
