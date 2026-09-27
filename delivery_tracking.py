@@ -121,8 +121,7 @@ def format_tracking_result(courier_name, number, data):
         f"현재 상태 : {safe_text(data.get('status'))}\n"
         f"현재 위치 : {safe_text(data.get('location'))}\n\n"
         f"= 받는분 정보 =\n"
-        f"받는분 : {safe_text(data.get('receiver'))}\n"
-        f"받는곳 : {safe_text(data.get('receiverAddr'), '사이트에서 제공하지 않음')}\n\n"
+        f"받는분 : {safe_text(data.get('receiver'))}\n\n"
         f"보내는분 : {safe_text(data.get('sender'))}\n\n"
         "= 배송 이력 (최근순 · 한국 시간) =\n"
     )
