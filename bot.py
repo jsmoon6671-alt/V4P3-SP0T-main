@@ -597,7 +597,9 @@ async def view_user_info(interaction: discord.Interaction, 유저: discord.Membe
     if not bot.db_pool: 
         await interaction.response.send_message("❌ DB가 연결되지 않았습니다.", ephemeral=True)
         return
-        
+
+
+
     async with bot.db_pool.acquire() as conn:
         user_data = await conn.fetchrow('SELECT * FROM user_info WHERE user_id = $1', 유저.id)
         point_balance = await get_balance(conn, interaction.guild.id, 유저.id)
@@ -1284,7 +1286,7 @@ async def create_ticket_channel(interaction: discord.Interaction, t_type: str, t
                 info_content = (
                     "## ⚠️ 구매자 정보 미등록\n\n"
                     f"{interaction.user.mention}님, 아직 배송 정보가 등록되지 않았습니다!\n"
-                    "빠른 발송을 위해 채널 밖에서 <#1544002297825329284> 채널에서 [정보 등록] 버튼을 눌러 배송지를 등록해 주세요."
+                    "빠른 발송을 위해 채널 밖에서 <#1553664818349608960> 채널에서 [정보 등록] 버튼을 눌러 배송지를 등록해 주세요."
                 )
                 color_val = 0xFF0000
                 
@@ -2991,7 +2993,7 @@ async def on_interaction(interaction: discord.Interaction):
                 {
                     "type": 17, 
                     "accent_color": color_val, 
-                    
+
                     "components": [
                         {
                             "type": 10, 
