@@ -64,16 +64,44 @@ async def initialize_chat_points_schema(conn):
                 opened_at TIMESTAMPTZ, notified BOOLEAN NOT NULL DEFAULT FALSE,
                 PRIMARY KEY (guild_id, activity_day)
             );
+            ALTER TABLE chat_point_settings ADD COLUMN IF NOT EXISTS reward_interval_minutes
+                INTEGER NOT NULL DEFAULT 1 CHECK (reward_interval_minutes BETWEEN 1 AND 1440);
+            ALTER TABLE chat_point_settings ADD COLUMN IF NOT EXISTS reward_anchor
+                TIMESTAMPTZ NOT NULL DEFAULT date_trunc('minute', CURRENT_TIMESTAMP);
+            ALTER TABLE chat_point_rewards ADD COLUMN IF NOT EXISTS reward_interval_minutes
+                INTEGER NOT NULL DEFAULT 0;
+            DO $$ BEGIN
+                IF (SELECT cardinality(conkey) FROM pg_constraint
+                    WHERE conrelid = 'chat_point_rewards'::regclass AND contype = 'p') = 3 THEN
+                    ALTER TABLE chat_point_rewards DROP CONSTRAINT chat_point_rewards_pkey;
+                    ALTER TABLE chat_point_rewards ADD PRIMARY KEY
+                        (guild_id, user_id, minute, reward_interval_minutes);
+                END IF;
+            END $$;
+            CREATE TABLE IF NOT EXISTS chat_reward_rounds (
+                guild_id BIGINT NOT NULL, window_start TIMESTAMPTZ NOT NULL,
+                interval_minutes INTEGER NOT NULL, user_id BIGINT NOT NULL,
+                points INTEGER NOT NULL CHECK (points BETWEEN 10 AND 50),
+                PRIMARY KEY (guild_id, window_start, interval_minutes)
+            );
         ''')
 
 
-async def configure_channel(conn, guild_id, channel_id, enabled, now):
+async def configure_channel(conn, guild_id, channel_id, enabled, now, interval_minutes=1):
+    if not isinstance(interval_minutes, int) or not 1 <= interval_minutes <= 1440:
+        raise ValueError("지급 주기는 1~1440분으로 설정해 주세요.")
+    anchor, _ = clock_parts(now)
     await conn.execute('''
-        INSERT INTO chat_point_settings (guild_id, channel_id, enabled, next_announcement)
-        VALUES ($1, $2, $3, $4)
+        INSERT INTO chat_point_settings
+            (guild_id, channel_id, enabled, next_announcement, reward_interval_minutes, reward_anchor)
+        VALUES ($1, $2, $3, $4, $5, $6)
         ON CONFLICT (guild_id) DO UPDATE SET channel_id = EXCLUDED.channel_id,
-            enabled = EXCLUDED.enabled, next_announcement = EXCLUDED.next_announcement
-    ''', guild_id, channel_id, enabled, now + dt.timedelta(minutes=5))
+            enabled = EXCLUDED.enabled, next_announcement = EXCLUDED.next_announcement,
+            reward_interval_minutes = CASE WHEN EXCLUDED.enabled
+                THEN EXCLUDED.reward_interval_minutes ELSE chat_point_settings.reward_interval_minutes END,
+            reward_anchor = CASE WHEN EXCLUDED.enabled
+                THEN EXCLUDED.reward_anchor ELSE chat_point_settings.reward_anchor END
+    ''', guild_id, channel_id, enabled, now + dt.timedelta(minutes=5), interval_minutes, anchor)
 
 
 async def record_activity(conn, guild_id, channel_id, user_id, message_id, sent_at):
@@ -121,21 +149,40 @@ async def settle_activity(conn, guild_id, now):
         setting = await conn.fetchrow('SELECT * FROM chat_point_settings WHERE guild_id = $1 FOR UPDATE', guild_id)
         if not setting:
             return
+        interval = setting['reward_interval_minutes']
         pending = await conn.fetch('''
-            SELECT * FROM chat_activity_minutes WHERE guild_id = $1 AND minute < $2 AND NOT rewarded
-            ORDER BY minute, user_id LIMIT 500
-        ''', guild_id, minute)
-        for row in pending:
+            SELECT date_bin(make_interval(mins => $2::integer), minute, $3::timestamptz) AS window_start
+            FROM chat_activity_minutes WHERE guild_id = $1 AND NOT rewarded
+            GROUP BY window_start
+            HAVING date_bin(make_interval(mins => $2::integer), MIN(minute), $3::timestamptz)
+                + make_interval(mins => $2::integer) <= $4
+            ORDER BY window_start LIMIT 500
+        ''', guild_id, interval, setting['reward_anchor'], minute)
+        for window in pending:
+            start = as_datetime(window['window_start'])
+            end = start + dt.timedelta(minutes=interval)
+            # 같은 유저의 메시지 수와 관계없이 주기마다 후보 목록에는 한 번만 포함합니다.
+            candidates = await conn.fetch('''
+                SELECT DISTINCT ON (user_id) user_id, channel_id FROM chat_activity_minutes
+                WHERE guild_id = $1 AND minute >= $2 AND minute < $3 AND NOT rewarded
+                ORDER BY user_id, minute DESC
+            ''', guild_id, start, end)
+            row = random.choice(candidates)
             reward = await conn.fetchval('''
-                INSERT INTO chat_point_rewards (guild_id, user_id, minute, channel_id, points)
+                INSERT INTO chat_reward_rounds (guild_id, window_start, interval_minutes, user_id, points)
                 VALUES ($1, $2, $3, $4, $5) ON CONFLICT DO NOTHING RETURNING points
-            ''', guild_id, row['user_id'], row['minute'], row['channel_id'], random.randint(10, 50))
+            ''', guild_id, start, interval, row['user_id'], random.randint(10, 50))
             if reward is not None:
+                await conn.execute('''
+                    INSERT INTO chat_point_rewards
+                        (guild_id, user_id, minute, channel_id, points, reward_interval_minutes)
+                    VALUES ($1, $2, $3, $4, $5, $6)
+                ''', guild_id, row['user_id'], end, row['channel_id'], reward, interval)
                 await _credit(conn, guild_id, row['user_id'], reward)
             await conn.execute('''
                 UPDATE chat_activity_minutes SET rewarded = TRUE
-                WHERE guild_id = $1 AND user_id = $2 AND minute = $3
-            ''', guild_id, row['user_id'], row['minute'])
+                WHERE guild_id = $1 AND minute >= $2 AND minute < $3
+            ''', guild_id, start, end)
         # 하루 전체 채팅 수가 가장 많은 한 명. 동률이면 먼저 활동한 유저가 받습니다.
         winners = await conn.fetch('''
             SELECT DISTINCT ON (d.activity_day) d.* FROM chat_activity_daily d
@@ -179,11 +226,15 @@ def box_button(guild_id):
     return view
 
 
-def announcement_payload():
+def as_datetime(value):
+    return value if isinstance(value, dt.datetime) else dt.datetime.fromisoformat(str(value).replace('Z', '+00:00'))
+
+
+def announcement_payload(interval_minutes=1):
     return {"flags": 1 << 15, "allowed_mentions": {"parse": ["everyone"]}, "components": [
         {"type": 10, "content": "@here"},
         {"type": 17, "accent_color": 0x32CD32, "components": [
-            {"type": 10, "content": "## 💬 채팅 활동 포인트\n이 채널에서 채팅하면 **활동한 1분마다 랜덤 10P~50P**가 적립됩니다.\n같은 1분에 여러 메시지를 보내도 채팅 포인트는 한 번만 지급됩니다."},
+            {"type": 10, "content": f"## 💬 채팅 활동 포인트\n**{interval_minutes}분마다** 해당 주기 동안 채팅한 유저 중 **랜덤 1명**에게 **10P~50P**를 지급합니다.\n채팅한 유저 모두가 후보이며, 같은 주기에 여러 메시지를 보내도 당첨 확률은 동일합니다."},
             {"type": 14, "divider": True, "spacing": 1},
             {"type": 10, "content": "🎁 매일 가장 많이 채팅한 **1명**에게 랜덤박스를 드립니다!\n한국 시간 자정에 전날 활동을 정산하며, 박스를 열면 **100P~300P**를 받을 수 있습니다.\n지급 알림은 DM으로 전송됩니다. 아래에서 본인만 보이는 보상 내역을 확인하세요."},
             {"type": 1, "components": [{"type": 2, "style": 1, "label": "내 보상 확인", "custom_id": REWARDS_ID}]}]}]}
@@ -236,8 +287,10 @@ async def handle_reward_interaction(interaction, pool):
         for reward in recent:
             timestamp = dt.datetime.fromisoformat(str(reward['minute']).replace('Z', '+00:00')).astimezone(KST)
             lines.append(f"- {timestamp:%m/%d %H:%M}: 채팅 활동으로 **{reward['points']}P** 지급")
-    await interaction.followup.send("\n".join(lines), ephemeral=True,
-                                    view=box_button(guild_id) if boxes else None)
+    options = {"ephemeral": True}
+    if boxes:
+        options["view"] = box_button(guild_id)
+    await interaction.followup.send("\n".join(lines), **options)
 
 
 class ChatPointsCog(commands.Cog):
@@ -297,8 +350,8 @@ class ChatPointsCog(commands.Cog):
         # 보상은 먼저 적립됩니다. DM 실패는 잔액이나 박스 지급을 취소하지 않습니다.
         async with self.bot.db_pool.acquire() as conn:
             rewards = await conn.fetch('''
-                UPDATE chat_point_rewards SET notified = TRUE WHERE (guild_id, user_id, minute) IN (
-                    SELECT guild_id, user_id, minute FROM chat_point_rewards
+                UPDATE chat_point_rewards SET notified = TRUE WHERE (guild_id, user_id, minute, reward_interval_minutes) IN (
+                    SELECT guild_id, user_id, minute, reward_interval_minutes FROM chat_point_rewards
                     WHERE guild_id = $1 AND NOT notified ORDER BY minute LIMIT 50 FOR UPDATE SKIP LOCKED
                 ) RETURNING *
             ''', guild_id)
@@ -315,7 +368,7 @@ class ChatPointsCog(commands.Cog):
                     if kind == 'reward':
                         timestamp = dt.datetime.fromisoformat(str(row['minute']).replace('Z', '+00:00')).astimezone(KST)
                         text = (f"💬 채팅 활동을 해서 랜덤으로 **{row['points']}P**가 지급되었습니다!\n"
-                                f"채널: <#{row['channel_id']}> · 활동 시간: {timestamp:%m/%d %H:%M}")
+                                f"채널: <#{row['channel_id']}> · 지급 시간: {timestamp:%m/%d %H:%M}")
                         await user.send(text, allowed_mentions=discord.AllowedMentions.none())
                     else:
                         text = (f"🎁 {row['activity_day']} 최다 채팅 활동자로 선정되어 **랜덤박스 1개**가 지급되었습니다!\n"
@@ -327,12 +380,14 @@ class ChatPointsCog(commands.Cog):
     async def send_announcement(self, guild_id, now):
         async with self.bot.db_pool.acquire() as conn:
             # 여러 프로세스나 재연결에서도 안내를 중복 예약하지 않습니다.
-            channel_id = await conn.fetchval('''
+            setting = await conn.fetchrow('''
                 UPDATE chat_point_settings SET next_announcement = $2
-                WHERE guild_id = $1 AND enabled AND next_announcement <= $3 RETURNING channel_id
+                WHERE guild_id = $1 AND enabled AND next_announcement <= $3
+                RETURNING channel_id, reward_interval_minutes
             ''', guild_id, now + dt.timedelta(minutes=5), now)
-        if channel_id is None:
+        if setting is None:
             return
+        channel_id = setting['channel_id']
         channel = self.bot.get_channel(channel_id)
         if channel is None:
             try:
@@ -341,10 +396,10 @@ class ChatPointsCog(commands.Cog):
                 LOG.warning("채팅 안내 채널 접근 실패: guild=%s channel=%s", guild_id, channel_id)
                 return
         await self.bot.http.request(discord.http.Route("POST", f"/channels/{channel.id}/messages"),
-                                    json=announcement_payload())
+                                    json=announcement_payload(setting['reward_interval_minutes']))
 
 
-async def configure_chat_points(interaction, channel, enabled):
+async def configure_chat_points(interaction, channel, enabled, interval_minutes=1):
     pool = interaction.client.db_pool
     if pool is None:
         await interaction.response.send_message("데이터베이스가 연결되지 않았습니다.", ephemeral=True)
@@ -359,10 +414,11 @@ async def configure_chat_points(interaction, channel, enabled):
         return
     await interaction.response.defer(ephemeral=True)
     async with pool.acquire() as conn:
-        await configure_channel(conn, interaction.guild.id, channel.id, enabled, dt.datetime.now(UTC))
+        await configure_channel(conn, interaction.guild.id, channel.id, enabled, dt.datetime.now(UTC), interval_minutes)
     if enabled:
         text = (f"✅ {channel.mention}에서 채팅 포인트를 지급합니다.\n"
-                "활동한 1분마다 10P~50P, 한국 시간 자정에 전날 최다 채팅 활동자 1명에게 랜덤박스 지급.\n"
+                f"{interval_minutes}분마다 해당 주기 동안 채팅한 유저 중 랜덤 1명에게 10P~50P 지급.\n"
+                "한국 시간 자정에 전날 최다 채팅 활동자 1명에게 랜덤박스 지급.\n"
                 "5분마다 @here 안내를 보내며, 알림은 DM·내 보상 확인으로 확인할 수 있습니다.")
         if not permissions.mention_everyone:
             text += "\n현재 봇에게 @everyone·@here 멘션 권한이 없어 @here 알림이 울리지 않습니다."

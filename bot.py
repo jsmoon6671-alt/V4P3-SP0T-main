@@ -514,7 +514,10 @@ class UserInfoModal(discord.ui.Modal):
 @bot.tree.command(name="정보패널", description="배송 정보 등록 및 관리 패널을 생성합니다.")
 async def send_info_panel(interaction: discord.Interaction):
     info_content = (
-        "등록되는 정보는 다음과 같습니다."
+        "## VAPE SP0T USER INFO\n\n"
+        "구매를 위해 정보를 입력해 주시기 바랍니다.\n"
+        "등록된 정보는 배송 및 구매 처리에 사용됩니다.\n\n"
+        "- 🕒 빠른 배송을 위한 정보 등록 절차입니다."
     )
     
     info_payload = {
@@ -522,28 +525,28 @@ async def send_info_panel(interaction: discord.Interaction):
         "components": [
             {
                 "type": 17, 
-                "accent_color": 0xFFFFFF,
+                "accent_color": 0x32CD32,
                 "components": [
                     {
                         "type": 10,
                         "content": info_content
                     },
                     {"type": 14, "divider": True, "spacing": 1},
-                    {"type": 10, "content": "`👤` 이름\n`📞` 전화번호\n`🏪` 편의점명 (또는 주소)"},
+                    {"type": 10, "content": "**등록 정보 안내**\n\n`👤` 이름\n`📞` 연락처\n`🏠` 주소\n`🏪` 편의점명"},
                     {"type": 14, "divider": True, "spacing": 1},
                     {"type": 10, "content": "등록된 정보는 구매를 위해 티켓을 여셨을 때 자동으로 표시됩니다.\n매번 이름·연락처·편의점명(또는 주소)을 따로 말씀하실 필요가 없습니다."},
                     {"type": 14, "divider": True, "spacing": 1},
                     {"type": 10, "content": "🏪 편의점 주소를 확인하려면 아래에서 **GS25 또는 CU**를 선택해 주세요."},
                     brand_selector(),
                     {"type": 14, "divider": True, "spacing": 1},
-                    {"type": 10, "content": "정보를 잘못 입력하셨다면,\n아래 **정보 수정** 버튼을 클릭하시면 정보를 변경하실 수 있습니다.\n-# 💡 익명 설정 버튼으로 구매 시 닉네임 표시 여부를 변경할 수 있습니다."},
+                    {"type": 10, "content": "💡 익명 설정 버튼을 누르면 구매 시 닉네임 대신 익명으로 처리됩니다.\n\n🌟 아래 버튼을 눌러 정보를 등록해 주세요.\n잘못 입력한 정보는 **정보 수정**으로 변경하고, **정보 조회**에서 배송 정보와 현재 보유 포인트를 확인할 수 있습니다."},
                     {
                         "type": 1,
                         "components": [
                             {
                                 "type": 2,
                                 "style": 1,
-                                "label": "정보 설정",
+                                "label": "정보 등록",
                                 "custom_id": "info_register"
                             },
                             {
@@ -577,6 +580,36 @@ async def send_info_panel(interaction: discord.Interaction):
     )
 
 
+@bot.tree.command(name="포인트조회패널", description="유저가 본인의 현재 포인트를 확인할 패널을 생성합니다. (관리자 전용)")
+async def send_points_lookup_panel(interaction: discord.Interaction):
+    payload = create_v2_payload(
+        "## 💰 포인트 조회\n\n아래 **내 포인트 조회** 버튼을 눌러 현재 보유 포인트를 확인해 주세요.\n조회 결과는 본인에게만 표시됩니다.",
+        extra_components=[{"type": 1, "components": [
+            {"type": 2, "style": 3, "label": "내 포인트 조회", "emoji": {"name": "💰"},
+             "custom_id": "point_balance_view"}]}]
+    )
+    await interaction.client.http.request(
+        discord.http.Route("POST", f"/interactions/{interaction.id}/{interaction.token}/callback"),
+        json={"type": 4, "data": payload}
+    )
+
+
+async def show_my_points(interaction: discord.Interaction):
+    if interaction.guild is None:
+        await interaction.response.send_message("❌ 서버에서 포인트를 조회해 주세요.", ephemeral=True)
+        return
+    if bot.db_pool is None:
+        await interaction.response.send_message("❌ DB가 연결되지 않았습니다.", ephemeral=True)
+        return
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    async with bot.db_pool.acquire() as conn:
+        balance = await get_balance(conn, interaction.guild.id, interaction.user.id)
+    await interaction.followup.send(
+        f"## 💰 내 포인트 조회\n\n현재 보유 포인트: **{balance:,}P**",
+        ephemeral=True, allowed_mentions=discord.AllowedMentions.none()
+    )
+
+
 @bot.tree.command(name="편의점주소", description="GS25와 CU의 편의점 주소 조회 패널을 생성합니다.")
 async def send_store_lookup_panel(interaction: discord.Interaction):
     await interaction.client.http.request(
@@ -586,9 +619,10 @@ async def send_store_lookup_panel(interaction: discord.Interaction):
 
 
 @bot.tree.command(name="채팅포인트채널", description="채팅 보상과 5분 간격 @here 안내 채널을 설정합니다. (관리자 전용)")
-@app_commands.describe(채널="포인트를 적립할 텍스트 채널. 생략하면 현재 채널", 활성화="끄면 적립과 자동 안내를 중지합니다.")
-async def set_chat_points_channel(interaction: discord.Interaction, 채널: discord.TextChannel = None, 활성화: bool = True):
-    await configure_chat_points(interaction, 채널, 활성화)
+@app_commands.describe(채널="포인트를 적립할 텍스트 채널. 생략하면 현재 채널", 활성화="끄면 적립과 자동 안내를 중지합니다.", 지급주기분="랜덤 1명에게 지급할 주기 (1~1440분, 기본 1분)")
+async def set_chat_points_channel(interaction: discord.Interaction, 채널: discord.TextChannel = None, 활성화: bool = True,
+                                  지급주기분: app_commands.Range[int, 1, 1440] = 1):
+    await configure_chat_points(interaction, 채널, 활성화, 지급주기분)
 
 
 @bot.tree.command(name="유저정보", description="특정 유저가 등록한 배송 및 구매 정보를 조회합니다.")
@@ -2543,6 +2577,10 @@ async def on_interaction(interaction: discord.Interaction):
         
     custom_id = interaction.data.get("custom_id", "")
 
+    if custom_id == "point_balance_view":
+        await show_my_points(interaction)
+        return
+
     if custom_id == "store_address_brand":
         await handle_brand_selection(interaction)
         return
@@ -2609,6 +2647,9 @@ async def on_interaction(interaction: discord.Interaction):
 
     # 정보 패널 처리
     if custom_id in ["info_register", "info_edit", "info_view", "info_anon_toggle"]:
+        if interaction.guild is None or bot.db_pool is None:
+            await interaction.response.send_message("❌ 서버와 DB 연결을 확인해 주세요.", ephemeral=True)
+            return
         async with bot.db_pool.acquire() as conn:
             user_data = await conn.fetchrow('SELECT * FROM user_info WHERE user_id = $1', interaction.user.id)
             
@@ -2622,14 +2663,17 @@ async def on_interaction(interaction: discord.Interaction):
                 await interaction.response.send_modal(UserInfoModal(existing_data=user_data))
                 
             elif custom_id == "info_view":
-                if not user_data: 
-                    await interaction.response.send_message("❌ 먼저 등록해 주시기 바랍니다.", ephemeral=True)
-                    return
+                point_balance = await get_balance(conn, interaction.guild.id, interaction.user.id)
+                if not user_data:
+                    user_data = {"name": "미등록", "contact": "미등록", "address": "미등록",
+                                 "cvs": "미등록", "is_anonymous": False}
                     
                 anon_text = "🟢 켜짐 (익명 구매 활성화)" if user_data['is_anonymous'] else "🔴 꺼짐 (닉네임 공개 구매)"
                 
                 view_content = (
-                    "## 📋 내 배송 정보 조회\n\n"
+                    "## 📋 내 정보 조회\n\n"
+                    "`💰`**현재 보유 포인트**\n"
+                    f"`{point_balance:,}P`\n\n"
                     "`👤`**이름**\n"
                     f"`{user_data['name']}`\n\n"
                     "`📞`**연락처**\n"
