@@ -114,11 +114,18 @@ def _format_time(value):
         return safe_text(value, "시간 미제공", 60)
 
 
+def _format_status(value, limit=180):
+    if isinstance(value, str):
+        # 사이트가 완성된 문장 뒤에 덧붙인 중복 어미만 제거합니다.
+        value = re.sub(r"(다[.!?。])\s*하였습니다[.!?。]?\s*$", r"\1", value)
+    return safe_text(value, limit=limit)
+
+
 def format_tracking_result(courier_name, number, data):
     content = (
         f"## 📦 {safe_text(courier_name)}\n\n"
         f"운송장 번호 : `{normalize_waybill(number)}`\n"
-        f"현재 상태 : {safe_text(data.get('status'))}\n"
+        f"현재 상태 : {_format_status(data.get('status'))}\n"
         f"현재 위치 : {safe_text(data.get('location'))}\n\n"
         f"= 받는분 정보 =\n"
         f"받는분 : {safe_text(data.get('receiver'))}\n\n"
@@ -138,7 +145,7 @@ def format_tracking_result(courier_name, number, data):
         entry = (
             f"[ {_format_time(item.get('time'))} ]\n"
             f"+ 위치: {safe_text(location)}\n"
-            f"+ 상태: {safe_text(item.get('description') or status, limit=300)}\n\n"
+            f"+ 상태: {_format_status(item.get('description') or status, limit=300)}\n\n"
         )
         if len(content) + len(entry) > 3700:
             content += f"\n이전 이력 {len(history) - index}건은 메시지 길이 제한으로 생략했습니다."

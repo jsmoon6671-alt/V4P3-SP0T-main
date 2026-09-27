@@ -48,9 +48,34 @@ def create_v2_payload(content: str, color: int = 0x32CD32, extra_components: lis
         ]
     }
 
+class AdminCommandTree(app_commands.CommandTree):
+    async def interaction_check(self, interaction: discord.Interaction):
+        data = interaction.data or {}
+        # 모든 하위 명령에도 적용하며, 후기작성만 기존 구매자 검사를 따릅니다.
+        is_review = data.get("type", 1) == 1 and data.get("name") == "후기작성"
+        permissions = getattr(interaction.user, "guild_permissions", None)
+        if interaction.guild is not None and (is_review or (permissions and permissions.administrator)):
+            return True
+
+        if interaction.type == discord.InteractionType.autocomplete:
+            await interaction.response.autocomplete([])
+        else:
+            message = "❌ 서버에서만 사용할 수 있습니다." if interaction.guild is None else "❌ 관리자만 사용할 수 있습니다."
+            await interaction.response.send_message(message, ephemeral=True)
+        return False
+
+    async def sync(self, *, guild=None):
+        # Discord의 명령 목록 권한과 봇 내부의 실행 권한을 함께 설정합니다.
+        for command in self.get_commands(guild=guild):
+            is_review = isinstance(command, app_commands.Command) and command.name == "후기작성"
+            command.default_permissions = None if is_review else discord.Permissions(administrator=True)
+            command.guild_only = True
+        return await super().sync(guild=guild)
+
+
 class MyBot(commands.Bot):
     def __init__(self):
-        super().__init__(command_prefix='!', intents=intents)
+        super().__init__(command_prefix='!', intents=intents, tree_cls=AdminCommandTree)
         self.db_pool = None
 
     async def setup_hook(self):
