@@ -19,6 +19,11 @@ from chat_points import (
     initialize_chat_points_schema, ChatPointsCog,
     configure_chat_points, handle_reward_interaction, configure_reward_log,
 )
+from join_applications import (
+    initialize_join_application_schema, set_alert_channel, set_staff_role,
+    normalize_questions, create_application_panel, handle_application_button,
+    handle_application_decision,
+)
 from loyalty_points import (
     REVIEW_GUIDE, PointsError, initialize_points_schema, get_balance,
     award_review_points, parse_amount, parse_points, request_payment,
@@ -231,6 +236,7 @@ class MyBot(commands.Bot):
                 await initialize_points_schema(conn)
                 await initialize_chat_points_schema(conn)
                 await initialize_join_logs(conn)
+                await initialize_join_application_schema(conn)
         else:
             print("⚠️ DATABASE_URL이 설정되지 않아 DB 기능을 사용할 수 없습니다.")
 
@@ -403,6 +409,33 @@ async def set_join_log_channel(interaction: discord.Interaction, 채널: discord
         return
     await update_setting(interaction, "join_log_channel_id", 채널.id,
                          f"✅ 입장로그 채널이 {채널.mention}(으)로 설정되었습니다. 새 멤버가 입장하면 환영 메시지와 서버 이미지를 보냅니다.")
+
+
+@bot.tree.command(name="가입지원알림", description="가입 지원서와 관리진 멘션을 보낼 채널을 설정합니다. (관리자 전용)")
+@app_commands.describe(채널="가입 지원서 알림을 받을 텍스트 채널")
+async def set_join_application_alert(interaction: discord.Interaction, 채널: discord.TextChannel):
+    await set_alert_channel(interaction, 채널)
+
+
+@bot.tree.command(name="관리진", description="가입 지원서 알림에서 멘션할 관리진 역할을 설정합니다. (관리자 전용)")
+@app_commands.describe(역할="지원서 접수 시 멘션할 관리진 역할")
+async def set_join_application_staff(interaction: discord.Interaction, 역할: discord.Role):
+    await set_staff_role(interaction, 역할)
+
+
+@bot.tree.command(name="가입지원패널", description="유저가 작성할 가입 지원서 패널을 생성합니다. (관리자 전용)")
+@app_commands.describe(
+    질문1="지원서 첫 번째 질문", 질문2="두 번째 질문 (선택)", 질문3="세 번째 질문 (선택)",
+    질문4="네 번째 질문 (선택)", 질문5="다섯 번째 질문 (선택)",
+)
+async def send_join_application_panel(interaction: discord.Interaction, 질문1: str, 질문2: str = None,
+                                      질문3: str = None, 질문4: str = None, 질문5: str = None):
+    try:
+        questions = normalize_questions(질문1, 질문2, 질문3, 질문4, 질문5)
+    except ValueError as exc:
+        await interaction.response.send_message(f"❌ {exc}", ephemeral=True)
+        return
+    await create_application_panel(interaction, questions)
 
 
 @bot.event
@@ -2633,6 +2666,14 @@ async def on_interaction(interaction: discord.Interaction):
         return
         
     custom_id = interaction.data.get("custom_id", "")
+
+    if custom_id.startswith("join_application_decision:"):
+        await handle_application_decision(interaction, bot.db_pool)
+        return
+
+    if custom_id.startswith("join_application:"):
+        await handle_application_button(interaction, bot.db_pool)
+        return
 
     if custom_id == "point_balance_view":
         await show_my_points(interaction)
