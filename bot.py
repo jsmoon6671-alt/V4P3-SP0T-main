@@ -11,6 +11,7 @@ import aiohttp
 import chat_exporter
 import io
 import asyncio
+import logging
 from bs4 import BeautifulSoup
 from event_broadcast import register_event_command
 from store_lookup import brand_selector, lookup_panel, handle_brand_selection
@@ -78,6 +79,10 @@ class AdminCommandTree(app_commands.CommandTree):
             command.default_permissions = None if is_review else discord.Permissions(administrator=True)
             command.guild_only = True
         return await super().sync(guild=guild)
+
+
+async def initialize_join_logs(conn):
+    await conn.execute('ALTER TABLE guild_settings ADD COLUMN IF NOT EXISTS join_log_channel_id BIGINT;')
 
 
 class MyBot(commands.Bot):
@@ -225,6 +230,7 @@ class MyBot(commands.Bot):
                         pass
                 await initialize_points_schema(conn)
                 await initialize_chat_points_schema(conn)
+                await initialize_join_logs(conn)
         else:
             print("⚠️ DATABASE_URL이 설정되지 않아 DB 기능을 사용할 수 없습니다.")
 
@@ -383,6 +389,51 @@ async def set_account_info(interaction: discord.Interaction, 은행명: str, 계
 @bot.tree.command(name="결제승인채널", description="결제 승인 패널이 올라올 채널을 설정합니다.")
 async def set_approval_channel(interaction: discord.Interaction, 채널: discord.TextChannel):
     await update_setting(interaction, "approval_channel_id", 채널.id, f"✅ 결제 승인 채널이 {채널.mention}(으)로 설정되었습니다.")
+
+
+@bot.tree.command(name="입장로그", description="새 멤버의 환영 컨테이너를 보낼 채널을 설정합니다. (관리자 전용)")
+@app_commands.describe(채널="입장 환영 메시지를 보낼 텍스트 채널")
+async def set_join_log_channel(interaction: discord.Interaction, 채널: discord.TextChannel):
+    if interaction.guild is None or 채널.guild.id != interaction.guild.id:
+        await interaction.response.send_message("❌ 이 서버의 텍스트 채널을 선택해 주세요.", ephemeral=True)
+        return
+    permissions = 채널.permissions_for(interaction.guild.me)
+    if not (permissions.view_channel and permissions.send_messages):
+        await interaction.response.send_message("❌ 봇이 해당 채널을 보고 메시지를 보낼 수 있도록 권한을 설정해 주세요.", ephemeral=True)
+        return
+    await update_setting(interaction, "join_log_channel_id", 채널.id,
+                         f"✅ 입장로그 채널이 {채널.mention}(으)로 설정되었습니다. 새 멤버가 입장하면 환영 메시지와 서버 이미지를 보냅니다.")
+
+
+@bot.event
+async def on_member_join(member: discord.Member):
+    if bot.db_pool is None:
+        return
+    try:
+        async with bot.db_pool.acquire() as conn:
+            channel_id = await conn.fetchval('SELECT join_log_channel_id FROM guild_settings WHERE guild_id = $1', member.guild.id)
+        if channel_id is None:
+            return
+        count = member.guild.member_count
+        if count is None:
+            count = len(member.guild.members)
+        content = (
+            f"### **{member.mention}님, 환영합니다!**\n\n"
+            "- V4P3 SP0T에 오신것을 환영 합니다!\n\n"
+            f"> 현재 서버 총인원 : {count:,}명\n\n"
+            "<#1553617924487651348> 채널에서 인증을 하시면 서버 이용이 가능 합니다!\n\n"
+            "<#1553642147490697306> 채널을 꼭 확인해 주세요!"
+        )
+        media = []
+        if member.guild.icon:
+            media.append({"type": 12, "items": [{"media": {"url": str(member.guild.icon.with_size(512).url)},
+                                                "description": "서버 이미지"}]})
+        payload = create_v2_payload(content, extra_components=media)
+        payload["allowed_mentions"] = {"parse": [], "users": [str(member.id)]}
+        await bot.http.request(discord.http.Route("POST", f"/channels/{channel_id}/messages"), json=payload)
+    except Exception:
+        logging.exception("입장로그 전송 실패: guild=%s user=%s", member.guild.id, member.id)
+
 
 @bot.tree.command(name="구매로그", description="구매 승인 시 로그가 올라올 채널을 설정합니다.")
 async def set_log_channel(interaction: discord.Interaction, 채널: discord.TextChannel):
