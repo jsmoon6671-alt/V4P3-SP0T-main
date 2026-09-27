@@ -16,8 +16,11 @@ HEADERS = {
     "Accept": "application/json",
 }
 
-# 기존에 전송된 패널 중 서비스가 동일한 항목만 변환합니다.
-LEGACY_CARRIERS = {"04": "kr.cjlogistics", "01": "kr.epost"}
+# 기존 패널의 코드도 새 패널과 동일한 사이트 조회 항목으로 연결합니다.
+LEGACY_CARRIERS = {
+    "24": "kr.cvsnet", "46": "kr.cupost",
+    "04": "kr.cjlogistics", "01": "kr.epost",
+}
 
 
 class DeliveryTrackingError(Exception):
@@ -70,11 +73,6 @@ async def fetch_carriers():
 
 async def track_shipment(carrier_id, waybill):
     number = normalize_waybill(waybill)
-    if carrier_id in {"24", "46"}:
-        raise DeliveryTrackingError(
-            "URL.KR 사이트에는 GS반값택배·CU알뜰택배 전용 조회 항목이 없습니다. "
-            "일반 편의점택배는 새 /배송조회 패널에서 선택하고, 반값·알뜰택배는 해당 택배사 공식 사이트에서 확인해 주세요."
-        )
     carrier_id = LEGACY_CARRIERS.get(carrier_id, carrier_id)
     if not isinstance(carrier_id, str) or not re.fullmatch(r"kr\.[a-z0-9_]+", carrier_id):
         raise DeliveryTrackingError("택배사 정보가 올바르지 않습니다. 새 /배송조회 패널을 이용해 주세요.")
@@ -147,4 +145,4 @@ def format_tracking_result(courier_name, number, data):
             content += f"\n이전 이력 {len(history) - index}건은 메시지 길이 제한으로 생략했습니다."
             break
         content += entry
-    return content.rstrip() + f"\n\n조회 출처: [URL.KR 배송조회]({BASE_URL})"
+    return content.rstrip()

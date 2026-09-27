@@ -14,7 +14,7 @@ import asyncio
 from bs4 import BeautifulSoup
 from event_broadcast import register_event_command
 from delivery_tracking import (
-    DeliveryTrackingError, fetch_carriers, format_tracking_result,
+    DeliveryTrackingError, format_tracking_result,
     normalize_waybill, safe_text, track_shipment,
 )
 
@@ -243,14 +243,12 @@ class TrackingModal(discord.ui.Modal):
 @bot.tree.command(name="배송조회", description="배송 조회 패널을 띄워줍니다.")
 async def send_tracking_panel(interaction: discord.Interaction):
     await interaction.response.defer()
-    try:
-        carriers = await fetch_carriers()
-    except DeliveryTrackingError as exc:
-        await interaction.followup.send(
-            f"❌ 배송조회 패널을 만들 수 없습니다: {safe_text(str(exc), limit=600)}",
-            ephemeral=True, allowed_mentions=discord.AllowedMentions.none(),
-        )
-        return
+    carriers = [
+        {"name": "GS반값택배", "id": "kr.cvsnet", "emoji": "🏪"},
+        {"name": "CU", "id": "kr.cupost", "emoji": "🏪"},
+        {"name": "CJ대한통운", "id": "kr.cjlogistics", "emoji": "🚚"},
+        {"name": "우체국", "id": "kr.epost", "emoji": "📮"},
+    ]
 
     main_content = (
         "## 📦 배송조회\n\n"
@@ -260,10 +258,7 @@ async def send_tracking_panel(interaction: discord.Interaction):
         "- `📦` 이용방법\n"
         "```아래에서 배송조회할 택배사를 선택해 주세요.```\n"
         "```택배 운송장 번호를 입력해 주세요.```\n"
-        "```배송 현황을 쉽고 빠르게 확인해 보세요.```\n"
-        "- 조회 출처: [URL.KR 배송조회](https://url.kr/p/delivery/)\n"
-        "- GS Postbox·CU 편의점택배는 사이트에서 제공하는 항목입니다. "
-        "GS반값·CU알뜰 전용 항목은 제공되지 않습니다."
+        "```배송 현황을 쉽고 빠르게 확인해 보세요.```"
     )
 
     main_payload = {
@@ -288,7 +283,7 @@ async def send_tracking_panel(interaction: discord.Interaction):
                                     {
                                         "label": carrier["name"],
                                         "value": f"{carrier['name']}|{carrier['id']}",
-                                        "emoji": {"name": "📦"},
+                                        "emoji": {"name": carrier["emoji"]},
                                     }
                                     for carrier in carriers
                                 ]
