@@ -702,8 +702,8 @@ async def send_store_lookup_panel(interaction: discord.Interaction):
     )
 
 
-@bot.tree.command(name="채팅포인트채널", description="채팅 보상과 5분 간격 @here 안내 채널을 설정합니다. (관리자 전용)")
-@app_commands.describe(채널="포인트를 적립할 텍스트 채널. 생략하면 현재 채널", 활성화="끄면 적립과 자동 안내를 중지합니다.", 지급주기분="랜덤 1명에게 지급할 주기 (1~1440분, 기본 1분)")
+@bot.tree.command(name="채팅포인트채널", description="채팅 활동 포인트를 지급할 채널을 설정합니다. (관리자 전용)")
+@app_commands.describe(채널="포인트를 적립할 텍스트 채널. 생략하면 현재 채널", 활성화="끄면 채팅 포인트 적립을 중지합니다.", 지급주기분="랜덤 1명에게 지급할 주기 (1~1440분, 기본 1분)")
 async def set_chat_points_channel(interaction: discord.Interaction, 채널: discord.TextChannel = None, 활성화: bool = True,
                                   지급주기분: app_commands.Range[int, 1, 1440] = 1):
     await configure_chat_points(interaction, 채널, 활성화, 지급주기분)
@@ -1088,7 +1088,7 @@ async def send_custom_message(interaction: discord.Interaction, 내용: str):
 # ---------------------------------------------------------
 # [출퇴근 시스템]
 # ---------------------------------------------------------
-@bot.tree.command(name="출퇴근알림", description="출근 및 퇴근 알림 로그가 전송될 채널을 설정합니다. (관리자 전용)")
+@bot.tree.command(name="출퇴근알림", description="출근·퇴근·외출·취침 로그가 전송될 채널을 설정합니다. (관리자 전용)")
 async def set_clock_log_channel(interaction: discord.Interaction, 채널: discord.TextChannel):
     if not interaction.user.guild_permissions.administrator and not interaction.user.guild_permissions.manage_channels:
         await interaction.response.send_message("❌ 관리자만 설정할 수 있습니다.", ephemeral=True)
@@ -1113,7 +1113,7 @@ async def set_clock_vc(interaction: discord.Interaction, 출근채널: discord.V
         
     await interaction.response.send_message(f"✅ 출근 음성 채널: {출근채널.mention}\n✅ 퇴근 음성 채널: {퇴근채널.mention}\n설정이 완료되었습니다.", ephemeral=True)
 
-@bot.tree.command(name="출퇴근패널", description="직원들이 출근 및 퇴근을 기록할 수 있는 버튼 패널을 생성합니다. (관리자 전용)")
+@bot.tree.command(name="출퇴근패널", description="직원 상태를 기록할 수 있는 출퇴근 버튼 패널을 생성합니다. (관리자 전용)")
 async def send_clock_panel(interaction: discord.Interaction):
     if not interaction.user.guild_permissions.administrator and not interaction.user.guild_permissions.manage_channels:
         await interaction.response.send_message("❌ 관리자만 생성할 수 있습니다.", ephemeral=True)
@@ -1121,7 +1121,7 @@ async def send_clock_panel(interaction: discord.Interaction):
         
     content = (
         "## 🏢 출퇴근 기록\n\n"
-        "- 아래 버튼을 눌러 출근 또는 퇴근을 기록해 주시기 바랍니다.\n"
+        "- 아래 버튼을 눌러 출근·퇴근·외출·취침 상태를 기록해 주세요.\n"
         "- 기록 시 지정된 알림 채널에 로그가 전송됩니다."
     )
     
@@ -1141,6 +1141,20 @@ async def send_clock_panel(interaction: discord.Interaction):
                 "label": "퇴근하기",
                 "custom_id": "clock_out",
                 "emoji": {"name": "🔴"}
+            },
+            {
+                "type": 2,
+                "style": 1,
+                "label": "외출하기",
+                "custom_id": "clock_away",
+                "emoji": {"name": "🚶"}
+            },
+            {
+                "type": 2,
+                "style": 2,
+                "label": "취침하기",
+                "custom_id": "clock_sleep",
+                "emoji": {"name": "😴"}
             }
         ]
     }]
@@ -2688,7 +2702,7 @@ async def on_interaction(interaction: discord.Interaction):
         return
 
     # [출퇴근 버튼 처리]
-    if custom_id in ["clock_in", "clock_out"]:
+    if custom_id in ["clock_in", "clock_out", "clock_away", "clock_sleep"]:
         await interaction.response.defer(ephemeral=True)
         async with bot.db_pool.acquire() as conn:
             settings = await conn.fetchrow('SELECT * FROM guild_settings WHERE guild_id = $1', interaction.guild.id)
@@ -2697,8 +2711,14 @@ async def on_interaction(interaction: discord.Interaction):
             await interaction.followup.send("❌ 서버 설정이 등록되지 않았습니다.", ephemeral=True)
             return
             
-        action_name = "출근" if custom_id == "clock_in" else "퇴근"
-        vc_id = settings['clock_in_vc'] if custom_id == "clock_in" else settings['clock_out_vc']
+        clock_actions = {
+            "clock_in": ("출근", "🏢", 0x32CD32, "clock_in_vc"),
+            "clock_out": ("퇴근", "🏠", 0xFF0000, "clock_out_vc"),
+            "clock_away": ("외출", "🚶", 0x3498DB, None),
+            "clock_sleep": ("취침", "😴", 0x5865F2, None),
+        }
+        action_name, action_emoji, log_color, vc_setting = clock_actions[custom_id]
+        vc_id = settings[vc_setting] if vc_setting else None
         log_ch_id = settings['clock_log_channel']
         
         # 봇 음성 채널 접속 처리
@@ -2721,11 +2741,11 @@ async def on_interaction(interaction: discord.Interaction):
             if log_ch:
                 now_str = datetime.datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S")
                 log_content = (
-                    f"## 🏢 {action_name} 알림\n\n"
+                    f"## {action_emoji} {action_name} 알림\n\n"
                     f"`👤` **유저:** {interaction.user.mention}\n"
                     f"`🕒` **시간:** `{now_str}`\n"
                 )
-                log_payload = create_v2_payload(log_content, color=0x32CD32 if custom_id == "clock_in" else 0xFF0000)
+                log_payload = create_v2_payload(log_content, color=log_color)
                 try:
                     await interaction.client.http.request(
                         discord.http.Route("POST", f"/channels/{log_ch.id}/messages"),

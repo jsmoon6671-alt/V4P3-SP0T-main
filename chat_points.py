@@ -110,17 +110,17 @@ async def configure_channel(conn, guild_id, channel_id, enabled, now, interval_m
     anchor = now.astimezone(UTC)
     await conn.execute('''
         INSERT INTO chat_point_settings
-            (guild_id, channel_id, enabled, next_announcement, reward_interval_minutes, reward_anchor, next_reward_at)
-        VALUES ($1, $2, $3, $4, $5, $6, $7)
+            (guild_id, channel_id, enabled, reward_interval_minutes, reward_anchor, next_reward_at)
+        VALUES ($1, $2, $3, $4, $5, $6)
         ON CONFLICT (guild_id) DO UPDATE SET channel_id = EXCLUDED.channel_id,
-            enabled = EXCLUDED.enabled, next_announcement = EXCLUDED.next_announcement,
+            enabled = EXCLUDED.enabled,
             reward_interval_minutes = CASE WHEN EXCLUDED.enabled
                 THEN EXCLUDED.reward_interval_minutes ELSE chat_point_settings.reward_interval_minutes END,
             reward_anchor = CASE WHEN EXCLUDED.enabled
                 THEN EXCLUDED.reward_anchor ELSE chat_point_settings.reward_anchor END,
             next_reward_at = CASE WHEN EXCLUDED.enabled
                 THEN EXCLUDED.next_reward_at ELSE chat_point_settings.next_reward_at END
-    ''', guild_id, channel_id, enabled, now + dt.timedelta(minutes=5), interval_minutes, anchor,
+    ''', guild_id, channel_id, enabled, interval_minutes, anchor,
          anchor + dt.timedelta(minutes=interval_minutes))
 
 
@@ -278,16 +278,6 @@ def as_datetime(value):
     return value if isinstance(value, dt.datetime) else dt.datetime.fromisoformat(str(value).replace('Z', '+00:00'))
 
 
-def announcement_payload(interval_minutes=1):
-    return {"flags": 1 << 15, "allowed_mentions": {"parse": ["everyone"]}, "components": [
-        {"type": 10, "content": "@here"},
-        {"type": 17, "accent_color": 0x32CD32, "components": [
-            {"type": 10, "content": f"## 💬 채팅 활동 포인트\n**{interval_minutes}분마다** 해당 주기 동안 채팅한 유저 중 **랜덤 1명**에게 **10P~50P**를 지급합니다.\n채팅한 유저 모두가 후보이며, 같은 주기에 여러 메시지를 보내도 당첨 확률은 동일합니다."},
-            {"type": 14, "divider": True, "spacing": 1},
-            {"type": 10, "content": "🎁 매일 가장 많이 채팅한 **1명**에게 랜덤박스를 드립니다!\n한국 시간 자정에 전날 활동을 정산하며, 박스를 열면 **100P~300P**를 받을 수 있습니다.\n지급 알림은 DM으로 전송됩니다. 아래에서 본인만 보이는 보상 내역을 확인하세요."},
-            {"type": 1, "components": [{"type": 2, "style": 1, "label": "내 보상 확인", "custom_id": REWARDS_ID}]}]}]}
-
-
 async def handle_reward_interaction(interaction, pool):
     if pool is None:
         await interaction.response.send_message("데이터베이스가 연결되지 않았습니다.", ephemeral=True)
@@ -393,9 +383,6 @@ class ChatPointsCog(commands.Cog):
                         await settle_activity(conn, guild_id, now, include_daily=daily_due)
                     self._daily_checked[guild_id] = closed_day
                     await self.notify_rewards(guild_id)
-                if setting['enabled']:
-                    if as_datetime(setting['next_announcement']) <= now:
-                        await self.send_announcement(guild_id, now)
                 if now >= self._next_log_check:
                     await self.send_reward_logs(guild_id, now)
             except Exception:
@@ -436,30 +423,7 @@ class ChatPointsCog(commands.Cog):
                                 "아래 버튼을 눌러 열면 **100P~300P**를 획득합니다.")
                         await user.send(text, view=box_button(guild_id), allowed_mentions=discord.AllowedMentions.none())
                 except discord.HTTPException:
-                    LOG.info("채팅 보상 DM 전송 실패: guild=%s user=%s (채널의 내 보상 확인 이용)", guild_id, row['user_id'])
-
-    async def send_announcement(self, guild_id, now):
-        async with self.bot.db_pool.acquire() as conn:
-            # 여러 프로세스나 재연결에서도 안내를 중복 예약하지 않습니다.
-            setting = await conn.fetchrow('''
-                UPDATE chat_point_settings SET next_announcement = next_announcement
-                    + (FLOOR(EXTRACT(EPOCH FROM ($2::timestamptz - next_announcement)) / 300) + 1)
-                      * INTERVAL '5 minutes'
-                WHERE guild_id = $1 AND enabled AND next_announcement <= $2
-                RETURNING channel_id, reward_interval_minutes
-            ''', guild_id, now)
-        if setting is None:
-            return
-        channel_id = setting['channel_id']
-        channel = self.bot.get_channel(channel_id)
-        if channel is None:
-            try:
-                channel = await self.bot.fetch_channel(channel_id)
-            except discord.HTTPException:
-                LOG.warning("채팅 안내 채널 접근 실패: guild=%s channel=%s", guild_id, channel_id)
-                return
-        await self.bot.http.request(discord.http.Route("POST", f"/channels/{channel.id}/messages"),
-                                    json=announcement_payload(setting['reward_interval_minutes']))
+                    LOG.info("채팅 보상 DM 전송 실패: guild=%s user=%s (/포인트조회패널 이용)", guild_id, row['user_id'])
 
     async def send_reward_logs(self, guild_id, now):
         async with self.bot.db_pool.acquire() as conn:
@@ -520,8 +484,8 @@ async def configure_chat_points(interaction, channel, enabled, interval_minutes=
         await interaction.response.send_message("이 서버의 텍스트 채널을 선택해 주세요.", ephemeral=True)
         return
     permissions = channel.permissions_for(interaction.guild.me)
-    if enabled and not (permissions.view_channel and permissions.send_messages):
-        await interaction.response.send_message("봇이 해당 채널을 보고 메시지를 보낼 수 있도록 권한을 설정해 주세요.", ephemeral=True)
+    if enabled and not permissions.view_channel:
+        await interaction.response.send_message("봇이 해당 채널을 볼 수 있도록 권한을 설정해 주세요.", ephemeral=True)
         return
     await interaction.response.defer(ephemeral=True)
     async with pool.acquire() as conn:
@@ -530,11 +494,9 @@ async def configure_chat_points(interaction, channel, enabled, interval_minutes=
         text = (f"✅ {channel.mention}에서 채팅 포인트를 지급합니다.\n"
                 f"{interval_minutes}분마다 해당 주기 동안 채팅한 유저 중 랜덤 1명에게 10P~50P 지급.\n"
                 "한국 시간 자정에 전날 최다 채팅 활동자 1명에게 랜덤박스 지급.\n"
-                "명령어 실행 시각부터 5분마다 @here 안내를 보내며, 알림은 DM·내 보상 확인으로 확인할 수 있습니다.")
-        if not permissions.mention_everyone:
-            text += "\n현재 봇에게 @everyone·@here 멘션 권한이 없어 @here 알림이 울리지 않습니다."
+                "보상 알림은 당첨된 유저의 DM으로 전송됩니다.")
     else:
-        text = "✅ 채팅 포인트 적립과 5분 간격 안내를 중지했습니다. 이미 기록된 활동과 보상은 정산합니다."
+        text = "✅ 채팅 포인트 적립을 중지했습니다. 이미 기록된 활동과 보상은 정산합니다."
     await interaction.followup.send(text, ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
 
 
