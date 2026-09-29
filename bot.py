@@ -36,6 +36,7 @@ from delivery_tracking import (
 
 # 한국 표준시(KST) 설정
 KST = datetime.timezone(datetime.timedelta(hours=9))
+ANONYMOUS_BUYER_ROLE_ID = 1553595299560161381
 
 # 1. 봇 권한(Intents) 설정
 intents = discord.Intents.default()
@@ -63,6 +64,29 @@ def create_v2_payload(content: str, color: int = 0x32CD32, extra_components: lis
             }
         ]
     }
+
+
+def create_tier_upgrade_payload(buyer_id: int, is_anonymous: bool, role_mention: str, total_spent: int):
+    if is_anonymous:
+        customer_mention = f"<@&{ANONYMOUS_BUYER_ROLE_ID}>"
+        allowed_mentions = {"parse": [], "roles": [str(ANONYMOUS_BUYER_ROLE_ID)]}
+    else:
+        customer_mention = f"<@{buyer_id}>"
+        allowed_mentions = {"parse": [], "users": [str(buyer_id)]}
+
+    content = (
+        "## 🎉 VIP 등급 업그레이드!\n\n"
+        "`👤` **고객**\n"
+        f"{customer_mention}\n\n"
+        "`✨` **새로운 등급**\n"
+        f"{role_mention}\n\n"
+        "`💰` **누적 구매액**\n"
+        f"`{total_spent:,}원`\n\n"
+        "**```앞으로도 많은 이용 부탁드립니다!```**"
+    )
+    payload = create_v2_payload(content)
+    payload["allowed_mentions"] = allowed_mentions
+    return payload
 
 class AdminCommandTree(app_commands.CommandTree):
     async def interaction_check(self, interaction: discord.Interaction):
@@ -3085,9 +3109,9 @@ async def on_interaction(interaction: discord.Interaction):
                 return
             if action == 'approve':
                 amount_int = parse_amount(order['amount'])
-                user_info_row = await conn.fetchrow('SELECT total_spent, is_anonymous FROM user_info WHERE user_id = $1', order['buyer_id'])
+                user_info_row = await conn.fetchrow('SELECT total_spent FROM user_info WHERE user_id = $1', order['buyer_id'])
                 current_total = user_info_row['total_spent'] if user_info_row else amount_int
-                is_anon = user_info_row['is_anonymous'] if user_info_row else False
+                is_anon = bool(order['is_anonymous'])
                 
                 member = interaction.guild.get_member(order['buyer_id'])
                 
@@ -3116,33 +3140,9 @@ async def on_interaction(interaction: discord.Interaction):
                             if settings and settings.get('tier_log_channel_id'):
                                 tier_channel = interaction.guild.get_channel(settings['tier_log_channel_id'])
                                 if tier_channel:
-                                    mention_str = "<@&1553595299560161381>" if is_anon else member.mention
-                                    tier_msg = (
-                                        "## 🎉 VIP 등급 업그레이드!\n\n"
-                                        "`👤` **고객**\n"
-                                        f"{mention_str}\n\n"
-                                        "`✨` **새로운 등급**\n"
-                                        f"{role.mention}\n\n"
-                                        "`💰` **누적 구매액**\n"
-                                        f"`{current_total:,}원`\n\n"
-                                        "**```앞으로도 많은 이용 부탁드립니다!```**"
+                                    tier_payload = create_tier_upgrade_payload(
+                                        order['buyer_id'], is_anon, role.mention, current_total
                                     )
-                                    
-                                    tier_payload = {
-                                        "flags": 1 << 15,
-                                        "components": [
-                                            {
-                                                "type": 17,
-                                                "accent_color": 0x32CD32,
-                                                "components": [
-                                                    {
-                                                        "type": 10, 
-                                                        "content": tier_msg
-                                                    }
-                                                ]
-                                            }
-                                        ]
-                                    }
                                     
                                     await interaction.client.http.request(
                                         discord.http.Route("POST", f"/channels/{tier_channel.id}/messages"),
