@@ -2983,6 +2983,13 @@ async def on_interaction(interaction: discord.Interaction):
                             "type": 1, 
                             "components": [
                                 {
+                                    "type": 2,
+                                    "style": 3,
+                                    "label": "티켓 재개",
+                                    "custom_id": "ticket_reopen",
+                                    "emoji": {"name": "🔓"}
+                                },
+                                {
                                     "type": 2, 
                                     "style": 4, 
                                     "label": "티켓 영구 삭제 및 저장", 
@@ -2999,6 +3006,80 @@ async def on_interaction(interaction: discord.Interaction):
             discord.http.Route("POST", f"/channels/{interaction.channel.id}/messages"), 
             json=close_payload
         )
+        return
+
+    # 닫힌 티켓 재개 버튼
+    if custom_id == "ticket_reopen":
+        if not interaction.user.guild_permissions.administrator and not interaction.user.guild_permissions.manage_channels:
+            await interaction.response.send_message("❌ 관리자만 티켓을 재개할 수 있습니다.", ephemeral=True)
+            return
+        if not bot.db_pool:
+            await interaction.response.send_message("❌ DB 오류가 발생했습니다.", ephemeral=True)
+            return
+
+        await interaction.response.defer(ephemeral=True)
+
+        async with bot.db_pool.acquire() as conn:
+            ticket = await conn.fetchrow('SELECT * FROM tickets WHERE channel_id = $1', interaction.channel.id)
+            settings = await conn.fetchrow('SELECT * FROM guild_settings WHERE guild_id = $1', interaction.guild.id)
+
+        if not ticket:
+            await interaction.followup.send("❌ 티켓 정보를 찾을 수 없습니다.", ephemeral=True)
+            return
+        if not settings:
+            await interaction.followup.send("❌ 서버의 티켓 설정을 찾을 수 없습니다.", ephemeral=True)
+            return
+
+        active_cat_id = settings.get(f"ticket_cat_{ticket['ticket_type']}")
+        active_category = interaction.guild.get_channel(active_cat_id) if active_cat_id else None
+        if not active_category:
+            await interaction.followup.send("❌ 원래 티켓 카테고리를 찾을 수 없습니다. `/티켓카테고리`를 다시 설정해 주세요.", ephemeral=True)
+            return
+
+        member = interaction.guild.get_member(ticket['user_id'])
+        if member is None:
+            try:
+                member = await interaction.guild.fetch_member(ticket['user_id'])
+            except discord.HTTPException:
+                await interaction.followup.send("❌ 티켓을 연 유저가 서버에 없어 티켓을 재개할 수 없습니다.", ephemeral=True)
+                return
+
+        already_open = interaction.channel.category_id == active_cat_id
+        try:
+            await interaction.channel.edit(category=active_category)
+            await interaction.channel.set_permissions(
+                member, view_channel=True, read_messages=True, send_messages=True
+            )
+        except discord.Forbidden:
+            await interaction.followup.send("❌ 봇에 채널 관리 권한이 없어 티켓을 재개할 수 없습니다.", ephemeral=True)
+            return
+        except discord.HTTPException:
+            await interaction.followup.send("❌ Discord에서 티켓을 재개하지 못했습니다. 잠시 후 다시 시도해 주세요.", ephemeral=True)
+            return
+
+        if already_open:
+            await interaction.followup.send("✅ 이미 재개된 티켓입니다. 티켓을 연 유저의 접근 권한을 복구했습니다.", ephemeral=True)
+            return
+
+        reopened_payload = create_v2_payload(
+            f"## 🔓 티켓이 재개되었습니다.\n\n<@{ticket['user_id']}>님이 다시 티켓을 확인하고 대화할 수 있습니다.",
+            color=0x32CD32,
+            extra_components=[{
+                "type": 1,
+                "components": [{
+                    "type": 2,
+                    "style": 4,
+                    "label": "티켓 닫기",
+                    "custom_id": "ticket_close"
+                }]
+            }],
+        )
+        reopened_payload["allowed_mentions"] = {"parse": [], "users": [str(ticket['user_id'])]}
+        await interaction.client.http.request(
+            discord.http.Route("POST", f"/channels/{interaction.channel.id}/messages"),
+            json=reopened_payload,
+        )
+        await interaction.followup.send("✅ 티켓을 재개하고 티켓 생성자의 접근 권한을 복구했습니다.", ephemeral=True)
         return
 
     # 티켓 영구 삭제 버튼
