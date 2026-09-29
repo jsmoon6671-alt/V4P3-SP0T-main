@@ -1448,7 +1448,7 @@ async def create_ticket_channel(interaction: discord.Interaction, t_type: str, t
                 info_content = (
                     "## ⚠️ 구매자 정보 미등록\n\n"
                     f"{interaction.user.mention}님, 아직 배송 정보가 등록되지 않았습니다!\n"
-                    "빠른 발송을 위해 채널 밖에서 <#1544002297825329284> 채널에서 [정보 등록] 버튼을 눌러 배송지를 등록해 주세요."
+                    "빠른 발송을 위해 채널 밖에서 <#1553664818349608960> 채널에서 [정보 등록] 버튼을 눌러 배송지를 등록해 주세요."
                 )
                 color_val = 0xFF0000
                 
