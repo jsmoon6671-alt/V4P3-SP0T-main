@@ -870,10 +870,8 @@ async def send_purchase_panel(interaction: discord.Interaction, 구매자: disco
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10);
         ''', order_id, interaction.guild.id, interaction.channel.id, 구매자.id, 상품, 수량, 입금금액, 'PENDING', is_anon, 포인트사용가능)
 
-    if is_anon:
-        display_buyer = "<@&1553595299560161381>"
-    else:
-        display_buyer = 구매자.mention
+    # 구매 패널에는 익명 설정과 관계없이 실제 구매자를 표시하고 알립니다.
+    display_buyer = 구매자.mention
         
     # 여러 상품 쉼표(,) 입력 시 줄바꿈 처리
     product_list = [p.strip() for p in 상품.split(",") if p.strip()]
@@ -901,6 +899,7 @@ async def send_purchase_panel(interaction: discord.Interaction, 구매자: disco
     
     purchase_payload = {
         "flags": 1 << 15,
+        "allowed_mentions": {"parse": [], "users": [str(구매자.id)]},
         "components": [
             {
                 "type": 17, 
@@ -3250,7 +3249,7 @@ async def on_interaction(interaction: discord.Interaction):
                         
                         buyer_info_txt = (
                             "## 📋 구매자 상세 배송 정보\n\n"
-                            "<@1542872188581838930>\n\n"
+                            "<@259758966043574272>\n\n"
                             f"`🕒` **구매일시:** `{now_kst_str}`\n"
                             f"`🧾` **주문번호:** `{order_id}`\n"
                             f"`👤` **성함:** `{b_name}`\n"
