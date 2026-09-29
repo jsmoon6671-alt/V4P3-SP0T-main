@@ -1542,6 +1542,76 @@ async def set_ticket_log_chan(interaction: discord.Interaction, 채널: discord.
     await update_setting(interaction, "ticket_log_channel_id", 채널.id, f"✅ 로그 채널 설정이 {채널.mention}(으)로 완료되었습니다.")
 
 
+PURCHASE_TICKET_STATUSES = ("구매완료", "상품준비중", "배송중", "배송완료")
+PURCHASE_TICKET_PREFIXES = ("구매문의",) + PURCHASE_TICKET_STATUSES
+
+
+def purchase_ticket_status_name(channel_name: str, status: str) -> str:
+    if status not in PURCHASE_TICKET_STATUSES:
+        raise ValueError("지원하지 않는 티켓 상태입니다.")
+    current_prefix, separator, suffix = channel_name.partition("-")
+    if not separator or not suffix or current_prefix not in PURCHASE_TICKET_PREFIXES:
+        raise ValueError("구매문의 티켓 채널 이름을 확인할 수 없습니다.")
+    updated_name = f"{status}-{suffix}"
+    if len(updated_name) > 100:
+        raise ValueError("변경할 채널 이름이 Discord의 100자 제한을 초과합니다.")
+    return updated_name
+
+
+@bot.tree.command(name="티켓상태", description="현재 구매문의 티켓의 상태를 변경합니다. (관리자 전용)")
+@app_commands.describe(상태="채널 이름에 표시할 구매 처리 상태")
+@app_commands.choices(상태=[
+    app_commands.Choice(name="구매완료", value="구매완료"),
+    app_commands.Choice(name="상품준비중", value="상품준비중"),
+    app_commands.Choice(name="배송중", value="배송중"),
+    app_commands.Choice(name="배송완료", value="배송완료"),
+])
+async def set_ticket_status(interaction: discord.Interaction, 상태: app_commands.Choice[str]):
+    if bot.db_pool is None:
+        await interaction.response.send_message("❌ 데이터베이스가 연결되지 않았습니다.", ephemeral=True)
+        return
+
+    async with bot.db_pool.acquire() as conn:
+        ticket = await conn.fetchrow(
+            'SELECT ticket_type FROM tickets WHERE channel_id = $1', interaction.channel.id
+        )
+
+    if ticket is None:
+        await interaction.response.send_message("❌ 이 명령어는 봇이 생성한 티켓 채널에서만 사용할 수 있습니다.", ephemeral=True)
+        return
+    if ticket['ticket_type'] != "purchase":
+        await interaction.response.send_message("❌ 구매문의 티켓에서만 상태를 변경할 수 있습니다.", ephemeral=True)
+        return
+
+    try:
+        new_name = purchase_ticket_status_name(interaction.channel.name, 상태.value)
+    except ValueError as error:
+        await interaction.response.send_message(f"❌ {error}", ephemeral=True)
+        return
+
+    if new_name == interaction.channel.name:
+        await interaction.response.send_message(f"✅ 이미 **{상태.value}** 상태입니다.", ephemeral=True)
+        return
+
+    old_name = interaction.channel.name
+    try:
+        await interaction.channel.edit(
+            name=new_name,
+            reason=f"{interaction.user}님이 구매 티켓 상태를 {상태.value}(으)로 변경",
+        )
+    except discord.Forbidden:
+        await interaction.response.send_message("❌ 봇에 채널 관리 권한이 없어 이름을 변경할 수 없습니다.", ephemeral=True)
+        return
+    except discord.HTTPException:
+        await interaction.response.send_message("❌ Discord에서 채널 이름을 변경하지 못했습니다. 잠시 후 다시 시도해 주세요.", ephemeral=True)
+        return
+
+    await interaction.response.send_message(
+        f"✅ 티켓 상태를 **{상태.value}**(으)로 변경했습니다.\n`{old_name}` → `{new_name}`",
+        ephemeral=True,
+    )
+
+
 @bot.tree.command(name="문의패널", description="문의(티켓) 생성 패널을 띄웁니다.")
 async def send_support_panel(interaction: discord.Interaction):
     support_content = (
