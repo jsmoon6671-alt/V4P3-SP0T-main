@@ -13,7 +13,7 @@ def maximum_points(balance, amount, allowed=True):
 
 
 REVIEW_GUIDE = (
-    "## **📸 후기 작성 안내**\n\n"
+    "## **후기 작성 안내**\n\n"
     "**`/후기작성` 명령어를 사용해 후기와 사진을 함께 작성해 주세요!**\n\n"
     "**후기 작성 시 랜덤으로 100P \\~ 500P의 포인트가 적립됩니다!**"
 )
