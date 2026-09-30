@@ -38,7 +38,6 @@ from review_watermark import ReviewImageError, watermark_review_image
 
 # 한국 표준시(KST) 설정
 KST = datetime.timezone(datetime.timedelta(hours=9))
-ANONYMOUS_BUYER_ROLE_ID = 1553595299560161381
 
 # 1. 봇 권한(Intents) 설정
 intents = discord.Intents.default()
@@ -68,14 +67,8 @@ def create_v2_payload(content: str, color: int = 0x32CD32, extra_components: lis
     }
 
 
-def create_tier_upgrade_payload(buyer_id: int, is_anonymous: bool, role_mention: str, total_spent: int):
-    if is_anonymous:
-        customer_mention = f"<@&{ANONYMOUS_BUYER_ROLE_ID}>"
-        allowed_mentions = {"parse": [], "roles": [str(ANONYMOUS_BUYER_ROLE_ID)]}
-    else:
-        customer_mention = f"<@{buyer_id}>"
-        allowed_mentions = {"parse": [], "users": [str(buyer_id)]}
-
+def create_tier_upgrade_payload(buyer_id: int, role_mention: str, total_spent: int):
+    customer_mention = f"<@{buyer_id}>"
     content = (
         "## 🎉 VIP 등급 업그레이드!\n\n"
         "`👤` **고객**\n"
@@ -87,7 +80,7 @@ def create_tier_upgrade_payload(buyer_id: int, is_anonymous: bool, role_mention:
         "**```앞으로도 많은 이용 부탁드립니다!```**"
     )
     payload = create_v2_payload(content)
-    payload["allowed_mentions"] = allowed_mentions
+    payload["allowed_mentions"] = {"parse": [], "users": [str(buyer_id)]}
     return payload
 
 
@@ -215,7 +208,8 @@ class MyBot(commands.Bot):
                         review_auto_message_id BIGINT,
                         review_auto_message_channel_id BIGINT,
                         leaderboard_first_role_id BIGINT,
-                        leaderboard_first_user_id BIGINT
+                        leaderboard_first_user_id BIGINT,
+                        anonymous_role_id BIGINT
                     );
                 ''')
                 
@@ -312,7 +306,8 @@ class MyBot(commands.Bot):
                     'ALTER TABLE guild_settings ADD COLUMN review_auto_message_id BIGINT;',
                     'ALTER TABLE guild_settings ADD COLUMN review_auto_message_channel_id BIGINT;',
                     'ALTER TABLE guild_settings ADD COLUMN leaderboard_first_role_id BIGINT;',
-                    'ALTER TABLE guild_settings ADD COLUMN leaderboard_first_user_id BIGINT;'
+                    'ALTER TABLE guild_settings ADD COLUMN leaderboard_first_user_id BIGINT;',
+                    'ALTER TABLE guild_settings ADD COLUMN anonymous_role_id BIGINT;'
                 ]
                 
                 for query in updates:
@@ -559,6 +554,20 @@ async def on_member_join(member: discord.Member):
 async def set_log_channel(interaction: discord.Interaction, 채널: discord.TextChannel):
     await update_setting(interaction, "log_channel_id", 채널.id, f"✅ 구매 로그 채널이 {채널.mention}(으)로 설정되었습니다.")
 
+
+@bot.tree.command(name="익명역할", description="구매로그에서 구매자 대신 표시할 익명 역할을 설정합니다. (관리자 전용)")
+@app_commands.describe(역할="구매로그에 구매자 대신 멘션할 역할을 선택해 주세요.")
+async def set_anonymous_role(interaction: discord.Interaction, 역할: discord.Role):
+    if 역할.is_default():
+        await interaction.response.send_message("❌ 기본 역할은 익명 역할로 설정할 수 없습니다.", ephemeral=True)
+        return
+    await update_setting(
+        interaction,
+        "anonymous_role_id",
+        역할.id,
+        f"✅ 구매로그 익명 역할이 {역할.mention}(으)로 설정되었습니다.",
+    )
+
 @bot.tree.command(name="등급업알림", description="유저의 VIP 등급이 승급될 때 알림이 전송될 채널을 설정합니다.")
 async def set_tier_log_channel(interaction: discord.Interaction, 채널: discord.TextChannel):
     await update_setting(interaction, "tier_log_channel_id", 채널.id, f"✅ 등급 업그레이드 알림 채널이 {채널.mention}(으)로 설정되었습니다.")
@@ -726,7 +735,7 @@ async def send_info_panel(interaction: discord.Interaction):
                     {"type": 10, "content": "🏪 편의점 주소를 확인하려면 아래에서 **GS25 또는 CU**를 선택해 주세요."},
                     brand_selector(),
                     {"type": 14, "divider": True, "spacing": 1},
-                    {"type": 10, "content": "💡 익명 설정 버튼을 누르면 구매 시 닉네임 대신 익명으로 처리됩니다.\n\n🌟 아래 버튼을 눌러 정보를 등록해 주세요.\n잘못 입력한 정보는 **정보 수정**으로 변경하고, **정보 조회**에서 배송 정보와 현재 보유 포인트를 확인할 수 있습니다."},
+                    {"type": 10, "content": "🌟 아래 버튼을 눌러 정보를 등록해 주세요.\n잘못 입력한 정보는 **정보 수정**으로 변경하고, **정보 조회**에서 배송 정보와 현재 보유 포인트를 확인할 수 있습니다."},
                     {
                         "type": 1,
                         "components": [
@@ -747,12 +756,6 @@ async def send_info_panel(interaction: discord.Interaction):
                                 "style": 3,
                                 "label": "정보 조회",
                                 "custom_id": "info_view"
-                            },
-                            {
-                                "type": 2,
-                                "style": 4,
-                                "label": "익명 설정",
-                                "custom_id": "info_anon_toggle"
                             }
                         ]
                     }
@@ -833,12 +836,7 @@ async def view_user_info(interaction: discord.Interaction, 유저: discord.Membe
         
     if not user_data:
         user_data = {"name": "미등록", "contact": "미등록", "address": "미등록",
-                     "cvs": "미등록", "is_anonymous": False, "total_spent": 0}
-        
-    if user_data['is_anonymous']:
-        anon_text = "🟢 켜짐 (익명 구매 활성화)"
-    else:
-        anon_text = "🔴 꺼짐 (닉네임 공개 구매)"
+                     "cvs": "미등록", "total_spent": 0}
         
     total_spent = user_data['total_spent'] if user_data['total_spent'] else 0
     
@@ -852,8 +850,6 @@ async def view_user_info(interaction: discord.Interaction, 유저: discord.Membe
         f"`{user_data['address']}`\n\n"
         "`🏪`**편의점**\n"
         f"`{user_data['cvs']}`\n\n"
-        "`🎭`**익명 모드 상태**\n"
-        f"`{anon_text}`\n\n"
         "`💰`**누적 구매액**\n"
         f"`{total_spent:,}원`\n\n"
         "`🪙`**보유 포인트**\n"
@@ -941,15 +937,12 @@ async def send_purchase_panel(interaction: discord.Interaction, 구매자: disco
     order_id = f"{get_rand(5)}-{get_rand(4)}-{get_rand(5)}"
     
     async with bot.db_pool.acquire() as conn:
-        user_data = await conn.fetchrow('SELECT is_anonymous FROM user_info WHERE user_id = $1', 구매자.id)
-        is_anon = user_data['is_anonymous'] if user_data else False
-        
         await conn.execute('''
-            INSERT INTO orders (order_id, guild_id, original_channel_id, buyer_id, product, quantity, amount, status, is_anonymous, points_allowed) 
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10);
-        ''', order_id, interaction.guild.id, interaction.channel.id, 구매자.id, 상품, 수량, 입금금액, 'PENDING', is_anon, 포인트사용가능)
+            INSERT INTO orders (order_id, guild_id, original_channel_id, buyer_id, product, quantity, amount, status, points_allowed)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9);
+        ''', order_id, interaction.guild.id, interaction.channel.id, 구매자.id, 상품, 수량, 입금금액, 'PENDING', 포인트사용가능)
 
-    # 구매 패널에는 익명 설정과 관계없이 실제 구매자를 표시하고 알립니다.
+    # 구매로그를 제외한 주문 화면에는 실제 구매자를 표시합니다.
     display_buyer = 구매자.mention
         
     # 여러 상품 쉼표(,) 입력 시 줄바꿈 처리
@@ -3088,7 +3081,7 @@ async def on_interaction(interaction: discord.Interaction):
         return
 
     # 정보 패널 처리
-    if custom_id in ["info_register", "info_edit", "info_view", "info_anon_toggle"]:
+    if custom_id in ["info_register", "info_edit", "info_view"]:
         if interaction.guild is None or bot.db_pool is None:
             await interaction.response.send_message("❌ 서버와 DB 연결을 확인해 주세요.", ephemeral=True)
             return
@@ -3108,9 +3101,7 @@ async def on_interaction(interaction: discord.Interaction):
                 point_balance = await get_balance(conn, interaction.guild.id, interaction.user.id)
                 if not user_data:
                     user_data = {"name": "미등록", "contact": "미등록", "address": "미등록",
-                                 "cvs": "미등록", "is_anonymous": False}
-                    
-                anon_text = "🟢 켜짐 (익명 구매 활성화)" if user_data['is_anonymous'] else "🔴 꺼짐 (닉네임 공개 구매)"
+                                 "cvs": "미등록"}
                 
                 view_content = (
                     "## 📋 내 정보 조회\n\n"
@@ -3123,9 +3114,7 @@ async def on_interaction(interaction: discord.Interaction):
                     "`🏠`**주소**\n"
                     f"`{user_data['address']}`\n\n"
                     "`🏪`**편의점**\n"
-                    f"`{user_data['cvs']}`\n\n"
-                    "`🎭`**익명 모드 상태**\n"
-                    f"`{anon_text}`"
+                    f"`{user_data['cvs']}`"
                 )
                 
                 view_payload = {
@@ -3149,18 +3138,6 @@ async def on_interaction(interaction: discord.Interaction):
                     json={"type": 4, "data": view_payload}
                 )
                 
-            elif custom_id == "info_anon_toggle":
-                new_status = not user_data['is_anonymous'] if user_data else True
-                
-                await conn.execute('''
-                    INSERT INTO user_info (user_id, is_anonymous) 
-                    VALUES ($1, $2) 
-                    ON CONFLICT (user_id) DO UPDATE SET is_anonymous = $2
-                ''', interaction.user.id, new_status)
-                
-                status_text = "🟢 켜짐 (익명)" if new_status else "🔴 꺼짐 (닉네임 공개 구매)"
-                
-                await interaction.response.send_message(f"익명 구매 모드가 **{status_text}** 상태로 변경되었습니다!", ephemeral=True)
         return
 
     # 티켓 생성 드롭다운
@@ -3422,8 +3399,6 @@ async def on_interaction(interaction: discord.Interaction):
                 amount_int = parse_amount(order['amount'])
                 user_info_row = await conn.fetchrow('SELECT total_spent FROM user_info WHERE user_id = $1', order['buyer_id'])
                 current_total = user_info_row['total_spent'] if user_info_row else amount_int
-                is_anon = bool(order['is_anonymous'])
-                
                 member = interaction.guild.get_member(order['buyer_id'])
                 
                 if member and current_total >= 1 and settings and settings.get('buyer_role_id'):
@@ -3452,7 +3427,7 @@ async def on_interaction(interaction: discord.Interaction):
                                 tier_channel = interaction.guild.get_channel(settings['tier_log_channel_id'])
                                 if tier_channel:
                                     tier_payload = create_tier_upgrade_payload(
-                                        order['buyer_id'], is_anon, role.mention, current_total
+                                        order['buyer_id'], role.mention, current_total
                                     )
                                     
                                     await interaction.client.http.request(
@@ -3481,6 +3456,7 @@ async def on_interaction(interaction: discord.Interaction):
                         buyer_info_txt = (
                             "## 📋 구매자 상세 배송 정보\n\n"
                             "<@259758966043574272>\n\n"
+                            f"`👤` **구매자:** <@{order['buyer_id']}>\n"
                             f"`🕒` **구매일시:** `{now_kst_str}`\n"
                             f"`🧾` **주문번호:** `{order_id}`\n"
                             f"`👤` **성함:** `{b_name}`\n"
@@ -3492,6 +3468,10 @@ async def on_interaction(interaction: discord.Interaction):
                         )
                         
                         buyer_info_payload = create_v2_payload(buyer_info_txt)
+                        buyer_info_payload["allowed_mentions"] = {
+                            "parse": [],
+                            "users": ["259758966043574272", str(order['buyer_id'])],
+                        }
                         
                         try:
                             await interaction.client.http.request(
@@ -3503,8 +3483,9 @@ async def on_interaction(interaction: discord.Interaction):
 
         # 승인/거절 처리 시간 (한국 시간)
         now_str = datetime.datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S")
-        display_buyer = "<@&1553595299560161381>" if order['is_anonymous'] else f"<@{order['buyer_id']}>"
-        admin_buyer_mention = f"<@{order['buyer_id']}>"
+        buyer_mention = f"<@{order['buyer_id']}>"
+        anonymous_role_id = settings.get('anonymous_role_id') if settings else None
+        purchase_log_buyer = f"<@&{anonymous_role_id}>" if anonymous_role_id else "**익명**"
         status_word, color_val = ("✅ 승인", 0x32CD32) if action == 'approve' else ("❌ 거절", 0xFF0000)
         
         depositor_name = order.get('depositor_name') or "알 수 없음"
@@ -3513,7 +3494,7 @@ async def on_interaction(interaction: discord.Interaction):
         admin_updated = (
             f"## {status_word} 완료\n\n"
             "`👤`**구매자**\n"
-            f"{admin_buyer_mention}\n\n"
+            f"{buyer_mention}\n\n"
             "`✍️`**입금자명**\n"
             f"`{depositor_name}`\n\n"
             "`◾`**주문번호**\n"
@@ -3532,6 +3513,10 @@ async def on_interaction(interaction: discord.Interaction):
         
         update_payload = {
             "flags": 1 << 15, 
+            "allowed_mentions": {
+                "parse": [],
+                "users": [str(order['buyer_id']), str(interaction.user.id)],
+            },
             "components": [
                 {
                     "type": 17, 
@@ -3560,7 +3545,7 @@ async def on_interaction(interaction: discord.Interaction):
                     "> 즐거운 흡연 되시길 바랍니다.```\n\n"
                     "`🧾`구매정보\n\n"
                     "`👤`**구매자**\n"
-                    f"{display_buyer}\n\n"
+                    f"{purchase_log_buyer}\n\n"
                     "`📦`**상품**\n"
                     f"{formatted_product}\n\n"
                     "`◾`**수량**\n"
@@ -3574,6 +3559,10 @@ async def on_interaction(interaction: discord.Interaction):
                 
                 log_payload = {
                     "flags": 1 << 15, 
+                    "allowed_mentions": (
+                        {"parse": [], "roles": [str(anonymous_role_id)]}
+                        if anonymous_role_id else {"parse": []}
+                    ),
                     "components": [
                         {
                             "type": 17, 
@@ -3595,7 +3584,7 @@ async def on_interaction(interaction: discord.Interaction):
 
             noti_txt = (
                 "## VAPE SP0T Order Complete\n\n"
-                f"{display_buyer}님의 주문이 승인되었습니다.\n"
+                f"{buyer_mention}님의 주문이 승인되었습니다.\n"
                 "`아래 정보를 확인하신 후 입금을 진행해 주세요.`\n\n"
                 "`🧾`주문정보\n\n"
                 "`◾`**주문번호**\n"
@@ -3609,6 +3598,7 @@ async def on_interaction(interaction: discord.Interaction):
             
             noti_payload = {
                 "flags": 1 << 15, 
+                "allowed_mentions": {"parse": [], "users": [str(order['buyer_id'])]},
                 "components": [
                     {
                         "type": 17, 
