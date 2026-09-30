@@ -1093,83 +1093,107 @@ class DepositModal(discord.ui.Modal):
         )
 
 
-@bot.tree.command(name="유저운송장", description="특정 유저에게 운송장 번호를 DM으로 전송합니다.")
+@bot.tree.command(name="운송장", description="구매 티켓과 구매자 DM으로 운송장 발급 안내를 전송합니다. (관리자 전용)")
 @app_commands.describe(
-    유저="운송장 번호를 받을 유저를 선택하세요.",
-    받는분="받는 사람 이름을 적어주세요. (자동으로 마스킹 처리됩니다.)",
-    운송장번호="발급된 운송장 번호를 적어주세요.",
-    주문번호="해당 유저의 주문번호를 적어주세요."
+    유저="운송장을 발급받을 구매자를 선택해 주세요.",
+    주문번호="해당 구매자의 주문번호를 입력해 주세요.",
+    운송장번호="발급된 운송장 번호를 입력해 주세요."
 )
-async def send_tracking_dm(interaction: discord.Interaction, 유저: discord.Member, 받는분: str, 운송장번호: str, 주문번호: str):
-    if not bot.db_pool: 
+async def issue_waybill(
+    interaction: discord.Interaction,
+    유저: discord.Member,
+    주문번호: str,
+    운송장번호: str,
+):
+    if not bot.db_pool:
         await interaction.response.send_message("❌ DB 오류가 발생했습니다.", ephemeral=True)
         return
-        
-    await interaction.response.defer(ephemeral=True)
-    
-    if len(받는분) <= 1: 
-        masked_name = 받는분
-    elif len(받는분) == 2: 
-        masked_name = 받는분[0] + "◼️"
-    else: 
-        mid = len(받는분) // 2
-        masked_name = 받는분[:mid] + "◼️" + 받는분[mid+1:]
-        
-    async with bot.db_pool.acquire() as conn:
-        order = await conn.fetchrow('SELECT product FROM orders WHERE order_id = $1', 주문번호)
-        
-    if not order: 
-        await interaction.followup.send(f"❌ `{주문번호}`에 해당하는 주문을 찾을 수 없습니다.", ephemeral=True)
+
+    if interaction.guild is None or not interaction.channel:
+        await interaction.response.send_message("❌ 서버의 구매 티켓 채널에서 사용해 주세요.", ephemeral=True)
         return
-        
-    product_name = order['product']
-    
-    content_1 = "## V4PE SP0T Tracking number"
-    
-    content_2 = (
-        f"{유저.mention} 고객님의\n"
-        f"`{주문번호}` - `{product_name}`을 구매해 주셔서 진심으로 감사드립니다.\n\n"
-        "**해당 상품의 운송장 번호가 발급되었습니다.**\n\n"
-        f"운송장 번호: `{운송장번호}`\n"
-        f"받는분: `{masked_name}`\n\n"
-        "-# 구매해 주셔서 다시 한번 감사드립니다."
+
+    try:
+        waybill_number = normalize_waybill(운송장번호)
+    except DeliveryTrackingError as error:
+        await interaction.response.send_message(f"❌ {error}", ephemeral=True)
+        return
+
+    order_id = 주문번호.strip()
+    if not order_id:
+        await interaction.response.send_message("❌ 주문번호를 입력해 주세요.", ephemeral=True)
+        return
+
+    await interaction.response.defer(ephemeral=True)
+
+    async with bot.db_pool.acquire() as conn:
+        ticket = await conn.fetchrow(
+            'SELECT user_id, ticket_type FROM tickets WHERE channel_id = $1',
+            interaction.channel.id,
+        )
+        order = await conn.fetchrow(
+            """
+            SELECT order_id FROM orders
+            WHERE order_id = $1 AND guild_id = $2 AND buyer_id = $3
+            """,
+            order_id,
+            interaction.guild.id,
+            유저.id,
+        )
+
+    if not ticket or ticket['ticket_type'] != 'purchase':
+        await interaction.followup.send("❌ 구매문의 티켓 채널에서만 사용할 수 있습니다.", ephemeral=True)
+        return
+
+    if ticket['user_id'] != 유저.id:
+        await interaction.followup.send("❌ 이 티켓을 연 유저와 선택한 유저가 일치하지 않습니다.", ephemeral=True)
+        return
+
+    if not order:
+        await interaction.followup.send(
+            f"❌ {유저.mention}님의 주문 중 `{order_id}` 주문번호를 찾을 수 없습니다.",
+            ephemeral=True,
+        )
+        return
+
+    message = (
+        f"**- {유저.mention} 귀하의 운송장이 발급되었습니다.\n"
+        f"- `◼️` 운송장 : `{waybill_number}`\n"
+        f"- `◼️` 주문번호 : `{order_id}`\n"
+        "> 발급받으신 운송장은 <#1553664932485013594> 채널에서 가능 합니다. **"
     )
-    
-    v2_payload = {
-        "flags": 1 << 15,
-        "components": [
-            {
-                "type": 17,
-                "accent_color": 0x32CD32,
-                "components": [
-                    {
-                        "type": 10, 
-                        "content": content_1
-                    },
-                    {
-                        "type": 14, 
-                        "divider": True
-                    },
-                    {
-                        "type": 10, 
-                        "content": content_2
-                    }
-                ]
-            }
-        ]
-    }
-    
+    payload = create_v2_payload(message)
+    payload['allowed_mentions'] = {"parse": [], "users": [str(유저.id)]}
+
+    try:
+        await interaction.client.http.request(
+            discord.http.Route("POST", f"/channels/{interaction.channel.id}/messages"),
+            json=payload,
+        )
+    except discord.HTTPException:
+        await interaction.followup.send("❌ 티켓 채널에 운송장 안내를 전송하지 못했습니다. 채널 권한을 확인해 주세요.", ephemeral=True)
+        return
+
     try:
         dm_channel = await 유저.create_dm()
         await interaction.client.http.request(
-            discord.http.Route("POST", f"/channels/{dm_channel.id}/messages"), 
-            json=v2_payload
+            discord.http.Route("POST", f"/channels/{dm_channel.id}/messages"),
+            json=payload,
         )
-        await interaction.followup.send(f"✅ {유저.mention}님에게 운송장 번호를 DM으로 전송했습니다.", ephemeral=True)
+        await interaction.followup.send(
+            f"✅ 티켓 채널과 {유저.mention}님의 DM으로 운송장 발급 안내를 전송했습니다.",
+            ephemeral=True,
+        )
     except discord.Forbidden:
-        await interaction.followup.send(f"❌ {유저.mention}님이 DM 수신을 거부하여 전송에 실패했습니다.", ephemeral=True)
-    except Exception as e:
-        await interaction.followup.send(f"❌ DM 전송 중 오류가 발생했습니다: {e}", ephemeral=True)
+        await interaction.followup.send(
+            f"⚠️ 티켓 채널에는 전송했지만 {유저.mention}님이 DM을 받을 수 없어 DM 전송에 실패했습니다.",
+            ephemeral=True,
+        )
+    except discord.HTTPException:
+        await interaction.followup.send(
+            f"⚠️ 티켓 채널에는 전송했지만 {유저.mention}님의 DM 전송에 실패했습니다.",
+            ephemeral=True,
+        )
 
 
 @bot.tree.command(name="메시지", description="봇이 대신해서 메시지를 전송해 줍니다.")
@@ -2619,7 +2643,13 @@ async def write_review(
         return
         
     async with bot.db_pool.acquire() as conn:
-        settings = await conn.fetchrow('SELECT buyer_role_id, review_channel_id, review_auto_message FROM guild_settings WHERE guild_id = $1', interaction.guild.id)
+        settings = await conn.fetchrow(
+            '''
+            SELECT buyer_role_id, review_channel_id, review_auto_message, anonymous_role_id
+            FROM guild_settings WHERE guild_id = $1
+            ''',
+            interaction.guild.id,
+        )
         
     if not settings or not settings['buyer_role_id']: 
         await interaction.response.send_message("❌ 구매자 역할이 설정되지 않았습니다.", ephemeral=True)
@@ -2648,11 +2678,13 @@ async def write_review(
     await interaction.response.defer(ephemeral=True)
     
     stars_str = "⭐" * 별점.value
+    anonymous_role_id = settings.get('anonymous_role_id')
+    review_buyer = f"<@&{anonymous_role_id}>" if anonymous_role_id else "익명"
     
     content_1 = (
         "## 구매후기\n"
         "**\n"
-        f"- 구매자 : {interaction.user.mention}\n"
+        f"- 구매자 : {review_buyer}\n"
         "**"
     )
     
@@ -2720,6 +2752,10 @@ async def write_review(
 
     review_payload = {
         "flags": 1 << 15, 
+        "allowed_mentions": (
+            {"parse": [], "roles": [str(anonymous_role_id)]}
+            if anonymous_role_id else {"parse": []}
+        ),
         "components": [
             {
                 "type": 17, 
