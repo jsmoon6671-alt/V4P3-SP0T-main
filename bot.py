@@ -12,6 +12,7 @@ import chat_exporter
 import io
 import asyncio
 import logging
+import json
 from bs4 import BeautifulSoup
 from event_broadcast import register_event_command
 from store_lookup import brand_selector, lookup_panel, handle_brand_selection
@@ -33,6 +34,7 @@ from delivery_tracking import (
     DeliveryTrackingError, format_tracking_result,
     normalize_waybill, safe_text, track_shipment,
 )
+from review_watermark import ReviewImageError, watermark_review_image
 
 # 한국 표준시(KST) 설정
 KST = datetime.timezone(datetime.timedelta(hours=9))
@@ -2485,11 +2487,28 @@ async def write_review(
         }
     ]
 
+    watermarked_file = None
     if 사진:
         if not 사진.content_type or not 사진.content_type.startswith('image/'): 
             await interaction.followup.send("❌ 이미지 파일만 업로드 가능합니다.", ephemeral=True)
             return
-            
+
+        try:
+            original_image = await 사진.read()
+            watermarked_image = await asyncio.to_thread(watermark_review_image, original_image)
+        except ReviewImageError as error:
+            await interaction.followup.send(f"❌ {error}", ephemeral=True)
+            return
+        except discord.HTTPException:
+            await interaction.followup.send("❌ 후기 이미지를 다운로드하지 못했습니다. 다시 업로드해 주세요.", ephemeral=True)
+            return
+        except Exception:
+            logging.exception("후기 이미지 워터마크 처리 실패: user=%s", interaction.user.id)
+            await interaction.followup.send("❌ 후기 이미지 처리 중 오류가 발생했습니다. 다른 이미지로 다시 시도해 주세요.", ephemeral=True)
+            return
+
+        watermarked_filename = f"review-{interaction.id}.jpg"
+        watermarked_file = discord.File(io.BytesIO(watermarked_image), filename=watermarked_filename)
         container_children.append({
             "type": 14, 
             "divider": True
@@ -2499,7 +2518,7 @@ async def write_review(
             "items": [
                 {
                     "media": {
-                        "url": 사진.url
+                        "url": f"attachment://{watermarked_filename}"
                     }
                 }
             ]
@@ -2516,11 +2535,19 @@ async def write_review(
         ]
     }
 
+    if watermarked_file:
+        review_payload["attachments"] = [watermarked_file.to_dict(0)]
+
     # 1. 후기 등록
-    await interaction.client.http.request(
-        discord.http.Route("POST", f"/channels/{review_channel.id}/messages"), 
-        json=review_payload
-    )
+    route = discord.http.Route("POST", f"/channels/{review_channel.id}/messages")
+    if watermarked_file:
+        with discord.http.handle_message_parameters(file=watermarked_file) as params:
+            params.multipart[0]["value"] = json.dumps(
+                review_payload, ensure_ascii=False, separators=(",", ":")
+            )
+            await interaction.client.http.request(route, files=params.files, form=params.multipart)
+    else:
+        await interaction.client.http.request(route, json=review_payload)
     
     reward_text = ""
     try:

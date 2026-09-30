@@ -4,3 +4,4 @@ aiohttp
 chat-exporter
 beautifulsoup4
 PyNaCl
+Pillow
