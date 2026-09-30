@@ -1637,7 +1637,7 @@ async def set_ticket_log_chan(interaction: discord.Interaction, 채널: discord.
     await update_setting(interaction, "ticket_log_channel_id", 채널.id, f"✅ 로그 채널 설정이 {채널.mention}(으)로 완료되었습니다.")
 
 
-PURCHASE_TICKET_STATUSES = ("구매완료", "상품준비중", "배송중", "배송완료")
+PURCHASE_TICKET_STATUSES = ("구매완료", "배송준비중", "배송중", "배송완료")
 PURCHASE_TICKET_PREFIXES = ("구매문의",) + PURCHASE_TICKET_STATUSES
 
 
@@ -1657,7 +1657,7 @@ def purchase_ticket_status_name(channel_name: str, status: str) -> str:
 @app_commands.describe(상태="채널 이름에 표시할 구매 처리 상태")
 @app_commands.choices(상태=[
     app_commands.Choice(name="구매완료", value="구매완료"),
-    app_commands.Choice(name="상품준비중", value="상품준비중"),
+    app_commands.Choice(name="배송준비중", value="배송준비중"),
     app_commands.Choice(name="배송중", value="배송중"),
     app_commands.Choice(name="배송완료", value="배송완료"),
 ])
