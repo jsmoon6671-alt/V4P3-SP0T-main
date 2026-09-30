@@ -90,6 +90,59 @@ def create_tier_upgrade_payload(buyer_id: int, is_anonymous: bool, role_mention:
     payload["allowed_mentions"] = allowed_mentions
     return payload
 
+
+async def replace_review_guide_message(conn, http, guild_id: int, channel_id: int, content: str):
+    """기존 후기 안내를 지우고 새 안내를 맨 아래에 전송합니다."""
+    async with conn.transaction():
+        await conn.execute(
+            "INSERT INTO guild_settings (guild_id) VALUES ($1) ON CONFLICT (guild_id) DO NOTHING",
+            guild_id,
+        )
+        settings = await conn.fetchrow(
+            """
+            SELECT review_channel_id, review_auto_message_id, review_auto_message_channel_id
+            FROM guild_settings
+            WHERE guild_id = $1
+            FOR UPDATE
+            """,
+            guild_id,
+        )
+
+        old_message_id = settings.get('review_auto_message_id') if settings else None
+        old_channel_id = settings.get('review_auto_message_channel_id') if settings else None
+        if old_message_id:
+            delete_channel_id = old_channel_id or settings.get('review_channel_id') or channel_id
+            try:
+                await http.request(
+                    discord.http.Route(
+                        "DELETE",
+                        f"/channels/{delete_channel_id}/messages/{old_message_id}",
+                    )
+                )
+            except discord.NotFound:
+                pass
+
+        response = await http.request(
+            discord.http.Route("POST", f"/channels/{channel_id}/messages"),
+            json=create_v2_payload(content),
+        )
+        if not response or not response.get('id'):
+            raise RuntimeError("후기 안내 메시지 ID를 확인할 수 없습니다.")
+
+        message_id = int(response['id'])
+        await conn.execute(
+            """
+            UPDATE guild_settings
+            SET review_auto_message_id = $2,
+                review_auto_message_channel_id = $3
+            WHERE guild_id = $1
+            """,
+            guild_id,
+            message_id,
+            channel_id,
+        )
+        return message_id
+
 class AdminCommandTree(app_commands.CommandTree):
     async def interaction_check(self, interaction: discord.Interaction):
         data = interaction.data or {}
@@ -158,7 +211,11 @@ class MyBot(commands.Bot):
                         pop_liquid_channel_id BIGINT,
                         pop_liquid_message_id BIGINT,
                         buyer_info_channel_id BIGINT,
-                        review_auto_message TEXT
+                        review_auto_message TEXT,
+                        review_auto_message_id BIGINT,
+                        review_auto_message_channel_id BIGINT,
+                        leaderboard_first_role_id BIGINT,
+                        leaderboard_first_user_id BIGINT
                     );
                 ''')
                 
@@ -251,7 +308,11 @@ class MyBot(commands.Bot):
                     'ALTER TABLE guild_settings ADD COLUMN pop_liquid_channel_id BIGINT;',
                     'ALTER TABLE guild_settings ADD COLUMN pop_liquid_message_id BIGINT;',
                     'ALTER TABLE guild_settings ADD COLUMN buyer_info_channel_id BIGINT;',
-                    'ALTER TABLE guild_settings ADD COLUMN review_auto_message TEXT;'
+                    'ALTER TABLE guild_settings ADD COLUMN review_auto_message TEXT;',
+                    'ALTER TABLE guild_settings ADD COLUMN review_auto_message_id BIGINT;',
+                    'ALTER TABLE guild_settings ADD COLUMN review_auto_message_channel_id BIGINT;',
+                    'ALTER TABLE guild_settings ADD COLUMN leaderboard_first_role_id BIGINT;',
+                    'ALTER TABLE guild_settings ADD COLUMN leaderboard_first_user_id BIGINT;'
                 ]
                 
                 for query in updates:
@@ -550,21 +611,37 @@ async def set_review_guide(interaction: discord.Interaction, 채널: discord.Tex
         await interaction.response.send_message("❌ DB 오류가 발생했습니다.", ephemeral=True)
         return
     await interaction.response.defer(ephemeral=True)
-    async with bot.db_pool.acquire() as conn:
-        settings = await conn.fetchrow('SELECT review_channel_id FROM guild_settings WHERE guild_id = $1', interaction.guild.id)
-        target = 채널 or (interaction.guild.get_channel(settings['review_channel_id']) if settings else None) or interaction.channel
-        await conn.execute("""
-            INSERT INTO guild_settings (guild_id, review_channel_id, review_auto_message) VALUES ($1, $2, $3)
-            ON CONFLICT (guild_id) DO UPDATE SET review_channel_id = $2, review_auto_message = $3
-        """, interaction.guild.id, target.id, REVIEW_GUIDE)
     try:
-        await interaction.client.http.request(
-            discord.http.Route("POST", f"/channels/{target.id}/messages"), json=create_v2_payload(REVIEW_GUIDE),
-        )
-    except discord.HTTPException:
-        await interaction.followup.send("⚠️ 자동 안내는 설정했지만 안내 메시지 전송에 실패했습니다. 채널 권한을 확인해 주세요.", ephemeral=True)
+        async with bot.db_pool.acquire() as conn:
+            settings = await conn.fetchrow(
+                'SELECT review_channel_id FROM guild_settings WHERE guild_id = $1',
+                interaction.guild.id,
+            )
+            target = 채널 or (
+                interaction.guild.get_channel(settings['review_channel_id'])
+                if settings and settings['review_channel_id'] else None
+            ) or interaction.channel
+            await conn.execute("""
+                INSERT INTO guild_settings (guild_id, review_channel_id, review_auto_message)
+                VALUES ($1, $2, $3)
+                ON CONFLICT (guild_id) DO UPDATE
+                SET review_channel_id = $2, review_auto_message = $3
+            """, interaction.guild.id, target.id, REVIEW_GUIDE)
+            await replace_review_guide_message(
+                conn,
+                interaction.client.http,
+                interaction.guild.id,
+                target.id,
+                REVIEW_GUIDE,
+            )
+    except Exception:
+        logging.exception("후기 안내 설정/전송 실패: guild=%s", interaction.guild.id)
+        await interaction.followup.send("⚠️ 후기 안내 전송에 실패했습니다. 채널 권한과 데이터베이스 상태를 확인해 주세요.", ephemeral=True)
         return
-    await interaction.followup.send(f"✅ {target.mention}에 후기안내를 설정했습니다. 앞으로 후기 등록마다 자동으로 전송됩니다.", ephemeral=True)
+    await interaction.followup.send(
+        f"✅ {target.mention}에 후기 안내를 설정했습니다. 새 후기가 등록되면 기존 안내를 지우고 맨 아래에 다시 전송합니다.",
+        ephemeral=True,
+    )
 
 
 class UserInfoModal(discord.ui.Modal):
@@ -1928,6 +2005,108 @@ async def popular_liquids(interaction: discord.Interaction):
 # ==========================================
 # [기능 10] 실시간 TOP 5 구매 랭킹 시스템
 # ==========================================
+async def sync_leaderboard_first_role(
+    guild_id: int,
+    role_id: int | None,
+    previous_user_id: int | None,
+    first_user_id: int | None,
+):
+    """구매 랭킹 1위 역할을 현재 1위 한 명에게만 유지합니다."""
+    if not bot.db_pool or not role_id:
+        return False
+
+    guild = bot.get_guild(guild_id)
+    role = guild.get_role(role_id) if guild else None
+    if not guild or not role:
+        return False
+
+    try:
+        if previous_user_id and previous_user_id != first_user_id:
+            previous_member = guild.get_member(previous_user_id)
+            if previous_member and role in previous_member.roles:
+                await previous_member.remove_roles(role, reason="구매 랭킹 1위 변경")
+
+        if first_user_id:
+            first_member = guild.get_member(first_user_id)
+            if not first_member:
+                return False
+            if role not in first_member.roles:
+                await first_member.add_roles(role, reason="구매 랭킹 1위 달성")
+    except (discord.Forbidden, discord.HTTPException):
+        logging.exception("구매 랭킹 1위 역할 갱신 실패: guild=%s", guild_id)
+        return False
+
+    async with bot.db_pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE guild_settings SET leaderboard_first_user_id = $2 WHERE guild_id = $1",
+            guild_id,
+            first_user_id,
+        )
+    return True
+
+
+@bot.tree.command(name="구매랭킹역할", description="구매 랭킹 1위에게 자동 지급할 역할을 설정합니다. (관리자 전용)")
+@app_commands.describe(역할="현재 구매 랭킹 1위에게 지급할 역할을 선택해 주세요.")
+async def set_leaderboard_first_role(interaction: discord.Interaction, 역할: discord.Role):
+    if not bot.db_pool:
+        await interaction.response.send_message("❌ DB 오류가 발생했습니다.", ephemeral=True)
+        return
+
+    if 역할.is_default() or 역할.managed:
+        await interaction.response.send_message("❌ 기본 역할이나 연동 역할은 자동 지급 역할로 설정할 수 없습니다.", ephemeral=True)
+        return
+
+    bot_member = interaction.guild.me
+    if bot_member and 역할 >= bot_member.top_role:
+        await interaction.response.send_message(
+            "❌ 봇의 가장 높은 역할보다 낮은 역할만 설정할 수 있습니다.",
+            ephemeral=True,
+        )
+        return
+
+    await interaction.response.defer(ephemeral=True)
+    async with bot.db_pool.acquire() as conn:
+        settings = await conn.fetchrow(
+            """
+            SELECT leaderboard_first_role_id, leaderboard_first_user_id
+            FROM guild_settings WHERE guild_id = $1
+            """,
+            interaction.guild.id,
+        )
+        old_role_id = settings.get('leaderboard_first_role_id') if settings else None
+        old_user_id = settings.get('leaderboard_first_user_id') if settings else None
+
+        if old_role_id and old_user_id:
+            old_role = interaction.guild.get_role(old_role_id)
+            old_member = interaction.guild.get_member(old_user_id)
+            if old_role and old_member and old_role in old_member.roles:
+                try:
+                    await old_member.remove_roles(old_role, reason="구매 랭킹 1위 역할 설정 변경")
+                except (discord.Forbidden, discord.HTTPException):
+                    await interaction.followup.send(
+                        "❌ 기존 1위 역할을 회수하지 못했습니다. 봇 역할 순서와 권한을 확인해 주세요.",
+                        ephemeral=True,
+                    )
+                    return
+
+        await conn.execute(
+            """
+            INSERT INTO guild_settings (guild_id, leaderboard_first_role_id, leaderboard_first_user_id)
+            VALUES ($1, $2, NULL)
+            ON CONFLICT (guild_id) DO UPDATE
+            SET leaderboard_first_role_id = $2, leaderboard_first_user_id = NULL
+            """,
+            interaction.guild.id,
+            역할.id,
+        )
+
+    await update_leaderboard(interaction.guild.id)
+    await interaction.followup.send(
+        f"✅ 구매 랭킹 1위 역할을 {역할.mention}(으)로 설정했습니다. 랭킹이 바뀌면 자동으로 역할을 회수하고 새 1위에게 지급합니다.",
+        ephemeral=True,
+    )
+
+
 @bot.tree.command(name="랭킹초기화", description="모든 유저의 누적 구매 금액을 0으로 초기화하여 랭킹을 리셋합니다. (관리자 전용)")
 async def reset_leaderboard(interaction: discord.Interaction):
     if not interaction.user.guild_permissions.administrator and not interaction.user.guild_permissions.manage_channels:
@@ -1955,13 +2134,35 @@ async def update_leaderboard(guild_id: int):
         return
         
     async with bot.db_pool.acquire() as conn:
-        settings = await conn.fetchrow('SELECT leaderboard_channel_id, leaderboard_message_id FROM guild_settings WHERE guild_id = $1', guild_id)
-        
-        if not settings or not settings['leaderboard_channel_id'] or not settings['leaderboard_message_id']: 
+        settings = await conn.fetchrow(
+            """
+            SELECT leaderboard_channel_id, leaderboard_message_id,
+                   leaderboard_first_role_id, leaderboard_first_user_id
+            FROM guild_settings WHERE guild_id = $1
+            """,
+            guild_id,
+        )
+
+        if not settings:
             return
 
-        top_users = await conn.fetch('SELECT user_id, total_spent FROM user_info WHERE total_spent > 0 ORDER BY total_spent DESC LIMIT 5')
+        top_users = await conn.fetch(
+            'SELECT user_id, total_spent FROM user_info '
+            'WHERE total_spent > 0 ORDER BY total_spent DESC, user_id ASC LIMIT 5'
+        )
         tiers = await conn.fetch('SELECT role_id, required_amount FROM vip_tiers WHERE guild_id = $1 ORDER BY required_amount DESC', guild_id)
+
+    first_user_id = top_users[0]['user_id'] if top_users else None
+    if settings.get('leaderboard_first_role_id'):
+        await sync_leaderboard_first_role(
+            guild_id,
+            settings['leaderboard_first_role_id'],
+            settings.get('leaderboard_first_user_id'),
+            first_user_id,
+        )
+
+    if not settings['leaderboard_channel_id'] or not settings['leaderboard_message_id']:
+        return
 
     content = "## <a:267042fire:1553325691582292049> VAPE SP0T 누적 구매 랭킹 TOP 5\n\n"
     
@@ -2401,11 +2602,11 @@ async def embed_command(interaction: discord.Interaction):
 # ==========================================
 # [기능 8] 후기 시스템 (파라미터 명령어 방식)
 # ==========================================
-@bot.tree.command(name="후기작성", description="구매 후기를 작성합니다. (구매자 전용)")
+@bot.tree.command(name="후기작성", description="구매 후기와 사진을 작성합니다. (구매자 전용)")
 @app_commands.describe(
     별점="별점을 선택해 주세요.", 
     후기내용="최소 10자 이상 솔직한 후기를 남겨주세요. (미리 복사해 붙여넣거나 \\n 입력 시 줄바꿈 지원)", 
-    사진="업로드할 사진 파일을 선택해 주세요. (선택)"
+    사진="후기 사진을 함께 첨부해 주세요. (선택)"
 )
 @app_commands.choices(별점=[
     app_commands.Choice(name="⭐⭐⭐⭐⭐ (5점)", value=5), 
@@ -2558,16 +2759,19 @@ async def write_review(
         print(f"후기 포인트 적립 실패 (interaction_id={interaction.id}): {type(exc).__name__}")
         reward_text = "\n⚠️ 후기는 등록되었으나 포인트 적립에 실패했습니다. 관리자에게 문의해 주세요."
 
-    # 2. 관리자가 설정한 후기 자동 안내 메시지가 있으면 추가 전송
+    # 2. 기존 후기 안내를 지운 뒤 새 안내를 후기 목록 맨 아래로 이동
     if settings.get('review_auto_message'):
-        auto_payload = create_v2_payload(settings['review_auto_message'])
         try:
-            await interaction.client.http.request(
-                discord.http.Route("POST", f"/channels/{review_channel.id}/messages"), 
-                json=auto_payload
-            )
-        except Exception as e:
-            print(f"후기 자동 메시 전송 실패: {e}")
+            async with bot.db_pool.acquire() as conn:
+                await replace_review_guide_message(
+                    conn,
+                    interaction.client.http,
+                    interaction.guild.id,
+                    review_channel.id,
+                    settings['review_auto_message'],
+                )
+        except Exception:
+            logging.exception("후기 자동 안내 교체 실패: guild=%s", interaction.guild.id)
     
     await interaction.followup.send("✅ 후기 등록이 정상적으로 완료되었습니다!" + reward_text, ephemeral=True)
 
