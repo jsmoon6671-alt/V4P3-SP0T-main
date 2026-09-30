@@ -62,7 +62,7 @@ def watermark_review_image(
     pattern = pattern.resize(base.size, Image.Resampling.LANCZOS)
     base.alpha_composite(pattern, (0, 0))
 
-    # 1번 워터마크는 오른쪽 위와 왼쪽 아래에 각각 표시합니다.
+    # 1번 워터마크는 왼쪽 위, 3번 워터마크는 오른쪽 아래에 표시합니다.
     shortest_side = min(base.size)
     target_side = max(1, round(shortest_side * 0.34))
     scale = min(target_side / logo.width, target_side / logo.height)
@@ -81,15 +81,13 @@ def watermark_review_image(
     )
 
     margin = max(1, round(shortest_side * 0.02))
-    top_right = (
-        max(0, base.width - logo.width - margin),
-        margin,
-    )
-    bottom_left = (margin, max(0, base.height - logo.height - margin))
     top_left = (margin, margin)
-    base.alpha_composite(logo, top_right)
-    base.alpha_composite(logo, bottom_left)
-    base.alpha_composite(badge, top_left)
+    bottom_right = (
+        max(0, base.width - badge.width - margin),
+        max(0, base.height - badge.height - margin),
+    )
+    base.alpha_composite(logo, top_left)
+    base.alpha_composite(badge, bottom_right)
 
     flattened = Image.new("RGB", base.size, "white")
     flattened.paste(base, mask=base.getchannel("A"))
