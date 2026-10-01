@@ -2881,7 +2881,7 @@ async def create_device_price_post(
                 INSERT INTO price_lists (guild_id, type, name, price, options, image_url) 
                 VALUES ($1, $2, $3, $4, $5, $6) 
                 ON CONFLICT (guild_id, name) DO UPDATE 
-                SET price = $4, options = $5, image_url = $6;
+                SET type = $2, price = $4, options = $5, image_url = $6;
             ''', interaction.guild.id, '기기', 기기명, 가격, 색상, 사진.url if 사진 else "")
     
     try:
@@ -2892,6 +2892,59 @@ async def create_device_price_post(
             file=file
         )
         await interaction.followup.send(f"✅ 기기 가격표가 생성되고 시스템에 저장되었습니다! 바로가기: {thread_with_message.thread.mention}", ephemeral=True)
+    except discord.Forbidden:
+        await interaction.followup.send("❌ 봇에게 해당 포럼 채널에 포스트를 생성할 권한이 없습니다.", ephemeral=True)
+    except Exception as e:
+        await interaction.followup.send(f"❌ 포스트 생성 중 오류가 발생했습니다: {e}", ephemeral=True)
+
+
+@bot.tree.command(name="일회용가격표", description="포럼 채널에 일회용 가격표 포스트를 작성하고 DB에 영구 백업합니다.")
+@app_commands.describe(
+    채널="포스트를 작성할 포럼 채널을 선택해 주세요.",
+    일회용명="포스트의 제목(일회용명)을 입력해 주세요.",
+    사진="일회용 제품 사진을 업로드해 주세요.",
+    가격="일회용 제품의 가격을 입력해 주세요. (숫자만 또는 단위 포함)",
+    맛="일회용 제품의 맛을 입력해 주세요. (미리 작성 후 붙여넣거나 \\n 입력 시 줄바꿈 지원)"
+)
+async def create_disposable_price_post(
+    interaction: discord.Interaction,
+    채널: discord.ForumChannel,
+    일회용명: str,
+    사진: discord.Attachment,
+    가격: str,
+    맛: str
+):
+    await interaction.response.defer(ephemeral=True)
+
+    real_flavors = 맛.replace('\\n', '\n')
+    content = (
+        f"- 가격 : {가격} ( 택배비, 수수료 포함 )\n"
+        f"- 맛 : {real_flavors}\n"
+        "- 구매문의 : <#1553664487117168640>\n"
+        "** 품절 현황은 티켓에서! **\n"
+        "-# <a:__:1553621821268697128> 재고 및 가격은 GS와 CU가 다를 수 있습니다."
+    )
+
+    if bot.db_pool:
+        async with bot.db_pool.acquire() as conn:
+            await conn.execute('''
+                INSERT INTO price_lists (guild_id, type, name, price, options, image_url)
+                VALUES ($1, $2, $3, $4, $5, $6)
+                ON CONFLICT (guild_id, name) DO UPDATE
+                SET type = $2, price = $4, options = $5, image_url = $6;
+            ''', interaction.guild.id, '일회용', 일회용명, 가격, 맛, 사진.url if 사진 else "")
+
+    try:
+        file = await 사진.to_file()
+        thread_with_message = await 채널.create_thread(
+            name=일회용명,
+            content=content,
+            file=file
+        )
+        await interaction.followup.send(
+            f"✅ 일회용 가격표가 생성되고 시스템에 저장되었습니다! 바로가기: {thread_with_message.thread.mention}",
+            ephemeral=True,
+        )
     except discord.Forbidden:
         await interaction.followup.send("❌ 봇에게 해당 포럼 채널에 포스트를 생성할 권한이 없습니다.", ephemeral=True)
     except Exception as e:
@@ -2933,7 +2986,7 @@ async def create_liquid_price_post(
                 INSERT INTO price_lists (guild_id, type, name, price, options, image_url) 
                 VALUES ($1, $2, $3, $4, $5, $6) 
                 ON CONFLICT (guild_id, name) DO UPDATE 
-                SET price = $4, options = $5, image_url = $6;
+                SET type = $2, price = $4, options = $5, image_url = $6;
             ''', interaction.guild.id, '액상', 액상명, 가격, 맛, 사진.url if 사진 else "")
     
     try:
@@ -2950,7 +3003,7 @@ async def create_liquid_price_post(
         await interaction.followup.send(f"❌ 포스트 생성 중 오류가 발생했습니다: {e}", ephemeral=True)
 
 
-@bot.tree.command(name="가격표복구", description="DB에 저장된 모든 가격표(기기/액상)를 지정한 포럼 채널에 한 번에 복구(생성)합니다.")
+@bot.tree.command(name="가격표복구", description="DB에 저장된 모든 가격표(기기/액상/일회용)를 지정한 포럼 채널에 복구합니다.")
 @app_commands.describe(채널="가격표를 한 번에 복구할 포럼 채널을 선택해 주세요.")
 async def restore_price_lists(interaction: discord.Interaction, 채널: discord.ForumChannel):
     if not interaction.user.guild_permissions.administrator and not interaction.user.guild_permissions.manage_channels:
@@ -2967,7 +3020,7 @@ async def restore_price_lists(interaction: discord.Interaction, 채널: discord.
         rows = await conn.fetch('SELECT * FROM price_lists WHERE guild_id = $1', interaction.guild.id)
         
     if not rows:
-        await interaction.followup.send("❌ DB에 저장된 가격표가 없습니다. `/기기가격표` 또는 `/액상가격표` 명령어로 먼저 등록해 주세요.", ephemeral=True)
+        await interaction.followup.send("❌ DB에 저장된 가격표가 없습니다. `/기기가격표`, `/액상가격표`, `/일회용가격표`로 먼저 등록해 주세요.", ephemeral=True)
         return
         
     success_cnt = 0
@@ -2990,7 +3043,7 @@ async def restore_price_lists(interaction: discord.Interaction, 채널: discord.
                 "** 품절 현황은 티켓에서! **\n"
                 "-# <a:__:1553621821268697128> 재고 및 가격은 GS와 CU가 다를 수 있습니다."
             )
-        else:
+        elif p_type in ('액상', '일회용'):
             content = (
                 f"- 가격 : {price} ( 택배비, 수수료 포함 )\n"
                 f"- 맛 : {real_options}\n"
@@ -2998,6 +3051,10 @@ async def restore_price_lists(interaction: discord.Interaction, 채널: discord.
                 "** 품절 현황은 티켓에서! **\n"
                 "-# <a:__:1553621821268697128> 재고 및 가격은 GS와 CU가 다를 수 있습니다."
             )
+        else:
+            print(f"알 수 없는 가격표 종류를 건너뜁니다: {p_type}")
+            fail_cnt += 1
+            continue
             
         file = None
         try:
