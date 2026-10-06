@@ -8,6 +8,13 @@ import discord
 from discord.ext import commands, tasks
 
 from loyalty_points import get_balance
+from admin_roles import (
+    configured_admin_member_ids,
+    get_admin_role_ids,
+    initialize_admin_roles_schema,
+    member_has_admin_role,
+    purge_admin_chat_point_activity,
+)
 
 LOG = logging.getLogger(__name__)
 KST = dt.timezone(dt.timedelta(hours=9))
@@ -22,6 +29,7 @@ def clock_parts(now):
 
 
 async def initialize_chat_points_schema(conn):
+    await initialize_admin_roles_schema(conn)
     async with conn.transaction():
         await conn.execute('''
             CREATE TABLE IF NOT EXISTS chat_point_settings (
@@ -356,6 +364,10 @@ class ChatPointsCog(commands.Cog):
             return
         try:
             async with self.bot.db_pool.acquire() as conn:
+                admin_role_ids = await get_admin_role_ids(conn, message.guild.id)
+                if member_has_admin_role(message.author, admin_role_ids):
+                    await purge_admin_chat_point_activity(conn, message.guild.id, {message.author.id})
+                    return
                 await record_activity(conn, message.guild.id, message.channel.id, message.author.id,
                                       message.id, message.created_at)
         except Exception:
@@ -380,6 +392,12 @@ class ChatPointsCog(commands.Cog):
                 reward_due = as_datetime(setting['next_reward_at']) <= now
                 if reward_due or daily_due:
                     async with self.bot.db_pool.acquire() as conn:
+                        get_guild = getattr(self.bot, 'get_guild', None)
+                        guild = get_guild(guild_id) if get_guild else None
+                        if guild is not None:
+                            admin_role_ids = await get_admin_role_ids(conn, guild_id)
+                            excluded_ids = configured_admin_member_ids(guild, admin_role_ids)
+                            await purge_admin_chat_point_activity(conn, guild_id, excluded_ids)
                         await settle_activity(conn, guild_id, now, include_daily=daily_due)
                     self._daily_checked[guild_id] = closed_day
                     await self.notify_rewards(guild_id)

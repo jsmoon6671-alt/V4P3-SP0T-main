@@ -17,16 +17,16 @@ from bs4 import BeautifulSoup
 from event_broadcast import register_event_command
 from store_lookup import brand_selector, lookup_panel, handle_brand_selection
 from chat_points import (
-    initialize_chat_points_schema, ChatPointsCog,
+    ChatPointsCog,
     configure_chat_points, handle_reward_interaction, configure_reward_log,
 )
 from join_applications import (
-    initialize_join_application_schema, set_alert_channel, set_staff_role,
+    set_alert_channel, set_staff_role,
     normalize_questions, create_application_panel, handle_application_button,
     handle_application_decision,
 )
 from loyalty_points import (
-    REVIEW_GUIDE, PointsError, initialize_points_schema, get_balance,
+    REVIEW_GUIDE, PointsError, get_balance,
     award_review_points, parse_amount, parse_points, request_payment,
     reset_failed_payment, resolve_payment, cancel_order_record, payment_summary, maximum_points, adjust_points,
 )
@@ -35,6 +35,13 @@ from delivery_tracking import (
     normalize_waybill, safe_text, track_shipment,
 )
 from review_watermark import ReviewImageError, watermark_review_image
+from admin_roles import register_admin_role_command
+from chat_ranking import (
+    ChatRankingCog,
+    handle_rank_page,
+    register_chat_ranking_commands,
+)
+from database import initialize_database
 
 # 한국 표준시(KST) 설정
 KST = datetime.timezone(datetime.timedelta(hours=9))
@@ -175,161 +182,21 @@ class MyBot(commands.Bot):
             print("✅ PostgreSQL 데이터베이스 연결에 성공했습니다!")
             
             async with self.db_pool.acquire() as conn:
-                # 테이블 생성
-                await conn.execute('''
-                    CREATE TABLE IF NOT EXISTS guild_settings (
-                        guild_id BIGINT PRIMARY KEY,
-                        approval_channel_id BIGINT,
-                        log_channel_id BIGINT,
-                        ticket_cat_purchase BIGINT,
-                        ticket_cat_general BIGINT,
-                        ticket_cat_partner BIGINT,
-                        archive_cat_purchase BIGINT,
-                        archive_cat_general BIGINT,
-                        archive_cat_partner BIGINT,
-                        ticket_log_channel_id BIGINT,
-                        tier_log_channel_id BIGINT,
-                        buyer_role_id BIGINT,
-                        review_channel_id BIGINT,
-                        leaderboard_channel_id BIGINT,
-                        leaderboard_message_id BIGINT,
-                        clock_in_vc BIGINT,
-                        clock_out_vc BIGINT,
-                        clock_log_channel BIGINT,
-                        bank_name TEXT,
-                        account_number TEXT,
-                        account_holder TEXT,
-                        pop_device_channel_id BIGINT,
-                        pop_device_message_id BIGINT,
-                        pop_liquid_channel_id BIGINT,
-                        pop_liquid_message_id BIGINT,
-                        buyer_info_channel_id BIGINT,
-                        review_auto_message TEXT,
-                        review_auto_message_id BIGINT,
-                        review_auto_message_channel_id BIGINT,
-                        leaderboard_first_role_id BIGINT,
-                        leaderboard_first_user_id BIGINT,
-                        anonymous_role_id BIGINT
-                    );
-                ''')
-                
-                await conn.execute('''
-                    CREATE TABLE IF NOT EXISTS orders (
-                        order_id VARCHAR(50) PRIMARY KEY,
-                        guild_id BIGINT,
-                        original_channel_id BIGINT,
-                        buyer_id BIGINT,
-                        product TEXT,
-                        quantity TEXT,
-                        amount TEXT,
-                        status VARCHAR(20),
-                        is_anonymous BOOLEAN DEFAULT FALSE,
-                        depositor_name TEXT,
-                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                    );
-                ''')
-                
-                await conn.execute('''
-                    CREATE TABLE IF NOT EXISTS user_info (
-                        user_id BIGINT PRIMARY KEY,
-                        name TEXT,
-                        contact TEXT,
-                        address TEXT,
-                        cvs TEXT,
-                        is_anonymous BOOLEAN DEFAULT FALSE,
-                        total_spent BIGINT DEFAULT 0
-                    );
-                ''')
-                
-                await conn.execute('''
-                    CREATE TABLE IF NOT EXISTS tickets (
-                        channel_id BIGINT PRIMARY KEY,
-                        user_id BIGINT,
-                        ticket_type TEXT,
-                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                    );
-                ''')
-                
-                await conn.execute('''
-                    CREATE TABLE IF NOT EXISTS vip_tiers (
-                        guild_id BIGINT,
-                        role_id BIGINT,
-                        required_amount BIGINT,
-                        PRIMARY KEY (guild_id, role_id)
-                    );
-                ''')
-
-                # 가격표 자동 백업 및 복구를 위한 신규 테이블
-                await conn.execute('''
-                    CREATE TABLE IF NOT EXISTS price_lists (
-                        guild_id BIGINT,
-                        type VARCHAR(20),
-                        name TEXT,
-                        price TEXT,
-                        options TEXT,
-                        image_url TEXT,
-                        PRIMARY KEY (guild_id, name)
-                    );
-                ''')
-                
-                # 기존 테이블에 새 컬럼 강제 업데이트 (오류 발생 시 무시)
-                updates = [
-                    'ALTER TABLE user_info ADD COLUMN is_anonymous BOOLEAN DEFAULT FALSE;',
-                    'ALTER TABLE user_info ADD COLUMN total_spent BIGINT DEFAULT 0;',
-                    'ALTER TABLE orders ADD COLUMN is_anonymous BOOLEAN DEFAULT FALSE;',
-                    'ALTER TABLE orders ADD COLUMN depositor_name TEXT;',
-                    'ALTER TABLE orders ADD COLUMN created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP;',
-                    'ALTER TABLE guild_settings ADD COLUMN ticket_cat_purchase BIGINT;',
-                    'ALTER TABLE guild_settings ADD COLUMN ticket_cat_general BIGINT;',
-                    'ALTER TABLE guild_settings ADD COLUMN ticket_cat_partner BIGINT;',
-                    'ALTER TABLE guild_settings ADD COLUMN archive_cat_purchase BIGINT;',
-                    'ALTER TABLE guild_settings ADD COLUMN archive_cat_general BIGINT;',
-                    'ALTER TABLE guild_settings ADD COLUMN archive_cat_partner BIGINT;',
-                    'ALTER TABLE guild_settings ADD COLUMN ticket_log_channel_id BIGINT;',
-                    'ALTER TABLE guild_settings ADD COLUMN tier_log_channel_id BIGINT;',
-                    'ALTER TABLE guild_settings ADD COLUMN buyer_role_id BIGINT;',
-                    'ALTER TABLE guild_settings ADD COLUMN review_channel_id BIGINT;',
-                    'ALTER TABLE guild_settings ADD COLUMN leaderboard_channel_id BIGINT;',
-                    'ALTER TABLE guild_settings ADD COLUMN leaderboard_message_id BIGINT;',
-                    'ALTER TABLE guild_settings ADD COLUMN clock_in_vc BIGINT;',
-                    'ALTER TABLE guild_settings ADD COLUMN clock_out_vc BIGINT;',
-                    'ALTER TABLE guild_settings ADD COLUMN clock_log_channel BIGINT;',
-                    'ALTER TABLE guild_settings ADD COLUMN bank_name TEXT;',
-                    'ALTER TABLE guild_settings ADD COLUMN account_number TEXT;',
-                    'ALTER TABLE guild_settings ADD COLUMN account_holder TEXT;',
-                    'ALTER TABLE guild_settings ADD COLUMN pop_device_channel_id BIGINT;',
-                    'ALTER TABLE guild_settings ADD COLUMN pop_device_message_id BIGINT;',
-                    'ALTER TABLE guild_settings ADD COLUMN pop_liquid_channel_id BIGINT;',
-                    'ALTER TABLE guild_settings ADD COLUMN pop_liquid_message_id BIGINT;',
-                    'ALTER TABLE guild_settings ADD COLUMN buyer_info_channel_id BIGINT;',
-                    'ALTER TABLE guild_settings ADD COLUMN review_auto_message TEXT;',
-                    'ALTER TABLE guild_settings ADD COLUMN review_auto_message_id BIGINT;',
-                    'ALTER TABLE guild_settings ADD COLUMN review_auto_message_channel_id BIGINT;',
-                    'ALTER TABLE guild_settings ADD COLUMN leaderboard_first_role_id BIGINT;',
-                    'ALTER TABLE guild_settings ADD COLUMN leaderboard_first_user_id BIGINT;',
-                    'ALTER TABLE guild_settings ADD COLUMN anonymous_role_id BIGINT;'
-                ]
-                
-                for query in updates:
-                    try:
-                        await conn.execute(query)
-                    except Exception:
-                        pass
-                await initialize_points_schema(conn)
-                await initialize_chat_points_schema(conn)
-                await initialize_join_logs(conn)
-                await initialize_join_application_schema(conn)
+                await initialize_database(conn)
         else:
             print("⚠️ DATABASE_URL이 설정되지 않아 DB 기능을 사용할 수 없습니다.")
 
         await self.tree.sync()
         if self.db_pool is not None:
             await self.add_cog(ChatPointsCog(self))
+            await self.add_cog(ChatRankingCog(self))
         leaderboard_updater.start()  # 실시간 랭킹 및 인기 품목 루프 시작
         print('✅ 슬래시 명령어 동기화 및 랭킹/인기 시스템이 시작되었습니다!')
 
 bot = MyBot()
 register_event_command(bot)
+register_admin_role_command(bot)
+register_chat_ranking_commands(bot)
 
 
 # ==========================================
@@ -1450,8 +1317,31 @@ async def cancel_order(interaction: discord.Interaction, 주문번호: str):
 # ==========================================
 # [기능 5] 문의 티켓 시스템 (모달 및 생성)
 # ==========================================
+PURCHASE_INFO_FIELDS = ("name", "contact", "address", "cvs")
+
+
+def has_complete_purchase_info(user_data) -> bool:
+    """구매 배송에 필요한 정보가 모두 등록되어 있는지 확인합니다."""
+    if not user_data:
+        return False
+
+    try:
+        return all(str(user_data[field] or "").strip() for field in PURCHASE_INFO_FIELDS)
+    except (KeyError, TypeError):
+        return False
+
+
+def build_missing_purchase_info_notice(user_id: int) -> str:
+    return (
+        "## ⚠️ 구매자 정보 미등록\n\n"
+        f"<@{user_id}>님, 아직 배송 정보가 등록되지 않았습니다!\n"
+        "빠른 발송을 위해 채널 밖에서 <#1553664818349608960> 채널에서 [정보 등록] 버튼을 눌러 배송지를 등록해 주세요."
+    )
+
+
 async def create_ticket_channel(interaction: discord.Interaction, t_type: str, type_kr: str, form_answers: dict):
     await interaction.response.defer(ephemeral=True)
+    purchase_info_missing = False
     
     async with bot.db_pool.acquire() as conn:
         settings = await conn.fetchrow('SELECT * FROM guild_settings WHERE guild_id = $1', interaction.guild.id)
@@ -1529,7 +1419,7 @@ async def create_ticket_channel(interaction: discord.Interaction, t_type: str, t
         if t_type == "purchase":
             user_data = await conn.fetchrow('SELECT * FROM user_info WHERE user_id = $1', interaction.user.id)
             
-            if user_data and user_data['name'] and user_data['contact'] and user_data['address']:
+            if has_complete_purchase_info(user_data):
                 info_content = (
                     "## 📋 구매자 등록 배송 정보\n\n"
                     "`👤`**이름:** `" + user_data['name'] + "`\n\n"
@@ -1538,37 +1428,37 @@ async def create_ticket_channel(interaction: discord.Interaction, t_type: str, t
                     "`🏪`**편의점:** `" + user_data['cvs'] + "`\n\n"
                     "-# 💡 관리자는 위 정보를 바탕으로 상품을 발송합니다."
                 )
-                color_val = 0x32CD32
-            else:
-                info_content = (
-                    "## ⚠️ 구매자 정보 미등록\n\n"
-                    f"{interaction.user.mention}님, 아직 배송 정보가 등록되지 않았습니다!\n"
-                    "빠른 발송을 위해 채널 밖에서 <#1553664818349608960> 채널에서 [정보 등록] 버튼을 눌러 배송지를 등록해 주세요."
+                info_payload = {
+                    "flags": 1 << 15,
+                    "components": [
+                        {
+                            "type": 17,
+                            "accent_color": 0x32CD32,
+                            "components": [
+                                {
+                                    "type": 10,
+                                    "content": info_content
+                                }
+                            ]
+                        }
+                    ]
+                }
+
+                await interaction.client.http.request(
+                    discord.http.Route("POST", f"/channels/{ticket_channel.id}/messages"),
+                    json=info_payload
                 )
-                color_val = 0xFF0000
-                
-            info_payload = {
-                "flags": 1 << 15, 
-                "components": [
-                    {
-                        "type": 17, 
-                        "accent_color": color_val, 
-                        "components": [
-                            {
-                                "type": 10, 
-                                "content": info_content
-                            }
-                        ]
-                    }
-                ]
-            }
-            
-            await interaction.client.http.request(
-                discord.http.Route("POST", f"/channels/{ticket_channel.id}/messages"), 
-                json=info_payload
-            )
+            else:
+                purchase_info_missing = True
                 
         await interaction.followup.send(f"✅ 티켓이 정상적으로 생성되었습니다: {ticket_channel.mention}", ephemeral=True)
+
+        if purchase_info_missing:
+            await interaction.followup.send(
+                build_missing_purchase_info_notice(interaction.user.id),
+                ephemeral=True,
+                allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False)
+            )
 
 
 class PurchaseTicketModal(discord.ui.Modal, title="💳 구매 문의 작성"):
@@ -3091,6 +2981,10 @@ async def on_interaction(interaction: discord.Interaction):
         
     custom_id = interaction.data.get("custom_id", "")
 
+    if custom_id.startswith("chat_rank_page:"):
+        await handle_rank_page(interaction, bot)
+        return
+
     if custom_id.startswith("join_application_decision:"):
         await handle_application_decision(interaction, bot.db_pool)
         return
@@ -3710,13 +3604,3 @@ async def on_interaction(interaction: discord.Interaction):
                 discord.http.Route("POST", f"/channels/{order['original_channel_id']}/messages"), 
                 json=noti_payload
             )
-
-
-# ==========================================
-# 봇 구동 (Railway 토큰)
-# ==========================================
-token = os.environ.get("BOT_TOKEN")
-if token:
-    bot.run(token)
-else:
-    print("⚠️ BOT_TOKEN이 설정되지 않아 봇을 실행할 수 없습니다.")
