@@ -71,6 +71,9 @@ async def initialize_points_schema(conn):
             ALTER TABLE orders ADD COLUMN IF NOT EXISTS payment_requested BOOLEAN NOT NULL DEFAULT FALSE;
             ALTER TABLE orders ADD COLUMN IF NOT EXISTS cash_amount BIGINT CHECK (cash_amount >= 0);
             ALTER TABLE orders ADD COLUMN IF NOT EXISTS points_allowed BOOLEAN NOT NULL DEFAULT TRUE;
+            ALTER TABLE orders ADD COLUMN IF NOT EXISTS purchase_log_channel_id BIGINT;
+            ALTER TABLE orders ADD COLUMN IF NOT EXISTS purchase_log_message_id BIGINT;
+            ALTER TABLE orders ADD COLUMN IF NOT EXISTS processed_at TIMESTAMPTZ;
             UPDATE orders SET payment_requested = TRUE
                 WHERE status = 'PENDING' AND NOT payment_requested
                 AND depositor_name IS NOT NULL AND BTRIM(depositor_name) <> '';
@@ -208,8 +211,14 @@ async def resolve_payment(conn, order_id, guild_id, approve):
             raise PointsError("이미 처리된 요청입니다.")
         if not order['payment_requested'] and not order['depositor_name']:
             raise PointsError("구매자의 결제 요청이 아직 없습니다.")
-        await conn.execute('UPDATE orders SET status = $2 WHERE order_id = $1',
-                           order_id, 'APPROVED' if approve else 'REJECTED')
+        processed_at = await conn.fetchval('''
+            UPDATE orders
+            SET status = $2, processed_at = COALESCE(processed_at, CURRENT_TIMESTAMP)
+            WHERE order_id = $1
+            RETURNING processed_at
+        ''', order_id, 'APPROVED' if approve else 'REJECTED')
+        order['status'] = 'APPROVED' if approve else 'REJECTED'
+        order['processed_at'] = processed_at
         if approve:
             await conn.execute('''
                 INSERT INTO user_info (user_id, total_spent) VALUES ($1, $2)

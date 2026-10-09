@@ -42,7 +42,7 @@ from chat_ranking import (
     register_chat_ranking_commands,
 )
 from database import initialize_database
-from order_editing import register_order_edit_command
+from order_editing import build_purchase_log_payload, register_order_edit_command
 
 # 한국 표준시(KST) 설정
 KST = datetime.timezone(datetime.timedelta(hours=9))
@@ -198,7 +198,6 @@ bot = MyBot()
 register_event_command(bot)
 register_admin_role_command(bot)
 register_chat_ranking_commands(bot)
-register_order_edit_command(bot)
 
 
 # ==========================================
@@ -2129,6 +2128,9 @@ async def update_leaderboard(guild_id: int):
         print(f"랭킹 업데이트 오류가 발생했습니다: {e}")
 
 
+register_order_edit_command(bot, update_leaderboard)
+
+
 @bot.tree.command(name="랭킹패널", description="실시간 누적 구매 금액 순위 패널을 생성합니다.")
 async def send_leaderboard_panel(interaction: discord.Interaction):
     if not bot.db_pool: 
@@ -3474,7 +3476,6 @@ async def on_interaction(interaction: discord.Interaction):
         now_str = datetime.datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S")
         buyer_mention = f"<@{order['buyer_id']}>"
         anonymous_role_id = settings.get('anonymous_role_id') if settings else None
-        purchase_log_buyer = f"<@&{anonymous_role_id}>" if anonymous_role_id else "**익명**"
         status_word, color_val = ("✅ 승인", 0x32CD32) if action == 'approve' else ("❌ 거절", 0xFF0000)
         
         depositor_name = order.get('depositor_name') or "알 수 없음"
@@ -3528,48 +3529,24 @@ async def on_interaction(interaction: discord.Interaction):
 
         if action == 'approve':
             if settings and settings['log_channel_id']:
-                log_txt = (
-                    "## VAPE SP0T Purchase Log\n\n"
-                    "```- 구매가 완료되었습니다.\n"
-                    "> 즐거운 흡연 되시길 바랍니다.```\n\n"
-                    "`🧾`구매정보\n\n"
-                    "`👤`**구매자**\n"
-                    f"{purchase_log_buyer}\n\n"
-                    "`📦`**상품**\n"
-                    f"{formatted_product}\n\n"
-                    "`◾`**수량**\n"
-                    f"`{order['quantity']}`\n\n"
-                    "`💰`**금액**\n"
-                    f"{payment_summary(order)}\n\n"
-                    "`🕒`**구매시각**\n"
-                    f"`{now_str}`\n\n"
-                    "**```믿고 구매해 주셔서 감사합니다.```**"
-                )
-                
-                log_payload = {
-                    "flags": 1 << 15, 
-                    "allowed_mentions": (
-                        {"parse": [], "roles": [str(anonymous_role_id)]}
-                        if anonymous_role_id else {"parse": []}
-                    ),
-                    "components": [
-                        {
-                            "type": 17, 
-                            "accent_color": 0x32CD32, 
-                            "components": [
-                                {
-                                    "type": 10, 
-                                    "content": log_txt
-                                }
-                            ]
-                        }
-                    ]
-                }
-                
-                await interaction.client.http.request(
+                log_payload = build_purchase_log_payload(order, anonymous_role_id)
+                log_response = await interaction.client.http.request(
                     discord.http.Route("POST", f"/channels/{settings['log_channel_id']}/messages"), 
                     json=log_payload
                 )
+                if log_response and log_response.get('id'):
+                    async with bot.db_pool.acquire() as conn:
+                        await conn.execute(
+                            """
+                            UPDATE orders
+                            SET purchase_log_channel_id = $3, purchase_log_message_id = $4
+                            WHERE order_id = $1 AND guild_id = $2
+                            """,
+                            order_id,
+                            interaction.guild.id,
+                            settings['log_channel_id'],
+                            int(log_response['id']),
+                        )
 
             noti_txt = (
                 "## VAPE SP0T Order Complete\n\n"
