@@ -1075,7 +1075,7 @@ async def send_custom_message(interaction: discord.Interaction, 내용: str):
 # ---------------------------------------------------------
 # [출퇴근 시스템]
 # ---------------------------------------------------------
-@bot.tree.command(name="출퇴근알림", description="출근·퇴근·외출·취침 로그가 전송될 채널을 설정합니다. (관리자 전용)")
+@bot.tree.command(name="출퇴근알림", description="출근·퇴근·외출·취침·기타 퇴근 로그 채널을 설정합니다. (관리자 전용)")
 async def set_clock_log_channel(interaction: discord.Interaction, 채널: discord.TextChannel):
     if not interaction.user.guild_permissions.administrator and not interaction.user.guild_permissions.manage_channels:
         await interaction.response.send_message("❌ 관리자만 설정할 수 있습니다.", ephemeral=True)
@@ -1100,6 +1100,106 @@ async def set_clock_vc(interaction: discord.Interaction, 출근채널: discord.V
         
     await interaction.response.send_message(f"✅ 출근 음성 채널: {출근채널.mention}\n✅ 퇴근 음성 채널: {퇴근채널.mention}\n설정이 완료되었습니다.", ephemeral=True)
 
+
+def clock_reason_text(value: str) -> str:
+    """기타 퇴근 사유가 코드블록이나 추가 멘션을 만들지 않도록 표시용으로 정리합니다."""
+    return value.strip().replace("`", "ˋ").replace("@", "@\u200b")
+
+
+async def process_clock_action(interaction: discord.Interaction, custom_id: str, reason: str | None = None):
+    if not bot.db_pool:
+        await interaction.response.send_message("❌ DB 오류가 발생했습니다.", ephemeral=True)
+        return
+
+    clock_actions = {
+        "clock_in": ("출근", "🏢", 0x32CD32, "clock_in_vc"),
+        "clock_out": ("퇴근", "🏠", 0xFF0000, "clock_out_vc"),
+        "clock_away": ("외출", "🚶", 0x3498DB, None),
+        "clock_sleep": ("취침", "😴", 0x5865F2, None),
+        "clock_other": ("기타 퇴근", "📝", 0x95A5A6, "clock_out_vc"),
+    }
+    if custom_id not in clock_actions:
+        await interaction.response.send_message("❌ 알 수 없는 출퇴근 상태입니다.", ephemeral=True)
+        return
+
+    cleaned_reason = clock_reason_text(reason or "")
+    if custom_id == "clock_other" and not cleaned_reason:
+        await interaction.response.send_message("❌ 퇴근 이유를 입력해 주세요.", ephemeral=True)
+        return
+
+    await interaction.response.defer(ephemeral=True)
+    async with bot.db_pool.acquire() as conn:
+        settings = await conn.fetchrow(
+            "SELECT * FROM guild_settings WHERE guild_id = $1",
+            interaction.guild.id,
+        )
+    if not settings:
+        await interaction.followup.send("❌ 서버 설정이 등록되지 않았습니다.", ephemeral=True)
+        return
+
+    action_name, action_emoji, log_color, vc_setting = clock_actions[custom_id]
+    vc_id = settings[vc_setting] if vc_setting else None
+    log_ch_id = settings["clock_log_channel"]
+
+    if vc_id:
+        vc = interaction.guild.get_channel(vc_id)
+        if vc and isinstance(vc, discord.VoiceChannel):
+            try:
+                voice_client = interaction.guild.voice_client
+                if voice_client:
+                    if voice_client.channel.id != vc.id:
+                        await voice_client.move_to(vc)
+                else:
+                    await vc.connect(self_mute=True, self_deaf=True)
+            except Exception as exc:
+                logging.warning("음성 채널 접속 중 오류: %s", exc)
+
+    if log_ch_id:
+        log_ch = interaction.guild.get_channel(log_ch_id)
+        if log_ch:
+            now_str = datetime.datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S")
+            availability = (
+                "모든 업무가 가능합니다."
+                if custom_id == "clock_in"
+                else "모든 업무 확인이 늦을 수 있습니다."
+            )
+            reason_line = f"`📝` **퇴근 이유:** {cleaned_reason}\n" if cleaned_reason else ""
+            log_content = (
+                "@everyone\n\n"
+                f"## {action_emoji} {action_name} 알림\n\n"
+                f"`👤` **유저:** {interaction.user.mention}\n"
+                f"`🕒` **시간:** `{now_str}`\n"
+                f"{reason_line}\n"
+                f"> **{availability}**"
+            )
+            log_payload = create_v2_payload(log_content, color=log_color)
+            log_payload["allowed_mentions"] = {"parse": ["everyone"]}
+            try:
+                await interaction.client.http.request(
+                    discord.http.Route("POST", f"/channels/{log_ch.id}/messages"),
+                    json=log_payload,
+                )
+            except discord.HTTPException:
+                logging.exception("출퇴근 알림 전송 실패: guild=%s", interaction.guild.id)
+
+    await interaction.followup.send(f"✅ {action_name} 처리가 완료되었습니다.", ephemeral=True)
+
+
+class OtherClockOutModal(discord.ui.Modal):
+    def __init__(self):
+        super().__init__(title="기타 퇴근 사유")
+        self.reason = discord.ui.TextInput(
+            label="퇴근 이유",
+            placeholder="버튼에 없는 퇴근 사유를 입력해 주세요.",
+            style=discord.TextStyle.paragraph,
+            required=True,
+            max_length=500,
+        )
+        self.add_item(self.reason)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await process_clock_action(interaction, "clock_other", self.reason.value)
+
 @bot.tree.command(name="출퇴근패널", description="직원 상태를 기록할 수 있는 출퇴근 버튼 패널을 생성합니다. (관리자 전용)")
 async def send_clock_panel(interaction: discord.Interaction):
     if not interaction.user.guild_permissions.administrator and not interaction.user.guild_permissions.manage_channels:
@@ -1108,7 +1208,7 @@ async def send_clock_panel(interaction: discord.Interaction):
         
     content = (
         "## 🏢 출퇴근 기록\n\n"
-        "- 아래 버튼을 눌러 출근·퇴근·외출·취침 상태를 기록해 주세요.\n"
+        "- 아래 버튼을 눌러 출근·퇴근·외출·취침·기타 퇴근 상태를 기록해 주세요.\n"
         "- 기록 시 지정된 알림 채널에 로그가 전송됩니다."
     )
     
@@ -1142,6 +1242,13 @@ async def send_clock_panel(interaction: discord.Interaction):
                 "label": "취침하기",
                 "custom_id": "clock_sleep",
                 "emoji": {"name": "😴"}
+            },
+            {
+                "type": 2,
+                "style": 2,
+                "label": "기타 퇴근",
+                "custom_id": "clock_other",
+                "emoji": {"name": "📝"}
             }
         ]
     }]
@@ -3010,59 +3117,12 @@ async def on_interaction(interaction: discord.Interaction):
         return
 
     # [출퇴근 버튼 처리]
+    if custom_id == "clock_other":
+        await interaction.response.send_modal(OtherClockOutModal())
+        return
+
     if custom_id in ["clock_in", "clock_out", "clock_away", "clock_sleep"]:
-        await interaction.response.defer(ephemeral=True)
-        async with bot.db_pool.acquire() as conn:
-            settings = await conn.fetchrow('SELECT * FROM guild_settings WHERE guild_id = $1', interaction.guild.id)
-            
-        if not settings:
-            await interaction.followup.send("❌ 서버 설정이 등록되지 않았습니다.", ephemeral=True)
-            return
-            
-        clock_actions = {
-            "clock_in": ("출근", "🏢", 0x32CD32, "clock_in_vc"),
-            "clock_out": ("퇴근", "🏠", 0xFF0000, "clock_out_vc"),
-            "clock_away": ("외출", "🚶", 0x3498DB, None),
-            "clock_sleep": ("취침", "😴", 0x5865F2, None),
-        }
-        action_name, action_emoji, log_color, vc_setting = clock_actions[custom_id]
-        vc_id = settings[vc_setting] if vc_setting else None
-        log_ch_id = settings['clock_log_channel']
-        
-        # 봇 음성 채널 접속 처리
-        if vc_id:
-            vc = interaction.guild.get_channel(vc_id)
-            if vc and isinstance(vc, discord.VoiceChannel):
-                try:
-                    voice_client = interaction.guild.voice_client
-                    if voice_client:
-                        if voice_client.channel.id != vc.id:
-                            await voice_client.move_to(vc)
-                    else:
-                        await vc.connect(self_mute=True, self_deaf=True)
-                except Exception as e:
-                    print(f"음성 채널 접속 중 오류가 발생했습니다: {e}")
-        
-        # 알림 로그 전송 처리 (한국 시간 KST)
-        if log_ch_id:
-            log_ch = interaction.guild.get_channel(log_ch_id)
-            if log_ch:
-                now_str = datetime.datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S")
-                log_content = (
-                    f"## {action_emoji} {action_name} 알림\n\n"
-                    f"`👤` **유저:** {interaction.user.mention}\n"
-                    f"`🕒` **시간:** `{now_str}`\n"
-                )
-                log_payload = create_v2_payload(log_content, color=log_color)
-                try:
-                    await interaction.client.http.request(
-                        discord.http.Route("POST", f"/channels/{log_ch.id}/messages"),
-                        json=log_payload
-                    )
-                except Exception:
-                    pass
-                    
-        await interaction.followup.send(f"✅ {action_name} 처리가 완료되었습니다.", ephemeral=True)
+        await process_clock_action(interaction, custom_id)
         return
 
     # 배송조회 처리
