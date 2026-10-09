@@ -42,6 +42,7 @@ from chat_ranking import (
     register_chat_ranking_commands,
 )
 from database import initialize_database
+from order_editing import register_order_edit_command
 
 # 한국 표준시(KST) 설정
 KST = datetime.timezone(datetime.timedelta(hours=9))
@@ -197,6 +198,7 @@ bot = MyBot()
 register_event_command(bot)
 register_admin_role_command(bot)
 register_chat_ranking_commands(bot)
+register_order_edit_command(bot)
 
 
 # ==========================================
