@@ -53,6 +53,7 @@ async function api(path, options = {}) {
 function route() {
   const id = location.hash.slice(1) || "home";
   $$(".page").forEach(page => page.classList.toggle("active", page.id === id));
+  $$("#nav a").forEach(link => link.classList.toggle("active", link.getAttribute("href") === `#${id}`));
   if (id === "account" && state.me) loadAccount();
   if (id === "cart" && state.me) {
     loadCart();
