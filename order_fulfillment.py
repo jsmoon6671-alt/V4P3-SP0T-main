@@ -36,12 +36,26 @@ async def _send_channel(bot, channel_id: int | None, payload: dict):
     )
 
 
+async def _send_dm(bot, user_id: int, payload: dict):
+    user = bot.get_user(user_id) or await bot.fetch_user(user_id)
+    dm = await user.create_dm()
+    return await _send_channel(bot, dm.id, payload)
+
+
 async def finalize_approved_order(bot, order: dict, *, processor: str = "Pushbullet 자동승인"):
     """자동승인 주문에도 기존 구매로그, 누적액, 역할, 랭킹 동기화를 적용한다."""
     guild_id = int(order["guild_id"])
     buyer_id = int(order["buyer_id"])
     guild = bot.get_guild(guild_id)
     async with bot.db_pool.acquire() as conn:
+        await conn.execute(
+            """
+            UPDATE orders
+            SET fulfillment_status='PAYMENT_APPROVED', fulfillment_updated_at=CURRENT_TIMESTAMP
+            WHERE order_id=$1 AND guild_id=$2
+            """,
+            order["order_id"], guild_id,
+        )
         settings_row = await conn.fetchrow("SELECT * FROM guild_settings WHERE guild_id = $1", guild_id)
         user_info = await conn.fetchrow("SELECT * FROM user_info WHERE user_id = $1", buyer_id)
     settings = dict(settings_row) if settings_row else {}
@@ -117,12 +131,16 @@ async def finalize_approved_order(bot, order: dict, *, processor: str = "Pushbul
         LOGGER.exception("자동승인 로그 전송 실패: order=%s", order["order_id"])
 
     try:
-        user = bot.get_user(buyer_id) or await bot.fetch_user(buyer_id)
-        await user.send(
-            "✅ 입금이 자동으로 확인되어 주문이 승인되었습니다.\n\n"
-            f"주문번호: `{order['order_id']}`\n"
-            f"상품: `{order['product']}`\n"
-            f"결제금액: `{int(order.get('cash_amount') or 0):,}원`"
+        await _send_dm(
+            bot,
+            buyer_id,
+            _v2(
+                "## ✅ 주문 승인완료\n\n"
+                "입금이 자동으로 확인되어 주문이 승인되었습니다.\n\n"
+                f"`◼️` **주문번호** : `{order['order_id']}`\n"
+                f"`◼️` **상품** : `{order['product']}`\n"
+                f"`◼️` **결제금액** : `{int(order.get('cash_amount') or 0):,}원`"
+            ),
         )
     except (discord.Forbidden, discord.NotFound, discord.HTTPException):
         pass
@@ -151,11 +169,16 @@ async def notify_expired_order(bot, order: dict):
     except Exception:
         LOGGER.exception("만료 주문 로그 전송 실패: order=%s", order["order_id"])
     try:
-        user = bot.get_user(buyer_id) or await bot.fetch_user(buyer_id)
-        await user.send(
-            "❌ 주문 신청 후 5분 안에 입금이 확인되지 않아 자동 취소되었습니다.\n"
-            f"주문번호: `{order['order_id']}`\n"
-            "사용한 포인트가 있다면 잔액으로 복구되었습니다."
+        await _send_dm(
+            bot,
+            buyer_id,
+            _v2(
+                "## ❌ 웹 주문 자동취소\n\n"
+                "주문 신청 후 5분 안에 입금이 확인되지 않아 자동 취소되었습니다.\n"
+                f"`◼️` **주문번호** : `{order['order_id']}`\n\n"
+                "사용한 포인트가 있다면 잔액으로 복구되었습니다.",
+                color=0xE74C3C,
+            ),
         )
     except (discord.Forbidden, discord.NotFound, discord.HTTPException):
         pass

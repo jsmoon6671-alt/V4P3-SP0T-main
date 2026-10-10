@@ -48,7 +48,7 @@ async def _request_json(session, method, endpoint, **kwargs):
         raise DeliveryTrackingError("배송조회 사이트의 응답 형식이 변경되었거나 일시적으로 조회할 수 없습니다.") from exc
 
 
-async def fetch_carriers():
+async def fetch_carriers(max_count=25):
     async with aiohttp.ClientSession(headers=HEADERS, timeout=aiohttp.ClientTimeout(total=20)) as session:
         data = await _request_json(session, "GET", "get_carriers.php")
     if not isinstance(data, list):
@@ -66,9 +66,9 @@ async def fetch_carriers():
             seen.add(carrier_id)
     if not carriers:
         raise DeliveryTrackingError("현재 조회 가능한 택배사가 없습니다. 잠시 후 다시 시도해 주세요.")
-    if len(carriers) > 25:
+    if max_count is not None and len(carriers) > max_count:
         raise DeliveryTrackingError("택배사 목록이 변경되었습니다. 배송조회 패널 업데이트가 필요합니다.")
-    return carriers
+    return carriers if max_count is None else carriers[:max_count]
 
 
 async def track_shipment(carrier_id, waybill):

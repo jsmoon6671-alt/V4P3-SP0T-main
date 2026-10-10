@@ -10,6 +10,9 @@ const state = {
   storeResults: [],
   adminCategories: [],
   adminProducts: [],
+  pointBalance: 0,
+  carriers: [],
+  trackingPreset: null,
 };
 
 const $ = (selector, parent = document) => parent.querySelector(selector);
@@ -59,6 +62,7 @@ function route() {
     loadCart();
     loadCheckoutCustomer();
   }
+  if (id === "tracking" && state.me) loadCarriers().then(applyTrackingPreset);
   if (id === "admin") openAdminGate();
   scrollTo(0, 0);
 }
@@ -187,10 +191,16 @@ function renderCart() {
       ${options.map(option => `<option value="${escapeHtml(option)}" ${option === item.selected_option ? "selected" : ""}>${escapeHtml(option)}</option>`).join("")}
     </select>` : "";
     return `<div class="cart-row">
-      <input type="checkbox" aria-label="상품 선택" data-select="${item.product_id}" ${state.selected.has(Number(item.product_id)) ? "checked" : ""}>
+      <input class="cart-check" type="checkbox" aria-label="상품 선택" data-select="${item.product_id}" ${state.selected.has(Number(item.product_id)) ? "checked" : ""}>
       <div class="grow"><strong>${escapeHtml(item.name)}</strong><br><small>${money(item.price)} · 재고 ${item.stock}</small>${optionField}</div>
-      <input type="number" aria-label="수량" min="1" max="${item.stock}" value="${item.quantity}" data-qty="${item.product_id}">
-      <button type="button" class="remove" data-remove="${item.product_id}">삭제</button>
+      <div class="cart-controls">
+        <div class="quantity-stepper" aria-label="수량 조절">
+          <button type="button" aria-label="수량 줄이기" data-qty-minus="${item.product_id}">−</button>
+          <input type="number" aria-label="수량" min="1" max="${item.stock}" value="${item.quantity}" data-qty="${item.product_id}">
+          <button type="button" aria-label="수량 늘리기" data-qty-plus="${item.product_id}">+</button>
+        </div>
+        <button type="button" class="remove" data-remove="${item.product_id}">삭제</button>
+      </div>
     </div>`;
   }).join("") : '<div class="empty">장바구니가 비어 있습니다.</div>';
 
@@ -202,6 +212,20 @@ function renderCart() {
   });
   $$("[data-qty]", box).forEach(input => {
     input.onchange = async () => saveCartRow(Number(input.dataset.qty), Number(input.value));
+  });
+  $$("[data-qty-minus]", box).forEach(button => {
+    button.onclick = async () => {
+      const input = $(`[data-qty="${button.dataset.qtyMinus}"]`, box);
+      const next = Math.max(Number(input.min), Number(input.value) - 1);
+      if (next !== Number(input.value)) await saveCartRow(Number(button.dataset.qtyMinus), next);
+    };
+  });
+  $$("[data-qty-plus]", box).forEach(button => {
+    button.onclick = async () => {
+      const input = $(`[data-qty="${button.dataset.qtyPlus}"]`, box);
+      const next = Math.min(Number(input.max), Number(input.value) + 1);
+      if (next !== Number(input.value)) await saveCartRow(Number(button.dataset.qtyPlus), next);
+    };
   });
   $$("[data-cart-option]", box).forEach(select => {
     select.onchange = async () => {
@@ -242,6 +266,7 @@ function cartTotal() {
   $("#cart-subtotal").textContent = money(subtotal);
   $("#cart-total").textContent = money(total);
   $("#selected-count").textContent = `${selectedRows.length}개 선택`;
+  updatePointUseHint(total);
 }
 
 async function loadCheckoutCustomer() {
@@ -252,9 +277,101 @@ async function loadCheckoutCustomer() {
       const input = $(`#checkout-form [name="${key}"]`);
       if (input && !input.value) input.value = data.customer[key] || "";
     }
+    state.pointBalance = Number(data.points || 0);
+    $("#checkout-point-balance").textContent = `보유 ${state.pointBalance.toLocaleString()}P`;
+    updatePointUseHint();
   } catch (error) {
     toast(error.message);
   }
+}
+
+function selectedCartTotal() {
+  const subtotal = state.cart
+    .filter(item => state.selected.has(Number(item.product_id)))
+    .reduce((sum, item) => sum + Number(item.price) * Number(item.quantity), 0);
+  return subtotal ? subtotal + 3000 : 0;
+}
+
+function maximumCheckoutPoints(total = selectedCartTotal()) {
+  const maximum = Math.min(state.pointBalance, 2000, total);
+  return maximum >= 500 ? maximum : 0;
+}
+
+function updatePointUseHint(total = selectedCartTotal()) {
+  const hint = $("#point-use-hint");
+  if (!hint) return;
+  const maximum = maximumCheckoutPoints(total);
+  hint.textContent = maximum
+    ? `500P부터 최대 ${maximum.toLocaleString()}P까지 사용할 수 있습니다. (1P = 1원)`
+    : "사용 가능한 포인트가 500P 미만이라 이번 결제에는 적용할 수 없습니다.";
+}
+
+function useAllPoints() {
+  if (state.pointBalance < 500) {
+    toast("보유 포인트가 500P 미만이라 사용할 수 없습니다.");
+    return;
+  }
+  const maximum = maximumCheckoutPoints();
+  if (maximum < 500) {
+    toast("이번 주문에 사용할 수 있는 포인트가 500P 미만입니다.");
+    return;
+  }
+  $("#checkout-form [name=\"points\"]").value = maximum;
+  toast(`${maximum.toLocaleString()}P를 적용했습니다.`);
+}
+
+async function loadCarriers() {
+  const select = $("#tracking-carrier");
+  if (!select || state.carriers.length) return;
+  try {
+    const data = await api("/api/tracking/carriers");
+    state.carriers = data.carriers || [];
+    select.innerHTML = '<option value="">택배사를 선택해 주세요</option>' + state.carriers.map(carrier => (
+      `<option value="${escapeHtml(carrier.id)}">${escapeHtml(carrier.name)}</option>`
+    )).join("");
+  } catch (error) {
+    select.innerHTML = '<option value="">택배사를 불러오지 못했습니다</option>';
+    toast(error.message);
+  }
+}
+
+function applyTrackingPreset() {
+  if (!state.trackingPreset) return;
+  const preset = state.trackingPreset;
+  state.trackingPreset = null;
+  const form = $("#tracking-form");
+  form.elements.waybill.value = preset.waybill || "";
+  form.elements.carrier_id.value = preset.carrier || "";
+  if (preset.carrier && form.elements.carrier_id.value) form.requestSubmit();
+  else form.elements.carrier_id.focus();
+}
+
+async function trackDelivery(event) {
+  event.preventDefault();
+  const form = Object.fromEntries(new FormData(event.target));
+  const button = event.target.querySelector('button[type="submit"]');
+  button.disabled = true;
+  button.textContent = "조회 중";
+  try {
+    const data = await api("/api/tracking", { method: "POST", body: JSON.stringify(form) });
+    renderTrackingResult(data);
+  } catch (error) {
+    $("#tracking-result").innerHTML = `<div class="empty">${escapeHtml(error.message)}</div>`;
+  } finally {
+    button.disabled = false;
+    button.textContent = "배송 조회하기";
+  }
+}
+
+function renderTrackingResult(data, target = "#tracking-result") {
+  const shipment = data.shipment || {};
+  const history = Array.isArray(shipment.history) ? shipment.history : [];
+  const box = typeof target === "string" ? $(target) : target;
+  box.innerHTML = `
+    <div class="tracking-head"><div><small>${escapeHtml(data.carrier_name || "택배사")}</small><h2>${escapeHtml(shipment.status || "배송 상태 확인 중")}</h2></div><span>${escapeHtml(data.waybill || "")}</span></div>
+    <dl class="tracking-meta"><div><dt>현재 위치</dt><dd>${escapeHtml(shipment.location || "정보 미제공")}</dd></div><div><dt>받는 분</dt><dd>${escapeHtml(shipment.receiver || "정보 미제공")}</dd></div></dl>
+    ${data.delivered ? '<div class="review-reminder"><strong>상품은 잘 받아보셨나요?</strong><p>배송이 완료되었습니다. Discord에서 <code>/후기작성</code> 명령어로 후기와 사진을 남겨 주세요.</p></div>' : ""}
+    <div class="tracking-history">${history.length ? history.map(item => `<article><i></i><div><strong>${escapeHtml(item.description || item.status || "배송 처리")}</strong><span>${escapeHtml(item.location || "위치 정보 없음")} · ${escapeHtml(item.time || "시간 정보 없음")}</span></div></article>`).join("") : '<div class="empty">아직 등록된 배송 이력이 없습니다.</div>'}</div>`;
 }
 
 function updateShippingMode() {
@@ -312,20 +429,63 @@ async function loadAccount() {
       const input = $(`#customer-form [name="${key}"]`);
       if (input) input.value = value || "";
     });
-    $("#point-balance").textContent = `${Number(customer.points).toLocaleString()}P`;
-    $("#orders").innerHTML = orders.orders.length ? orders.orders.map(order => `<article class="order">
+    state.pointBalance = Number(customer.points || 0);
+    $("#point-balance").textContent = `${state.pointBalance.toLocaleString()}P`;
+    $("#checkout-point-balance").textContent = `보유 ${state.pointBalance.toLocaleString()}P`;
+    $("#orders").innerHTML = orders.orders.length ? orders.orders.map(order => {
+      const progress = orderProgress(order);
+      return `<article class="order">
       <div class="order-head"><strong>${escapeHtml(order.order_id)}</strong><span class="badge ${order.status}">${statusText(order.status)}</span></div>
       <p>${escapeHtml(order.product)}</p>
       <small>${escapeHtml(order.amount)} · ${String(order.created_at).slice(0, 16).replace("T", " ")}</small>
-    </article>`).join("") : '<div class="empty">아직 주문내역이 없습니다.</div>';
+      <div class="order-progress"><div><span>${escapeHtml(progress.label)}</span><b>${progress.percent}%</b></div><div class="progress-track"><i style="width:${progress.percent}%"></i></div></div>
+      ${order.waybill_number ? `<div class="order-actions"><span>운송장 ${escapeHtml(order.waybill_number)}</span><button type="button" class="text-button" data-order-detail="${escapeHtml(order.order_id)}">상세조회</button></div><div class="order-detail" data-order-detail-box="${escapeHtml(order.order_id)}" hidden></div>` : ""}
+    </article>`;
+    }).join("") : '<div class="empty">아직 주문내역이 없습니다.</div>';
+    $$("[data-order-detail]").forEach(button => {
+      button.onclick = () => toggleOrderTracking(button);
+    });
   } catch (error) {
     if (error.message.includes("로그인")) location.href = "/auth/login";
     else toast(error.message);
   }
 }
 
+function orderProgress(order) {
+  if (order.status === "PENDING") return { label: "입금 대기", percent: 0 };
+  if (["CANCELLED", "REJECTED"].includes(order.status)) return { label: statusText(order.status), percent: 0 };
+  return ({
+    PAYMENT_APPROVED: { label: "승인완료", percent: 20 },
+    PRODUCT_PREPARING: { label: "상품준비중", percent: 40 },
+    SHIPPING_PREPARING: { label: "배송준비중", percent: 60 },
+    SHIPPING: { label: "배송중", percent: 80 },
+    DELIVERED: { label: "배송완료", percent: 100 },
+  })[order.fulfillment_status || "PAYMENT_APPROVED"] || { label: "처리중", percent: 20 };
+}
+
+async function toggleOrderTracking(button) {
+  const orderId = button.dataset.orderDetail;
+  const box = $(`[data-order-detail-box="${orderId}"]`);
+  if (!box.hidden) {
+    box.hidden = true;
+    button.textContent = "상세조회";
+    return;
+  }
+  box.hidden = false;
+  button.textContent = "상세 닫기";
+  box.innerHTML = '<div class="empty">배송 정보를 불러오는 중입니다.</div>';
+  try {
+    const data = await api(`/api/orders/${encodeURIComponent(orderId)}/tracking`);
+    renderTrackingResult(data, box);
+  } catch (error) {
+    box.innerHTML = `<div class="empty">${escapeHtml(error.message)}</div>`;
+  }
+  setTimeout(() => box.scrollIntoView({ behavior: "smooth", block: "nearest" }), 50);
+}
+
 const statusText = status => ({
   PENDING: "입금 대기", APPROVED: "구매 완료", CANCELLED: "자동 취소", REJECTED: "거절",
+  SHIPPING_READY: "배송 준비중", SHIPPING: "배송중", DELIVERED: "배송완료",
 })[status] || status;
 
 function bindForms() {
@@ -343,6 +503,8 @@ function bindForms() {
     }
   };
   $("#checkout-form").onsubmit = checkout;
+  $("#use-all-points").onclick = useAllPoints;
+  $("#tracking-form").onsubmit = trackDelivery;
   $("#channel-form").onsubmit = saveChannels;
   $("#shipping-method").onchange = updateShippingMode;
   $("#store-search").onclick = searchStores;
@@ -370,9 +532,23 @@ async function checkout(event) {
   const form = Object.fromEntries(new FormData(event.target));
   form.adult_confirmed = Boolean(form.adult_confirmed);
   form.product_ids = [...state.selected];
+  const points = Number(form.points || 0);
+  const maximum = maximumCheckoutPoints();
+  if (!Number.isInteger(points) || points < 0 || points > 2000 || (points > 0 && points < 500)) {
+    toast("포인트는 사용하지 않으려면 0P, 사용할 때는 500P~2,000P를 입력해 주세요.");
+    return;
+  }
+  if (points > maximum) {
+    toast(`현재 이 주문에 사용할 수 있는 포인트는 최대 ${maximum.toLocaleString()}P입니다.`);
+    return;
+  }
   try {
     const data = await api("/api/checkout", { method: "POST", body: JSON.stringify(form) });
     state.currentOrder = data.order_id;
+    $("#complete-eyebrow").textContent = "PAYMENT WAITING";
+    $("#complete-title").textContent = "입금을 기다리고 있습니다.";
+    $("#countdown").hidden = false;
+    $("#bank-info").hidden = false;
     $("#complete-order").textContent = data.order_id;
     $("#bank-info").innerHTML = data.cash_amount
       ? `<strong>${escapeHtml(data.bank.bank_name || "은행 미설정")} ${escapeHtml(data.bank.account_number || "")}</strong><br>${escapeHtml(data.bank.account_holder || "")} · ${money(data.cash_amount)}`
@@ -392,7 +568,7 @@ function startCountdown(data) {
   };
   draw();
   if (data.status === "APPROVED") {
-    $("#payment-status").textContent = "결제가 승인되었습니다.";
+    showPaymentApproved("결제가 승인되었습니다.");
     return;
   }
   state.timer = setInterval(async () => {
@@ -402,7 +578,7 @@ function startCountdown(data) {
       try {
         const order = await api(`/api/orders/${state.currentOrder}`);
         if (order.status === "APPROVED") {
-          $("#payment-status").textContent = "입금이 확인되어 자동 승인되었습니다.";
+          showPaymentApproved("입금이 확인되어 자동 승인되었습니다.");
           clearInterval(state.timer);
         } else if (order.status === "CANCELLED") {
           $("#payment-status").textContent = "5분 안에 입금이 확인되지 않아 주문이 취소되었습니다.";
@@ -411,6 +587,14 @@ function startCountdown(data) {
       } catch {}
     }
   }, 1000);
+}
+
+function showPaymentApproved(message) {
+  $("#complete-eyebrow").textContent = "PAYMENT APPROVED";
+  $("#complete-title").textContent = "승인완료";
+  $("#countdown").hidden = true;
+  $("#bank-info").hidden = true;
+  $("#payment-status").textContent = message;
 }
 
 function openAdminGate() {

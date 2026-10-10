@@ -8,14 +8,14 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@500;600;700;800&family=Noto+Sans+KR:wght@500;600;700;800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/static/styles.css?v=20261010-3">
+  <link rel="stylesheet" href="/static/styles.css?v=20261010-5">
 </head>
 <body>
   <div class="grain"></div>
   <header class="site-header">
     <a class="brand" href="#home"><span>V4P3</span> SP0T</a>
     <nav id="nav">
-      <a href="#home">스토어</a><a href="#account">내 정보</a><a href="#cart">장바구니 <b id="cart-count">0</b></a>
+      <a href="#home">스토어</a><a href="#account">내 정보</a><a href="#tracking">배송조회</a><a href="#cart">장바구니 <b id="cart-count">0</b></a>
       <a href="#admin" id="admin-link" hidden>관리자</a>
     </nav>
     <button class="button small" id="login-button">Discord 로그인</button>
@@ -50,6 +50,20 @@
       </div>
     </section>
 
+    <section id="tracking" class="page">
+      <div class="page-title"><p class="eyebrow">DELIVERY TRACKING</p><h1>배송조회</h1></div>
+      <div class="tracking-layout">
+        <form id="tracking-form" class="panel form-panel tracking-form">
+          <h2>운송장 조회</h2>
+          <p>택배사와 운송장 번호를 입력하면 현재 배송 상태를 확인할 수 있습니다.</p>
+          <label>택배사<select id="tracking-carrier" name="carrier_id" required><option value="">택배사 불러오는 중</option></select></label>
+          <label>운송장 번호<input name="waybill" inputmode="numeric" autocomplete="off" placeholder="숫자만 입력해 주세요" required></label>
+          <button class="button wide" type="submit">배송 조회하기</button>
+        </form>
+        <div id="tracking-result" class="panel tracking-result"><div class="empty">운송장 정보를 입력하면 배송 과정이 여기에 표시됩니다.</div></div>
+      </div>
+    </section>
+
     <section id="cart" class="page">
       <div class="page-title"><p class="eyebrow">YOUR CART</p><h1>장바구니</h1></div>
       <div class="checkout-grid">
@@ -76,7 +90,10 @@
           <p class="shipping-notice">배송비는 택배 방식과 관계없이 <strong>3,000원</strong>입니다.</p>
           <h2>결제 정보</h2>
           <label>입금자명<input name="depositor_name" required maxlength="30"></label>
-          <label>사용 포인트<input name="points" type="number" min="0" max="2000" value="0"></label>
+          <label>사용 포인트 <small id="checkout-point-balance" class="inline-balance">보유 0P</small>
+            <span class="point-input-row"><input name="points" type="number" min="0" max="2000" value="0"><button type="button" id="use-all-points" class="button secondary compact">전체 포인트 사용</button></span>
+          </label>
+          <small id="point-use-hint" class="hint">사용하지 않으면 0P, 사용할 때는 500P~2,000P까지 입력해 주세요.</small>
           <label class="check"><input name="adult_confirmed" type="checkbox" required><span>본인은 성인이며 구매 내용을 확인했습니다.</span></label>
           <small class="hint">입금자명과 결제금액이 알림과 정확히 일치하면 자동 승인됩니다.</small>
         </form>
@@ -94,7 +111,7 @@
     </section>
 
     <section id="complete" class="page">
-      <div class="completion panel"><div class="pulse"></div><p class="eyebrow">PAYMENT WAITING</p><h1>입금을 기다리고 있습니다.</h1><p>주문번호 <b id="complete-order"></b></p><strong id="countdown">05:00</strong><div id="bank-info"></div><p id="payment-status">푸시불렛 입금 알림을 기다리는 중입니다.</p><a class="button" href="#account">주문내역 보기</a></div>
+      <div class="completion panel"><div class="pulse"></div><p id="complete-eyebrow" class="eyebrow">PAYMENT WAITING</p><h1 id="complete-title">입금을 기다리고 있습니다.</h1><p>주문번호 <b id="complete-order"></b></p><strong id="countdown">05:00</strong><div id="bank-info"></div><p id="payment-status">푸시불렛 입금 알림을 기다리는 중입니다.</p><p class="completion-review">상품을 받으신 뒤 Discord에서 <b>/후기작성</b>으로 후기와 사진을 남겨 주세요.</p><a class="button" href="#account">주문내역 보기</a></div>
     </section>
 
     <section id="admin" class="page">
@@ -143,6 +160,6 @@
     </div>
   </div>
   <div id="toast"></div>
-  <script src="/static/app.js?v=20261010-3"></script>
+  <script src="/static/app.js?v=20261010-5"></script>
 </body>
 </html>

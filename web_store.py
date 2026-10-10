@@ -16,6 +16,12 @@ from urllib.parse import urlencode
 import aiohttp
 from aiohttp import web
 
+from delivery_tracking import (
+    DeliveryTrackingError,
+    fetch_carriers,
+    normalize_waybill,
+    track_shipment,
+)
 from loyalty_points import PointsError, get_balance, maximum_points, request_payment, resolve_payment
 from order_fulfillment import finalize_approved_order, notify_expired_order
 from payment_automation import (
@@ -109,6 +115,10 @@ async def initialize_web_store_schema(conn):
         ALTER TABLE orders ADD COLUMN IF NOT EXISTS shipping_cvs TEXT;
         ALTER TABLE orders ADD COLUMN IF NOT EXISTS shipping_method TEXT;
         ALTER TABLE orders ADD COLUMN IF NOT EXISTS shipping_fee BIGINT NOT NULL DEFAULT 0;
+        ALTER TABLE orders ADD COLUMN IF NOT EXISTS waybill_number TEXT;
+        ALTER TABLE orders ADD COLUMN IF NOT EXISTS carrier_id TEXT;
+        ALTER TABLE orders ADD COLUMN IF NOT EXISTS fulfillment_status TEXT NOT NULL DEFAULT 'PAYMENT_APPROVED';
+        ALTER TABLE orders ADD COLUMN IF NOT EXISTS fulfillment_updated_at TIMESTAMPTZ;
         """
     )
     await initialize_payment_automation_schema(conn)
@@ -219,6 +229,8 @@ class StoreServer:
             web.get("/api/me", self.me),
             web.get("/api/catalog", self.catalog),
             web.get("/api/stores", self.stores),
+            web.get("/api/tracking/carriers", self.tracking_carriers),
+            web.post("/api/tracking", self.tracking),
             web.get("/api/customer", self.customer),
             web.put("/api/customer", self.save_customer),
             web.get("/api/cart", self.cart),
@@ -226,6 +238,7 @@ class StoreServer:
             web.delete(r"/api/cart/{product_id:\d+}", self.delete_cart),
             web.post("/api/checkout", self.checkout),
             web.get("/api/orders", self.orders),
+            web.get(r"/api/orders/{order_id}/tracking", self.order_tracking),
             web.get(r"/api/orders/{order_id}", self.order),
             web.post("/api/admin/unlock", self.admin_unlock),
             web.get("/api/admin/dashboard", self.admin_dashboard),
@@ -439,6 +452,64 @@ class StoreServer:
             raise StoreError(str(exc)) from exc
         return web.json_response({"stores": results[:25]}, dumps=lambda value: json.dumps(value, ensure_ascii=False))
 
+    async def tracking_carriers(self, request):
+        await self._user(request)
+        try:
+            carriers = await fetch_carriers(max_count=None)
+        except DeliveryTrackingError as exc:
+            raise StoreError(str(exc), 502) from exc
+        return web.json_response({"carriers": carriers}, dumps=lambda value: json.dumps(value, ensure_ascii=False))
+
+    async def tracking(self, request):
+        await self._user(request)
+        data = await self._body(request)
+        carrier_id = str(data.get("carrier_id", "")).strip()
+        try:
+            waybill = normalize_waybill(str(data.get("waybill", "")))
+            payload = await self._tracking_payload(carrier_id, waybill)
+        except DeliveryTrackingError as exc:
+            raise StoreError(str(exc), 400) from exc
+        return web.json_response(payload, dumps=lambda value: json.dumps(value, ensure_ascii=False))
+
+    async def _tracking_payload(self, carrier_id: str, waybill: str):
+        carriers = await fetch_carriers(max_count=None)
+        carrier = next((item for item in carriers if item["id"] == carrier_id), None)
+        if carrier is None:
+            raise DeliveryTrackingError("택배사를 다시 선택해 주세요.")
+        result = await track_shipment(carrier_id, waybill)
+
+        def text_value(value, fallback=""):
+            if isinstance(value, dict):
+                value = value.get("text") or value.get("name") or value.get("status") or fallback
+            return str(value).strip()[:300] if value is not None else fallback
+
+        history = []
+        for item in reversed(result.get("allProgress") or []):
+            location = text_value(item.get("location"), "")
+            history.append({
+                "time": text_value(item.get("time"), ""),
+                "location": location,
+                "status": text_value(item.get("status"), ""),
+                "description": text_value(item.get("description"), ""),
+            })
+        status = text_value(result.get("status"), "배송 상태 확인 중")
+        delivery_words = " ".join(
+            [status] + [f"{item['status']} {item['description']}" for item in history[:3]]
+        ).lower()
+        delivered = any(word in delivery_words for word in ("배송완료", "배달완료", "전달완료", "delivered"))
+        return {
+            "carrier_name": carrier["name"],
+            "waybill": waybill,
+            "delivered": delivered,
+            "shipment": {
+                "status": status,
+                "location": text_value(result.get("location"), ""),
+                "receiver": text_value(result.get("receiver"), ""),
+                "sender": text_value(result.get("sender"), ""),
+                "history": history[:30],
+            },
+        }
+
     async def customer(self, request):
         user = await self._user(request)
         async with self.bot.db_pool.acquire() as conn:
@@ -534,7 +605,12 @@ class StoreServer:
             raise StoreError("조회 결과에서 받을 편의점을 선택해 주세요.")
         if shipping_method == "GENERAL":
             shipping_cvs = ""
-        points = int(data.get("points", 0) or 0)
+        try:
+            points = int(data.get("points", 0) or 0)
+        except (TypeError, ValueError) as exc:
+            raise StoreError("포인트는 숫자로 입력해 주세요.") from exc
+        if points != 0 and not 500 <= points <= 2000:
+            raise StoreError("포인트는 사용하지 않으려면 0P, 사용할 때는 500P~2,000P만 사용할 수 있습니다.")
         selected = [int(value) for value in data.get("product_ids", [])]
         if not selected:
             raise StoreError("구매할 상품을 선택해 주세요.")
@@ -642,12 +718,37 @@ class StoreServer:
             rows = await conn.fetch(
                 """
                 SELECT order_id, product, quantity, amount, status, points_used, cash_amount,
-                       created_at, processed_at, payment_deadline, cancel_reason
+                       created_at, processed_at, payment_deadline, cancel_reason,
+                       shipping_method, waybill_number, carrier_id,
+                       fulfillment_status, fulfillment_updated_at
                 FROM orders WHERE guild_id = $1 AND buyer_id = $2 AND source = 'WEB'
                 ORDER BY created_at DESC LIMIT 100
                 """, self.guild_id, int(user["id"]),
             )
         return web.json_response({"orders": [dict(row) for row in rows]}, dumps=lambda value: json.dumps(value, ensure_ascii=False, default=str))
+
+    async def order_tracking(self, request):
+        user = await self._user(request)
+        async with self.bot.db_pool.acquire() as conn:
+            order = await conn.fetchrow(
+                """
+                SELECT waybill_number, carrier_id
+                FROM orders
+                WHERE order_id=$1 AND guild_id=$2 AND buyer_id=$3 AND source='WEB'
+                """,
+                request.match_info["order_id"], self.guild_id, int(user["id"]),
+            )
+        if not order:
+            raise StoreError("주문을 찾을 수 없습니다.", 404)
+        if not order["waybill_number"]:
+            raise StoreError("아직 운송장이 등록되지 않았습니다.")
+        if not order["carrier_id"]:
+            raise StoreError("택배사 정보가 없어 배송조회 메뉴에서 택배사를 직접 선택해 주세요.")
+        try:
+            payload = await self._tracking_payload(order["carrier_id"], order["waybill_number"])
+        except DeliveryTrackingError as exc:
+            raise StoreError(str(exc), 400) from exc
+        return web.json_response(payload, dumps=lambda value: json.dumps(value, ensure_ascii=False))
 
     async def order(self, request):
         user = await self._user(request)

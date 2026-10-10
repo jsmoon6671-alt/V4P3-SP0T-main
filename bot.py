@@ -44,6 +44,11 @@ from chat_ranking import (
 from database import initialize_database
 from order_editing import build_purchase_log_payload, register_order_edit_command
 from web_store import start_web_store
+from web_order_progress import (
+    WebOrderProgressCog,
+    handle_web_progress_interaction,
+    register_web_order_commands,
+)
 
 # 한국 표준시(KST) 설정
 KST = datetime.timezone(datetime.timedelta(hours=9))
@@ -194,6 +199,7 @@ class MyBot(commands.Bot):
         if self.db_pool is not None:
             await self.add_cog(ChatPointsCog(self))
             await self.add_cog(ChatRankingCog(self))
+            await self.add_cog(WebOrderProgressCog(self))
             self.refresh_purchase_leaderboard = update_leaderboard
             if os.getenv("WEB_STORE_ENABLED", "true").lower() not in {"0", "false", "off", "no"}:
                 self.web_store = await start_web_store(self)
@@ -213,6 +219,7 @@ bot = MyBot()
 register_event_command(bot)
 register_admin_role_command(bot)
 register_chat_ranking_commands(bot)
+register_web_order_commands(bot)
 
 
 # ==========================================
@@ -1016,7 +1023,7 @@ async def issue_waybill(
         )
         order = await conn.fetchrow(
             """
-            SELECT order_id FROM orders
+            SELECT order_id, shipping_method FROM orders
             WHERE order_id = $1 AND guild_id = $2 AND buyer_id = $3
             """,
             order_id,
@@ -1038,6 +1045,18 @@ async def issue_waybill(
             ephemeral=True,
         )
         return
+
+    shipping_method = str(order['shipping_method'] or '')
+    carrier_id = (
+        'kr.cvsnet' if 'GS25' in shipping_method
+        else 'kr.cupost' if 'CU' in shipping_method
+        else None
+    )
+    async with bot.db_pool.acquire() as conn:
+        await conn.execute(
+            'UPDATE orders SET waybill_number = $2, carrier_id = $3 WHERE order_id = $1',
+            order_id, waybill_number, carrier_id,
+        )
 
     message = (
         f"**- {유저.mention} 귀하의 운송장이 발급되었습니다.\n"
@@ -1705,7 +1724,7 @@ async def set_ticket_status(interaction: discord.Interaction, 상태: app_comman
 
     async with bot.db_pool.acquire() as conn:
         ticket = await conn.fetchrow(
-            'SELECT ticket_type FROM tickets WHERE channel_id = $1', interaction.channel.id
+            'SELECT ticket_type, user_id FROM tickets WHERE channel_id = $1', interaction.channel.id
         )
 
     if ticket is None:
@@ -1742,6 +1761,32 @@ async def set_ticket_status(interaction: discord.Interaction, 상태: app_comman
         f"✅ 티켓 상태를 **{상태.value}**(으)로 변경했습니다.\n`{old_name}` → `{new_name}`",
         ephemeral=True,
     )
+
+    if 상태.value == "배송완료":
+        review_message = (
+            f"## 📦 배송이 완료되었습니다!\n\n"
+            f"<@{ticket['user_id']}>님, 상품은 잘 받아보셨나요?\n"
+            "Discord에서 **`/후기작성`** 명령어를 사용해 후기와 사진을 남겨 주세요.\n\n"
+            "> 후기 작성 시 랜덤으로 **100P ~ 500P**가 적립됩니다!"
+        )
+        payload = create_v2_payload(review_message)
+        payload["allowed_mentions"] = {"parse": [], "users": [str(ticket["user_id"])]}
+        try:
+            await interaction.client.http.request(
+                discord.http.Route("POST", f"/channels/{interaction.channel.id}/messages"),
+                json=payload,
+            )
+        except discord.HTTPException:
+            logging.exception("배송완료 후기 안내를 티켓에 전송하지 못했습니다: channel=%s", interaction.channel.id)
+        try:
+            member = interaction.guild.get_member(ticket["user_id"]) or await interaction.guild.fetch_member(ticket["user_id"])
+            dm_channel = await member.create_dm()
+            await interaction.client.http.request(
+                discord.http.Route("POST", f"/channels/{dm_channel.id}/messages"),
+                json=payload,
+            )
+        except (discord.Forbidden, discord.HTTPException, discord.NotFound):
+            logging.info("배송완료 후기 안내 DM을 전송하지 못했습니다: user=%s", ticket["user_id"])
 
 
 @bot.tree.command(name="문의패널", description="문의(티켓) 생성 패널을 띄웁니다.")
@@ -3106,6 +3151,9 @@ async def on_interaction(interaction: discord.Interaction):
         return
         
     custom_id = interaction.data.get("custom_id", "")
+
+    if await handle_web_progress_interaction(interaction, bot):
+        return
 
     if custom_id.startswith("chat_rank_page:"):
         await handle_rank_page(interaction, bot)
