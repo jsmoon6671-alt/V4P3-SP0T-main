@@ -55,6 +55,10 @@ async function api(path, options = {}) {
 
 function route() {
   const id = location.hash.slice(1) || "home";
+  if (id === "account" && !state.me) {
+    location.href = "/auth/login";
+    return;
+  }
   $$(".page").forEach(page => page.classList.toggle("active", page.id === id));
   $$("#nav a").forEach(link => link.classList.toggle("active", link.getAttribute("href") === `#${id}`));
   if (id === "account" && state.me) loadAccount();
@@ -75,9 +79,9 @@ async function boot() {
     const data = await api("/api/me");
     state.me = data.user;
     state.csrf = data.csrf;
-    $("#login-button").textContent = `${data.user.username} · 로그아웃`;
+    $("#login-button").textContent = "내 정보";
     $("#admin-link").hidden = !data.is_admin;
-    $("#login-button").onclick = logout;
+    $("#login-button").onclick = () => { location.hash = "account"; };
     await loadCart();
     if ((location.hash.slice(1) || "home") === "cart") await loadCheckoutCustomer();
   } catch {
@@ -89,7 +93,11 @@ async function boot() {
     toast(error.message);
   }
   route();
-  loadReviews().catch(error => console.error("구매후기를 불러오지 못했습니다.", error));
+  loadReviews().catch(error => {
+    const track = $("#review-track");
+    if (track) track.innerHTML = '<p class="review-empty">구매 후기를 불러오지 못했습니다. 잠시 후 새로고침해 주세요.</p>';
+    console.error("구매후기를 불러오지 못했습니다.", error);
+  });
 }
 
 async function logout() {
@@ -108,30 +116,32 @@ async function loadReviews() {
   const section = $("#review-showcase");
   const track = $("#review-track");
   if (!section || !track) return;
+  section.hidden = false;
 
   const data = await api("/api/reviews");
   const reviews = (Array.isArray(data.reviews) ? data.reviews : []).filter(review => (
     Number(review.rating) === 5
     && String(review.content || "").trim().length >= 5
-    && String(review.image_url || "").trim()
   ));
   if (!reviews.length) {
-    section.hidden = true;
-    track.innerHTML = "";
+    track.innerHTML = '<p class="review-empty">아직 공개할 수 있는 별점 5점 후기가 없습니다.</p>';
     return;
   }
 
   const minimumCards = 6;
   const repeats = Math.max(1, Math.ceil(minimumCards / reviews.length));
   const loopReviews = Array.from({ length: repeats }, () => reviews).flat();
-  const cards = loopReviews.map(review => `
-    <article class="review-card">
-      <img src="${escapeHtml(review.image_url)}" alt="구매후기 사진" loading="lazy">
+  const cards = loopReviews.map(review => {
+    const imageUrl = String(review.image_url || "").trim();
+    return `
+    <article class="review-card${imageUrl ? "" : " review-card-text"}">
+      ${imageUrl ? `<img src="${escapeHtml(imageUrl)}" alt="구매후기 사진" loading="lazy">` : ""}
       <div class="review-card-body">
         <div class="review-stars" aria-label="별점 5점">★★★★★</div>
         <p>${escapeHtml(String(review.content).trim())}</p>
       </div>
-    </article>`).join("");
+    </article>`;
+  }).join("");
 
   track.style.setProperty("--review-duration", `${Math.max(30, loopReviews.length * 7)}s`);
   track.innerHTML = `<div class="review-group">${cards}</div><div class="review-group" aria-hidden="true">${cards}</div>`;
@@ -553,6 +563,7 @@ function bindForms() {
       toast(error.message);
     }
   };
+  $("#account-logout").onclick = logout;
   $("#checkout-form").onsubmit = checkout;
   $("#use-all-points").onclick = useAllPoints;
   $("#tracking-form").onsubmit = trackDelivery;

@@ -10,10 +10,12 @@ import logging
 import os
 import secrets
 import time
+from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlencode
 
 import aiohttp
+import discord
 from aiohttp import web
 
 from delivery_tracking import (
@@ -317,7 +319,7 @@ class StoreServer:
         return guild
 
     @staticmethod
-    def _review_from_message(message):
+    def _review_from_payload(components, attachments):
         text_parts = []
 
         def collect(component):
@@ -329,7 +331,7 @@ class StoreServer:
             for child in payload.get("components", []):
                 collect(child)
 
-        for component in getattr(message, "components", []):
+        for component in components or []:
             collect(component)
 
         rating = 0
@@ -342,16 +344,29 @@ class StoreServer:
                 review = plain
 
         image_url = ""
-        for attachment in getattr(message, "attachments", []):
-            content_type = getattr(attachment, "content_type", "") or ""
-            filename = str(getattr(attachment, "filename", "")).lower()
+        for attachment in attachments or []:
+            if isinstance(attachment, dict):
+                content_type = str(attachment.get("content_type") or "")
+                filename = str(attachment.get("filename") or "").lower()
+                url = str(attachment.get("url") or "")
+            else:
+                content_type = getattr(attachment, "content_type", "") or ""
+                filename = str(getattr(attachment, "filename", "")).lower()
+                url = str(getattr(attachment, "url", ""))
             if content_type.startswith("image/") or filename.endswith((".png", ".jpg", ".jpeg", ".webp", ".gif")):
-                image_url = str(getattr(attachment, "url", ""))
+                image_url = url
                 break
 
-        if rating != 5 or len(review) < 5 or not image_url:
+        if rating != 5 or len(review) < 5:
             return None
         return rating, review, image_url
+
+    @classmethod
+    def _review_from_message(cls, message):
+        return cls._review_from_payload(
+            getattr(message, "components", []),
+            getattr(message, "attachments", []),
+        )
 
     async def _sync_reviews_from_discord(self):
         if time.monotonic() - self._last_review_sync < REVIEW_SYNC_INTERVAL:
@@ -366,21 +381,38 @@ class StoreServer:
                     "SELECT review_channel_id FROM guild_settings WHERE guild_id=$1",
                     guild_id,
                 )
-            channel = self.bot.get_channel(channel_id) if channel_id else None
-            if channel is None or not hasattr(channel, "history"):
+            if not channel_id:
                 return
-            rows = []
-            async for message in channel.history(limit=None):
-                parsed = self._review_from_message(message)
-                if parsed:
-                    rows.append((message, parsed))
-            if rows:
-                async with self.bot.db_pool.acquire() as conn:
-                    for message, (rating, content, image_url) in rows:
-                        await save_web_review(
-                            conn, guild_id, message.id, None,
-                            rating, content, image_url, message.created_at,
-                        )
+            before = None
+            while True:
+                messages = await self.bot.http.logs_from(
+                    int(channel_id), 100, before=before,
+                )
+                parsed_rows = []
+                for message in messages:
+                    parsed = self._review_from_payload(
+                        message.get("components", []),
+                        message.get("attachments", []),
+                    )
+                    if not parsed:
+                        continue
+                    rating, content, image_url = parsed
+                    timestamp = str(message.get("timestamp") or "").replace("Z", "+00:00")
+                    try:
+                        created_at = datetime.fromisoformat(timestamp)
+                    except ValueError:
+                        created_at = None
+                    parsed_rows.append((message, rating, content, image_url, created_at))
+                if parsed_rows:
+                    async with self.bot.db_pool.acquire() as conn:
+                        for message, rating, content, image_url, created_at in parsed_rows:
+                            await save_web_review(
+                                conn, guild_id, int(message["id"]), None,
+                                rating, content, image_url, created_at,
+                            )
+                if len(messages) < 100:
+                    break
+                before = discord.Object(id=int(messages[-1]["id"]))
             self._last_review_sync = time.monotonic()
         except Exception:
             LOGGER.exception("Discord 구매후기 동기화 실패: guild=%s", self.guild_id)
@@ -575,7 +607,6 @@ class StoreServer:
                 FROM web_reviews
                 WHERE guild_id=$1 AND rating=5
                   AND CHAR_LENGTH(BTRIM(content)) >= 5
-                  AND BTRIM(image_url) <> ''
                 ORDER BY created_at DESC
                 """,
                 guild_id,

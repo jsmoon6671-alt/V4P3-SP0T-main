@@ -75,6 +75,9 @@ h3,strong { font-weight: 800; }
 
 .page-title { padding: 14px 0 32px; }
 .page-title h1 { font-size: 48px; }
+.account-title { display: flex; align-items: end; justify-content: space-between; gap: 20px; }
+.account-title h1 { margin-bottom: 0; }
+.account-title>.button { flex: 0 0 auto; margin-bottom: 7px; border-radius: 999px; }
 .two-column,.checkout-grid,.admin-grid { display: grid; grid-template-columns: 1fr 1.25fr; gap: 20px; }
 .admin-grid { margin-bottom: 20px; }
 .panel { background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 24px; }
@@ -190,10 +193,13 @@ h3,strong { font-weight: 800; }
 .review-marquee { overflow: hidden; padding-bottom: 4px; -webkit-mask-image: linear-gradient(90deg,transparent,#000 6%,#000 94%,transparent); mask-image: linear-gradient(90deg,transparent,#000 6%,#000 94%,transparent); }
 .review-track { --review-duration: 42s; display: flex; width: max-content; will-change: transform; animation: review-scroll var(--review-duration) linear infinite; }
 .review-track:hover { animation-play-state: paused; }
+.review-track:has(.review-empty) { width: 100%; animation: none; }
+.review-empty { width: 100%; margin: 0; padding: 34px 42px; color: var(--muted); text-align: center; }
 .review-group { display: flex; flex: none; gap: 18px; padding-right: 18px; }
 .review-card { width: clamp(270px,24vw,350px); overflow: hidden; border: 1px solid var(--line-strong); border-radius: 14px; background: var(--surface); box-shadow: 0 14px 32px rgba(0,0,0,.2); }
 .review-card img { display: block; width: 100%; aspect-ratio: 4 / 3; object-fit: cover; background: #0b120e; }
 .review-card-body { padding: 17px 18px 19px; }
+.review-card-text .review-card-body { display: flex; min-height: 300px; flex-direction: column; justify-content: center; }
 .review-stars { color: #ffd45c; font-size: 17px; font-weight: 800; letter-spacing: 2px; }
 .review-card p { display: -webkit-box; min-height: 48px; margin: 10px 0 0; overflow: hidden; color: #d9e2dc; line-height: 1.6; white-space: pre-line; -webkit-box-orient: vertical; -webkit-line-clamp: 3; }
 @keyframes review-scroll { to { transform: translateX(-50%); } }
@@ -250,6 +256,7 @@ h3,strong { font-weight: 800; }
   .product-grid { grid-template-columns: 1fr; }
   .hero h1 { font-size: 44px; }
   .toolbar { align-items: flex-start; flex-direction: column; }
+  .account-title { align-items: flex-start; flex-direction: column; }
   .metrics { grid-template-columns: 1fr 1fr; }
   .metric strong { font-size: 22px; }
   .panel { padding: 19px; }

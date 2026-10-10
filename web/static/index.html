@@ -8,14 +8,14 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@500;600;700;800&family=Noto+Sans+KR:wght@500;600;700;800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/static/styles.css?v=20261010-11">
+  <link rel="stylesheet" href="/static/styles.css?v=20261010-13">
 </head>
 <body>
   <div class="grain"></div>
   <header class="site-header">
     <a class="brand" href="#home"><span>V4P3</span> SP0T</a>
     <nav id="nav">
-      <a href="#home">스토어</a><a href="#account">내 정보</a><a href="#tracking">배송조회</a><a href="#cart">장바구니 <b id="cart-count">0</b></a>
+      <a href="#home">스토어</a><a href="#tracking">배송조회</a><a href="#cart">장바구니 <b id="cart-count">0</b></a>
       <a href="#admin" id="admin-link" hidden>관리자</a>
     </nav>
     <button class="button small" id="login-button">Discord 로그인</button>
@@ -36,7 +36,10 @@
     </section>
 
     <section id="account" class="page">
-      <div class="page-title"><p class="eyebrow">MY ACCOUNT</p><h1>고객정보와 주문내역</h1></div>
+      <div class="page-title account-title">
+        <div><p class="eyebrow">MY ACCOUNT</p><h1>고객정보와 주문내역</h1></div>
+        <button type="button" id="account-logout" class="button secondary">로그아웃</button>
+      </div>
       <div class="two-column">
         <form id="customer-form" class="panel form-panel">
           <h2>배송 정보</h2><p>주문에 사용할 정보를 입력해 주세요.</p>
@@ -126,14 +129,14 @@
     </section>
   </main>
 
-  <section id="review-showcase" class="review-showcase" aria-labelledby="review-showcase-title" hidden>
+  <section id="review-showcase" class="review-showcase" aria-labelledby="review-showcase-title">
     <div class="review-showcase-head">
       <p class="eyebrow">CUSTOMER REVIEWS</p>
-      <h2 id="review-showcase-title">사진으로 확인하는 구매 후기</h2>
-      <p>Discord에서 작성된 별점 5점 사진 후기입니다.</p>
+      <h2 id="review-showcase-title">고객 구매 후기</h2>
+      <p>Discord에서 작성된 별점 5점 후기입니다. 사진이 있으면 함께 보여드립니다.</p>
     </div>
     <div class="review-marquee">
-      <div id="review-track" class="review-track"></div>
+      <div id="review-track" class="review-track"><p class="review-empty">구매 후기를 불러오는 중입니다.</p></div>
     </div>
   </section>
 
@@ -171,6 +174,6 @@
     </div>
   </div>
   <div id="toast"></div>
-  <script src="/static/app.js?v=20261010-10"></script>
+  <script src="/static/app.js?v=20261010-12"></script>
 </body>
 </html>
