@@ -87,7 +87,8 @@ h3,strong { font-weight: 800; }
 .catalog-toolbar { align-items: flex-start; justify-content: flex-start; gap: 14px; }
 .catalog-toolbar h2 { flex: 0 0 auto; margin: 8px 0 0; white-space: nowrap; }
 .catalog-heading { display: flex; flex: 0 0 auto; align-items: center; gap: 13px; }
-.catalog-heading>span { margin-top: 8px; color: #3f5147; font-size: 15px; font-weight: 800; letter-spacing: 2px; }
+.catalog-heading>span { display: inline-flex; width: 10px; height: 30px; margin-top: 7px; align-items: stretch; gap: 4px; overflow: hidden; color: transparent; font-size: 0; }
+.catalog-heading>span::before,.catalog-heading>span::after { content: ""; width: 3px; height: 100%; border-radius: 999px; background: #4b6657; box-shadow: 0 0 8px rgba(40,207,124,.08); }
 .category-navigation { display: grid; min-width: 0; flex: 1; gap: 9px; justify-items: stretch; }
 .tabs.parent-tabs { width: 100%; max-width: 100%; flex-wrap: nowrap; overflow-x: auto; overflow-y: hidden; padding: 2px 1px 5px; scrollbar-width: none; }
 .tabs.parent-tabs::-webkit-scrollbar { display: none; }
