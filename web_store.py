@@ -841,8 +841,8 @@ class StoreServer:
 
     async def checkout(self, request):
         user, data = await self._user(request), await self._body(request)
-        if not data.get("adult_confirmed"):
-            raise StoreError("성인 확인에 동의해야 주문할 수 있습니다.")
+        if not data.get("order_confirmed"):
+            raise StoreError("주문 내용이 정확한지 확인해 주세요.")
         depositor = str(data.get("depositor_name", "")).strip()
         if not depositor:
             raise StoreError("입금자명을 입력해 주세요.")

@@ -611,7 +611,7 @@ async function checkout(event) {
     return;
   }
   const form = Object.fromEntries(new FormData(event.target));
-  form.adult_confirmed = Boolean(form.adult_confirmed);
+  form.order_confirmed = Boolean(form.order_confirmed);
   form.product_ids = [...state.selected];
   const points = Number(form.points || 0);
   const maximum = maximumCheckoutPoints();
