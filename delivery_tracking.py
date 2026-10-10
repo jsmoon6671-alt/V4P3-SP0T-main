@@ -22,6 +22,14 @@ LEGACY_CARRIERS = {
     "04": "kr.cjlogistics", "01": "kr.epost",
 }
 
+# Discord와 웹사이트 배송조회 패널에서 동일하게 노출하는 택배사입니다.
+TRACKING_PANEL_CARRIERS = (
+    {"name": "GS편의점택배", "id": "kr.cvsnet", "emoji": "🏪"},
+    {"name": "CU알뜰택배", "id": "kr.cupost", "emoji": "🏪"},
+    {"name": "CJ대한통운", "id": "kr.cjlogistics", "emoji": "🚚"},
+    {"name": "우체국택배", "id": "kr.epost", "emoji": "📮"},
+)
+
 
 class DeliveryTrackingError(Exception):
     """사용자에게 안내할 수 있는 배송조회 오류."""
@@ -48,7 +56,7 @@ async def _request_json(session, method, endpoint, **kwargs):
         raise DeliveryTrackingError("배송조회 사이트의 응답 형식이 변경되었거나 일시적으로 조회할 수 없습니다.") from exc
 
 
-async def fetch_carriers(max_count=25):
+async def fetch_carriers():
     async with aiohttp.ClientSession(headers=HEADERS, timeout=aiohttp.ClientTimeout(total=20)) as session:
         data = await _request_json(session, "GET", "get_carriers.php")
     if not isinstance(data, list):
@@ -66,9 +74,9 @@ async def fetch_carriers(max_count=25):
             seen.add(carrier_id)
     if not carriers:
         raise DeliveryTrackingError("현재 조회 가능한 택배사가 없습니다. 잠시 후 다시 시도해 주세요.")
-    if max_count is not None and len(carriers) > max_count:
+    if len(carriers) > 25:
         raise DeliveryTrackingError("택배사 목록이 변경되었습니다. 배송조회 패널 업데이트가 필요합니다.")
-    return carriers if max_count is None else carriers[:max_count]
+    return carriers
 
 
 async def track_shipment(carrier_id, waybill):

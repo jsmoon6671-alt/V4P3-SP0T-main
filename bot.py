@@ -31,7 +31,7 @@ from loyalty_points import (
     reset_failed_payment, resolve_payment, cancel_order_record, payment_summary, maximum_points, adjust_points,
 )
 from delivery_tracking import (
-    DeliveryTrackingError, format_tracking_result,
+    DeliveryTrackingError, TRACKING_PANEL_CARRIERS, format_tracking_result,
     normalize_waybill, safe_text, track_shipment,
 )
 from review_watermark import ReviewImageError, watermark_review_image
@@ -263,12 +263,7 @@ class TrackingModal(discord.ui.Modal):
 @bot.tree.command(name="배송조회", description="배송 조회 패널을 띄워줍니다.")
 async def send_tracking_panel(interaction: discord.Interaction):
     await interaction.response.defer()
-    carriers = [
-        {"name": "GS반값택배", "id": "kr.cvsnet", "emoji": "🏪"},
-        {"name": "CU알뜰택배", "id": "kr.cupost", "emoji": "🏪"},
-        {"name": "CJ대한통운", "id": "kr.cjlogistics", "emoji": "🚚"},
-        {"name": "우체국택배", "id": "kr.epost", "emoji": "📮"},
-    ]
+    carriers = TRACKING_PANEL_CARRIERS
 
     main_content = (
         "## 📦 배송조회\n\n"

@@ -29,8 +29,8 @@ STATUS_CHOICES = [
 ]
 
 CARRIER_CHOICES = [
-    app_commands.Choice(name="GS25 편의점택배", value="kr.cvsnet"),
-    app_commands.Choice(name="CU 편의점택배", value="kr.cupost"),
+    app_commands.Choice(name="GS편의점택배", value="kr.cvsnet"),
+    app_commands.Choice(name="CU알뜰택배", value="kr.cupost"),
     app_commands.Choice(name="CJ대한통운", value="kr.cjlogistics"),
     app_commands.Choice(name="우체국택배", value="kr.epost"),
 ]

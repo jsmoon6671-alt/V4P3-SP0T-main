@@ -18,7 +18,7 @@ from aiohttp import web
 
 from delivery_tracking import (
     DeliveryTrackingError,
-    fetch_carriers,
+    TRACKING_PANEL_CARRIERS,
     normalize_waybill,
     track_shipment,
 )
@@ -454,10 +454,10 @@ class StoreServer:
 
     async def tracking_carriers(self, request):
         await self._user(request)
-        try:
-            carriers = await fetch_carriers(max_count=None)
-        except DeliveryTrackingError as exc:
-            raise StoreError(str(exc), 502) from exc
+        carriers = [
+            {"id": carrier["id"], "name": carrier["name"]}
+            for carrier in TRACKING_PANEL_CARRIERS
+        ]
         return web.json_response({"carriers": carriers}, dumps=lambda value: json.dumps(value, ensure_ascii=False))
 
     async def tracking(self, request):
@@ -472,8 +472,7 @@ class StoreServer:
         return web.json_response(payload, dumps=lambda value: json.dumps(value, ensure_ascii=False))
 
     async def _tracking_payload(self, carrier_id: str, waybill: str):
-        carriers = await fetch_carriers(max_count=None)
-        carrier = next((item for item in carriers if item["id"] == carrier_id), None)
+        carrier = next((item for item in TRACKING_PANEL_CARRIERS if item["id"] == carrier_id), None)
         if carrier is None:
             raise DeliveryTrackingError("택배사를 다시 선택해 주세요.")
         result = await track_shipment(carrier_id, waybill)
