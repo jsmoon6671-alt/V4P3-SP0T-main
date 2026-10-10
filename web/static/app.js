@@ -285,35 +285,51 @@ async function loadCheckoutCustomer() {
   }
 }
 
+function selectedCartRows() {
+  return state.cart.filter(item => state.selected.has(Number(item.product_id)));
+}
+
 function selectedCartTotal() {
-  const subtotal = state.cart
-    .filter(item => state.selected.has(Number(item.product_id)))
-    .reduce((sum, item) => sum + Number(item.price) * Number(item.quantity), 0);
-  return subtotal ? subtotal + 3000 : 0;
+  const rows = selectedCartRows();
+  const subtotal = rows.reduce((sum, item) => sum + Number(item.price) * Number(item.quantity), 0);
+  return rows.length ? subtotal + 3000 : 0;
 }
 
 function maximumCheckoutPoints(total = selectedCartTotal()) {
-  const maximum = Math.min(state.pointBalance, 2000, total);
+  const balance = Number.isFinite(state.pointBalance) ? Math.max(0, state.pointBalance) : 0;
+  const maximum = Math.min(balance, 2000, Math.max(0, Number(total) || 0));
   return maximum >= 500 ? maximum : 0;
 }
 
 function updatePointUseHint(total = selectedCartTotal()) {
   const hint = $("#point-use-hint");
   if (!hint) return;
+  if (!selectedCartRows().length) {
+    hint.textContent = "구매할 상품을 먼저 선택해 주세요.";
+    return;
+  }
+  if (state.pointBalance < 500) {
+    hint.textContent = "보유 포인트가 500P 미만이라 이번 결제에는 적용할 수 없습니다.";
+    return;
+  }
   const maximum = maximumCheckoutPoints(total);
   hint.textContent = maximum
     ? `500P부터 최대 ${maximum.toLocaleString()}P까지 사용할 수 있습니다. (1P = 1원)`
-    : "사용 가능한 포인트가 500P 미만이라 이번 결제에는 적용할 수 없습니다.";
+    : "결제금액이 500원 미만이라 포인트를 적용할 수 없습니다.";
 }
 
 function useAllPoints() {
+  if (!selectedCartRows().length) {
+    toast("먼저 주문 상품에서 구매할 상품을 선택해 주세요.");
+    return;
+  }
   if (state.pointBalance < 500) {
     toast("보유 포인트가 500P 미만이라 사용할 수 없습니다.");
     return;
   }
   const maximum = maximumCheckoutPoints();
   if (maximum < 500) {
-    toast("이번 주문에 사용할 수 있는 포인트가 500P 미만입니다.");
+    toast("결제금액이 500원 미만이라 포인트를 적용할 수 없습니다.");
     return;
   }
   $("#checkout-form [name=\"points\"]").value = maximum;
