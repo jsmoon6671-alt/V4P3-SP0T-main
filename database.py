@@ -88,6 +88,7 @@ async def initialize_database(conn):
             guild_id BIGINT,
             role_id BIGINT,
             required_amount BIGINT,
+            discount_percent SMALLINT NOT NULL DEFAULT 0,
             PRIMARY KEY (guild_id, role_id)
         );
     ''')
@@ -106,6 +107,7 @@ async def initialize_database(conn):
     updates = [
         'ALTER TABLE user_info ADD COLUMN is_anonymous BOOLEAN DEFAULT FALSE;',
         'ALTER TABLE user_info ADD COLUMN total_spent BIGINT DEFAULT 0;',
+        'ALTER TABLE vip_tiers ADD COLUMN discount_percent SMALLINT NOT NULL DEFAULT 0;',
         'ALTER TABLE orders ADD COLUMN is_anonymous BOOLEAN DEFAULT FALSE;',
         'ALTER TABLE orders ADD COLUMN depositor_name TEXT;',
         'ALTER TABLE orders ADD COLUMN created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP;',

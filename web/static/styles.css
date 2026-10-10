@@ -12,6 +12,13 @@ button,input,textarea,select { font: inherit; }
 button,a { -webkit-tap-highlight-color: transparent; }
 .grain { display: none; }
 
+.shipping-banner { min-height: 42px; display: flex; align-items: center; justify-content: center; gap: 18px; padding: 9px 52px; border-bottom: 1px solid #275c3f; background: #10271a; color: #dff7e9; position: relative; }
+.shipping-banner[hidden] { display: none; }
+.shipping-banner p { display: flex; align-items: center; justify-content: center; gap: 10px; margin: 0; text-align: center; font-size: 13px; }
+.shipping-banner strong { color: var(--accent-hover); }
+.shipping-banner button { position: absolute; right: clamp(16px,3vw,46px); top: 50%; width: 28px; height: 28px; padding: 0; transform: translateY(-50%); border: 0; border-radius: 8px; background: transparent; color: #a8c5b4; font-size: 23px; line-height: 1; cursor: pointer; }
+.shipping-banner button:hover { background: rgba(255,255,255,.07); color: #fff; }
+
 .site-header { width: 100%; min-height: 72px; display: flex; flex-direction: row; align-items: center; gap: 22px; padding: 12px clamp(18px,3vw,48px); border-bottom: 1px solid var(--line); position: sticky; left: 0; top: 0; background: rgba(8,13,10,.97); backdrop-filter: blur(14px); z-index: 50; }
 .brand { flex: 0 0 auto; color: var(--text); font-size: 23px; font-weight: 800; letter-spacing: -1px; text-decoration: none; margin: 0 8px 0 0; padding: 0; border: 0; white-space: nowrap; }
 .brand span,.eyebrow,.product-body small { color: var(--accent); }
@@ -103,6 +110,7 @@ h3,strong { font-weight: 800; }
 .store-lookup[hidden] { display: none; }
 .shipping-notice { margin: 0!important; padding: 13px 14px; border-left: 3px solid var(--accent); border-radius: 2px; background: rgba(79,188,141,.07); color: #bdc8c1!important; }
 .shipping-notice strong { color: var(--accent-hover); }
+.shipping-notice span { display: inline-block; margin-top: 5px; color: #f0f5f2; }
 .order-summary .panel-head>span { color: var(--muted); font-size: 12px; }
 .summary-lines { margin: 14px 0 18px; border-top: 1px solid var(--line); }
 .summary-lines .discount { color: #8edfb4; }
@@ -266,6 +274,9 @@ h3,strong { font-weight: 800; }
   .site-header .button.small { max-width: 140px; }
 }
 @media(max-width:520px) {
+  .shipping-banner { align-items: flex-start; padding: 10px 48px 10px 15px; }
+  .shipping-banner p { display: grid; justify-items: start; gap: 2px; text-align: left; font-size: 11px; line-height: 1.45; }
+  .shipping-banner button { right: 12px; }
   .product-grid { grid-template-columns: 1fr; }
   .hero h1 { font-size: 44px; }
   .toolbar { align-items: flex-start; flex-direction: column; }

@@ -23,6 +23,7 @@ const escapeHtml = value => String(value ?? "").replace(/[&<>'"]/g, char => ({
 })[char]);
 const productOptions = product => Array.isArray(product.options) ? product.options : [];
 const CHANNEL_CACHE_KEY = "v4p3DiscordChannelIds";
+const SHIPPING_BANNER_KEY = "v4p3ShippingBannerClosed";
 
 function toast(message) {
   const element = $("#toast");
@@ -307,7 +308,7 @@ async function saveCartRow(productId, quantity, selectedOption = null) {
 function cartTotal() {
   const selectedRows = state.cart.filter(item => state.selected.has(Number(item.product_id)));
   const subtotal = selectedRows.reduce((sum, item) => sum + Number(item.price) * Number(item.quantity), 0);
-  const shipping = selectedRows.length ? 3000 : 0;
+  const shipping = selectedRows.length ? shippingFee(subtotal) : 0;
   const beforeDiscount = subtotal + shipping;
   const discount = checkoutPointDiscount(beforeDiscount);
   const total = Math.max(0, beforeDiscount - discount);
@@ -317,7 +318,29 @@ function cartTotal() {
   $("#cart-discount-row").hidden = discount === 0;
   $("#cart-total").textContent = money(total);
   $("#selected-count").textContent = `${selectedRows.length}개 선택`;
+  updateShippingBenefit(subtotal, selectedRows.length > 0);
   updatePointUseHint(beforeDiscount);
+}
+
+function shippingFee(subtotal) {
+  const amount = Math.max(0, Number(subtotal) || 0);
+  if (amount >= 50000) return 0;
+  if (amount >= 35000) return 1500;
+  return amount > 0 ? 3000 : 0;
+}
+
+function updateShippingBenefit(subtotal, hasItems) {
+  const message = $("#shipping-benefit");
+  if (!message) return;
+  if (!hasItems) {
+    message.textContent = "선택한 상품 금액에 따라 자동 적용됩니다.";
+  } else if (subtotal >= 50000) {
+    message.textContent = "무료배송이 적용되었습니다.";
+  } else if (subtotal >= 35000) {
+    message.textContent = `배송비 1,500원이 적용되었습니다. ${money(50000 - subtotal)} 더 담으면 무료배송입니다.`;
+  } else {
+    message.textContent = `${money(35000 - subtotal)} 더 담으면 배송비가 1,500원으로 할인됩니다.`;
+  }
 }
 
 async function loadCheckoutCustomer() {
@@ -344,7 +367,7 @@ function selectedCartRows() {
 function selectedCartTotal() {
   const rows = selectedCartRows();
   const subtotal = rows.reduce((sum, item) => sum + Number(item.price) * Number(item.quantity), 0);
-  return rows.length ? subtotal + 3000 : 0;
+  return rows.length ? subtotal + shippingFee(subtotal) : 0;
 }
 
 function maximumCheckoutPoints(total = selectedCartTotal()) {
@@ -566,6 +589,7 @@ const statusText = status => ({
 })[status] || status;
 
 function bindForms() {
+  bindShippingBanner();
   restoreChannelForm();
   $$("#channel-form input").forEach(input => {
     input.addEventListener("input", () => cacheChannelForm());
@@ -602,6 +626,19 @@ function bindForms() {
     if (event.key === "Escape" && !$("#editor").hidden) closeEditor();
   });
   updateShippingMode();
+}
+
+function bindShippingBanner() {
+  const banner = $("#shipping-banner");
+  const close = $("#shipping-banner-close");
+  if (!banner || !close) return;
+  try {
+    banner.hidden = sessionStorage.getItem(SHIPPING_BANNER_KEY) === "1";
+  } catch {}
+  close.onclick = () => {
+    banner.hidden = true;
+    try { sessionStorage.setItem(SHIPPING_BANNER_KEY, "1"); } catch {}
+  };
 }
 
 async function checkout(event) {
