@@ -2840,7 +2840,9 @@ async def write_review(
     try:
         message_id = int((sent_review or {}).get("id") or interaction.id)
         sent_attachments = (sent_review or {}).get("attachments") or []
-        image_url = str(sent_attachments[0].get("url", "")) if sent_attachments else ""
+        image_url = ""
+        if sent_attachments:
+            image_url = str(sent_attachments[0].get("url") or sent_attachments[0].get("proxy_url") or "")
         async with bot.db_pool.acquire() as conn:
             await save_web_review(
                 conn, interaction.guild.id, message_id, interaction.user.id,

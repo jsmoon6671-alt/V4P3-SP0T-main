@@ -148,7 +148,11 @@ async def save_web_review(
         VALUES ($1, $2, $3, $4, $5, $6, COALESCE($7::timestamptz, CURRENT_TIMESTAMP))
         ON CONFLICT (guild_id, discord_message_id) DO UPDATE SET
             user_id=EXCLUDED.user_id, rating=EXCLUDED.rating,
-            content=EXCLUDED.content, image_url=EXCLUDED.image_url
+            content=EXCLUDED.content,
+            image_url=CASE
+                WHEN BTRIM(EXCLUDED.image_url) <> '' THEN EXCLUDED.image_url
+                ELSE web_reviews.image_url
+            END
         """,
         guild_id, message_id, user_id, rating, content.strip(), image_url.strip(), created_at,
     )
@@ -321,6 +325,7 @@ class StoreServer:
     @staticmethod
     def _review_from_payload(components, attachments):
         text_parts = []
+        media_urls = []
 
         def collect(component):
             payload = component.to_dict() if hasattr(component, "to_dict") else component
@@ -328,6 +333,11 @@ class StoreServer:
                 return
             if payload.get("type") == 10 and payload.get("content"):
                 text_parts.append(str(payload["content"]))
+            if payload.get("type") == 12:
+                for item in payload.get("items", []):
+                    media = item.get("media", {}) if isinstance(item, dict) else {}
+                    if isinstance(media, dict) and media.get("url"):
+                        media_urls.append(str(media["url"]))
             for child in payload.get("components", []):
                 collect(child)
 
@@ -344,18 +354,32 @@ class StoreServer:
                 review = plain
 
         image_url = ""
+        attachment_urls = {}
         for attachment in attachments or []:
             if isinstance(attachment, dict):
                 content_type = str(attachment.get("content_type") or "")
                 filename = str(attachment.get("filename") or "").lower()
-                url = str(attachment.get("url") or "")
+                url = str(attachment.get("url") or attachment.get("proxy_url") or "")
+                is_image = bool(attachment.get("width") and attachment.get("height"))
             else:
                 content_type = getattr(attachment, "content_type", "") or ""
                 filename = str(getattr(attachment, "filename", "")).lower()
-                url = str(getattr(attachment, "url", ""))
-            if content_type.startswith("image/") or filename.endswith((".png", ".jpg", ".jpeg", ".webp", ".gif")):
+                url = str(getattr(attachment, "url", "") or getattr(attachment, "proxy_url", ""))
+                is_image = bool(getattr(attachment, "width", None) and getattr(attachment, "height", None))
+            if filename and url:
+                attachment_urls[filename] = url
+            if is_image or content_type.startswith("image/") or filename.endswith((".png", ".jpg", ".jpeg", ".webp", ".gif")):
                 image_url = url
                 break
+
+        if not image_url:
+            for media_url in media_urls:
+                if media_url.startswith("attachment://"):
+                    image_url = attachment_urls.get(media_url.removeprefix("attachment://").lower(), "")
+                elif media_url.startswith(("https://", "http://")):
+                    image_url = media_url
+                if image_url:
+                    break
 
         if rating != 5 or len(review) < 5:
             return None
