@@ -3,14 +3,18 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import re
 from dataclasses import dataclass
+from io import BytesIO
+from pathlib import Path
 from urllib.parse import parse_qs, parse_qsl, urlencode, urljoin, urlparse, urlunparse
 
 import aiohttp
 from bs4 import BeautifulSoup, Comment
+from PIL import Image, ImageOps, UnidentifiedImageError
 
 
 PRICE_MARKUP = 3_000
@@ -18,6 +22,9 @@ USER_AGENT = "Mozilla/5.0 (compatible; V4P3-SP0T-ProductSync/1.0)"
 BIBIBINS_BASE = "https://xn--jk1bo8sa06werixle.com"
 ELECSHOP_BASE = "https://xn--352bl9av7r2tn.com"
 ELECSHOP_DEVICES = f"{ELECSHOP_BASE}/product-category/%EA%B0%9C%EB%B0%A9%ED%98%95-%EA%B8%B0%EA%B8%B0/"
+PRODUCT_LOGO_COVER_PATH = Path(__file__).with_name("product_logo_cover.png")
+MAX_PRODUCT_IMAGE_BYTES = 15 * 1024 * 1024
+MAX_PRODUCT_IMAGE_PIXELS = 40_000_000
 
 
 @dataclass(slots=True)
@@ -34,6 +41,8 @@ class ScrapedProduct:
     option_label: str
     options: list[str]
     stock: int
+    image_data: bytes | None = None
+    image_mime: str = ""
 
 
 def _number(text: str) -> int:
@@ -104,6 +113,120 @@ async def _soup(session: aiohttp.ClientSession, url: str) -> BeautifulSoup:
         return BeautifulSoup(await response.read(), "html.parser")
 
 
+async def _login_bibibins(session: aiohttp.ClientSession) -> bool:
+    member_id = os.getenv("BIBIBINS_MEMBER_ID", "").strip()
+    member_password = os.getenv("BIBIBINS_MEMBER_PASSWORD", "").strip()
+    if not member_id and not member_password:
+        return False
+    if not member_id or not member_password:
+        raise RuntimeError("비비빈스 로그인 환경변수의 아이디와 비밀번호를 모두 설정해 주세요.")
+
+    login_url = f"{BIBIBINS_BASE}/member/login.html"
+    login_soup = await _soup(session, login_url)
+    form = login_soup.select_one('form[action*="/Member/login"]')
+    if not form:
+        raise RuntimeError("비비빈스 로그인 화면을 읽지 못했습니다.")
+    payload = {
+        field.get("name"): field.get("value", "")
+        for field in form.select('input[type="hidden"][name]')
+    }
+    payload.update({"member_id": member_id, "member_passwd": member_password})
+    action = urljoin(login_url, form.get("action") or "/exec/front/Member/login/")
+    async with session.post(
+        action, data=payload, headers={"Referer": login_url},
+        timeout=aiohttp.ClientTimeout(total=30),
+    ) as response:
+        response.raise_for_status()
+        await response.read()
+
+    async with session.get(
+        f"{BIBIBINS_BASE}/myshop/index.html",
+        timeout=aiohttp.ClientTimeout(total=30),
+    ) as response:
+        response.raise_for_status()
+        await response.read()
+        if "/member/login" in response.url.path:
+            raise RuntimeError("비비빈스 로그인에 실패했습니다. 계정 정보와 성인 인증 상태를 확인해 주세요.")
+    return True
+
+
+async def _login_elecshop(session: aiohttp.ClientSession) -> bool:
+    member_id = os.getenv("ELECSHOP_MEMBER_ID", "").strip()
+    member_password = os.getenv("ELECSHOP_MEMBER_PASSWORD", "").strip()
+    if not member_id and not member_password:
+        return False
+    if not member_id or not member_password:
+        raise RuntimeError("일렉샵 로그인 환경변수의 아이디와 비밀번호를 모두 설정해 주세요.")
+
+    account_url = f"{ELECSHOP_BASE}/my-account/"
+    login_soup = await _soup(session, account_url)
+    form = login_soup.select_one("form.woocommerce-form-login")
+    if not form:
+        # 이미 유효한 로그인 쿠키가 있는 경우에도 성공으로 처리한다.
+        return True
+    payload = {
+        field.get("name"): field.get("value", "")
+        for field in form.select('input[type="hidden"][name]')
+    }
+    submit = form.select_one('button[name="login"]')
+    payload.update({
+        "username": member_id,
+        "password": member_password,
+        "rememberme": "forever",
+        "login": submit.get("value", "로그인") if submit else "로그인",
+    })
+    action = urljoin(account_url, form.get("action") or account_url)
+    async with session.post(
+        action, data=payload, headers={"Referer": account_url},
+        timeout=aiohttp.ClientTimeout(total=30),
+    ) as response:
+        response.raise_for_status()
+        verification = BeautifulSoup(await response.read(), "html.parser")
+        if verification.select_one("form.woocommerce-form-login"):
+            raise RuntimeError("일렉샵 로그인에 실패했습니다. 계정 정보를 확인해 주세요.")
+    return True
+
+
+def _bibibins_detail_options(soup: BeautifulSoup) -> list[str]:
+    options = []
+    selectors = (
+        '.xans-product-option select option[value]',
+        'select[id^="product_option_id"] option[value]',
+        '.ec-product-button li[data-value]',
+        '.ec-product-button li[option_value]',
+    )
+    for selector in selectors:
+        for node in soup.select(selector):
+            value = node.get("data-value") or node.get("option_value") or node.get("value")
+            text = node.get_text(" ", strip=True) or value or ""
+            normalized = re.sub(r"\s*\([^)]*(?:품절|재고)[^)]*\)\s*$", "", text).strip()
+            if not value:
+                continue
+            if normalized and not any(word in normalized for word in ("선택", "필수", "옵션")):
+                options.append(normalized)
+    return _unique(options)
+
+
+async def _hydrate_bibibins_options(
+    session: aiohttp.ClientSession, products: list[ScrapedProduct],
+) -> None:
+    semaphore = asyncio.Semaphore(3)
+
+    async def load(product: ScrapedProduct):
+        async with semaphore:
+            try:
+                soup = await _soup(session, product.source_url)
+                options = _bibibins_detail_options(soup)
+                if options:
+                    product.options = options
+                    product.option_label = _option_label(options)
+            except (aiohttp.ClientError, asyncio.TimeoutError, RuntimeError):
+                return
+            await asyncio.sleep(0.12)
+
+    await asyncio.gather(*(load(product) for product in products))
+
+
 def _source_site_for_url(url: str) -> str:
     """링크 가져오기에 허용된 쇼핑몰인지 확인한다 (SSRF 방지 포함)."""
     parsed = urlparse((url or "").strip())
@@ -123,6 +246,75 @@ def _source_site_for_url(url: str) -> str:
     return site
 
 
+def _cover_store_logo(source: bytes, source_site: str) -> bytes:
+    """상품 이미지의 쇼핑몰 로고 영역을 사용자가 제공한 흰색 이미지로 덮는다."""
+    if source_site != "bibibins":
+        raise ValueError("지원하지 않는 상품 이미지 출처입니다.")
+    try:
+        with Image.open(BytesIO(source)) as opened:
+            opened.load()
+            image = ImageOps.exif_transpose(opened).convert("RGBA")
+        width, height = image.size
+        if width < 40 or height < 40 or width * height > MAX_PRODUCT_IMAGE_PIXELS:
+            raise ValueError("상품 이미지 크기를 처리할 수 없습니다.")
+        background = Image.new("RGBA", image.size, "white")
+        background.alpha_composite(image)
+        boxes = (
+            (
+                round(width * 0.015), round(height * 0.015),
+                round(width * 0.49), round(height * 0.18),
+            ),
+            (
+                round(width * 0.70), round(height * 0.01),
+                round(width * 0.99), round(height * 0.18),
+            ),
+        )
+        with Image.open(PRODUCT_LOGO_COVER_PATH) as opened_cover:
+            cover = ImageOps.exif_transpose(opened_cover).convert("RGBA")
+        for box in boxes:
+            resized_cover = cover.resize(
+                (box[2] - box[0], box[3] - box[1]), Image.Resampling.LANCZOS,
+            )
+            background.alpha_composite(resized_cover, (box[0], box[1]))
+        output = BytesIO()
+        background.convert("RGB").save(output, format="WEBP", quality=92, method=4)
+        return output.getvalue()
+    except (UnidentifiedImageError, OSError) as exc:
+        raise ValueError("상품 이미지를 처리하지 못했습니다.") from exc
+
+
+async def _prepare_product_images(
+    session: aiohttp.ClientSession, products: list[ScrapedProduct],
+) -> None:
+    semaphore = asyncio.Semaphore(4)
+
+    async def load(product: ScrapedProduct):
+        # 일렉샵 상품 이미지에는 제거할 쇼핑몰 로고가 없으므로 원본 URL을 유지한다.
+        if product.source_site != "bibibins" or not product.image_url:
+            return
+        async with semaphore:
+            try:
+                async with session.get(
+                    product.image_url, timeout=aiohttp.ClientTimeout(total=30),
+                ) as response:
+                    response.raise_for_status()
+                    if response.content_length and response.content_length > MAX_PRODUCT_IMAGE_BYTES:
+                        return
+                    source = bytearray()
+                    async for chunk in response.content.iter_chunked(64 * 1024):
+                        source.extend(chunk)
+                        if len(source) > MAX_PRODUCT_IMAGE_BYTES:
+                            return
+                product.image_data = await asyncio.to_thread(
+                    _cover_store_logo, bytes(source), product.source_site,
+                )
+                product.image_mime = "image/webp"
+            except (aiohttp.ClientError, asyncio.TimeoutError, ValueError):
+                return
+
+    await asyncio.gather(*(load(product) for product in products))
+
+
 def _with_query(url: str, **values) -> str:
     parsed = urlparse(url)
     query = dict(parse_qsl(parsed.query, keep_blank_values=True))
@@ -131,7 +323,7 @@ def _with_query(url: str, **values) -> str:
 
 
 async def _scrape_bibibins_url(
-    session: aiohttp.ClientSession, url: str,
+    session: aiohttp.ClientSession, url: str, hydrate_options: bool = False,
 ) -> list[ScrapedProduct]:
     parsed = urlparse(url)
     query = parse_qs(parsed.query)
@@ -172,7 +364,10 @@ async def _scrape_bibibins_url(
                     new_on_page += 1
                 products[product.source_key] = product
             if target_key and target_key in products:
-                return [products[target_key]]
+                result = [products[target_key]]
+                if hydrate_options:
+                    await _hydrate_bibibins_options(session, result)
+                return result
             if not new_on_page:
                 break
             await asyncio.sleep(0.12)
@@ -180,10 +375,15 @@ async def _scrape_bibibins_url(
         raise RuntimeError("해당 비비빈스 상품을 공개 목록에서 찾지 못했습니다.")
     if not products:
         raise RuntimeError("링크에서 비비빈스 상품을 찾지 못했습니다.")
-    return list(products.values())
+    result = list(products.values())
+    if hydrate_options:
+        await _hydrate_bibibins_options(session, result)
+    return result
 
 
-async def scrape_bibibins(session: aiohttp.ClientSession) -> list[ScrapedProduct]:
+async def scrape_bibibins(
+    session: aiohttp.ClientSession, hydrate_options: bool = False,
+) -> list[ScrapedProduct]:
     products: dict[str, ScrapedProduct] = {}
     categories = (("입호흡 기기", 50), ("폐호흡 기기", 52))
     for category, category_number in categories:
@@ -209,7 +409,10 @@ async def scrape_bibibins(session: aiohttp.ClientSession) -> list[ScrapedProduct
             await asyncio.sleep(0.12)
     if not products:
         raise RuntimeError("비비빈스 공개 상품을 찾지 못했습니다.")
-    return list(products.values())
+    result = list(products.values())
+    if hydrate_options:
+        await _hydrate_bibibins_options(session, result)
+    return result
 
 
 DTL_WORDS = (
@@ -386,8 +589,13 @@ async def scrape_products_from_url(url: str) -> list[ScrapedProduct]:
     connector = aiohttp.TCPConnector(limit_per_host=4)
     async with aiohttp.ClientSession(headers=headers, connector=connector) as session:
         if site == "bibibins":
-            return await _scrape_bibibins_url(session, url)
-        return await _scrape_elecshop_url(session, url)
+            logged_in = await _login_bibibins(session)
+            products = await _scrape_bibibins_url(session, url, hydrate_options=logged_in)
+        else:
+            await _login_elecshop(session)
+            products = await _scrape_elecshop_url(session, url)
+        await _prepare_product_images(session, products)
+        return products
 
 
 async def scrape_elecshop(session: aiohttp.ClientSession) -> list[ScrapedProduct]:
@@ -413,8 +621,20 @@ async def scrape_device_stores() -> tuple[dict[str, list[ScrapedProduct]], dict[
     headers = {"User-Agent": USER_AGENT, "Accept-Language": "ko-KR,ko;q=0.9,en;q=0.5"}
     connector = aiohttp.TCPConnector(limit_per_host=4)
     async with aiohttp.ClientSession(headers=headers, connector=connector) as session:
+        async def load_bibibins():
+            logged_in = await _login_bibibins(session)
+            products = await scrape_bibibins(session, hydrate_options=logged_in)
+            await _prepare_product_images(session, products)
+            return products
+
+        async def load_elecshop():
+            await _login_elecshop(session)
+            products = await scrape_elecshop(session)
+            await _prepare_product_images(session, products)
+            return products
+
         results = await asyncio.gather(
-            scrape_bibibins(session), scrape_elecshop(session), return_exceptions=True,
+            load_bibibins(), load_elecshop(), return_exceptions=True,
         )
     products: dict[str, list[ScrapedProduct]] = {}
     errors: dict[str, str] = {}
@@ -428,8 +648,46 @@ async def scrape_device_stores() -> tuple[dict[str, list[ScrapedProduct]], dict[
     return products, errors
 
 
+async def _store_product_image(conn, guild_id: int, product_id: int, product: ScrapedProduct) -> str:
+    if product.source_site != "bibibins":
+        await conn.execute(
+            "DELETE FROM web_product_images WHERE product_id=$1 AND guild_id=$2",
+            product_id, guild_id,
+        )
+        return ""
+    if product.image_data:
+        content_hash = hashlib.sha256(product.image_data).hexdigest()
+        await conn.execute(
+            """
+            INSERT INTO web_product_images
+                (product_id,guild_id,mime_type,content_hash,image_data,updated_at)
+            VALUES ($1,$2,$3,$4,$5,CURRENT_TIMESTAMP)
+            ON CONFLICT (product_id) DO UPDATE SET
+                guild_id=EXCLUDED.guild_id, mime_type=EXCLUDED.mime_type,
+                content_hash=EXCLUDED.content_hash, image_data=EXCLUDED.image_data,
+                updated_at=CURRENT_TIMESTAMP
+            """,
+            product_id, guild_id, product.image_mime or "image/webp",
+            content_hash, product.image_data,
+        )
+    else:
+        content_hash = await conn.fetchval(
+            "SELECT content_hash FROM web_product_images WHERE product_id=$1 AND guild_id=$2",
+            product_id, guild_id,
+        )
+    if not content_hash:
+        return ""
+    image_url = f"/api/products/{product_id}/image?v={str(content_hash)[:12]}"
+    await conn.execute(
+        "UPDATE web_products SET image_url=$3 WHERE id=$1 AND guild_id=$2",
+        product_id, guild_id, image_url,
+    )
+    return image_url
+
+
 async def import_scraped_products(
     conn, guild_id: int, category_id: int, products: list[ScrapedProduct],
+    price_locked: bool = False,
 ) -> dict:
     """링크에서 가져온 상품을 관리자가 선택한 카테고리에 추가하거나 갱신한다."""
     inserted = updated = 0
@@ -472,16 +730,18 @@ async def import_scraped_products(
             await conn.execute(
                 """
                 INSERT INTO web_product_sources
-                    (guild_id,source_site,source_key,product_id,source_url,source_price,disabled_by_admin,synced_at)
-                VALUES ($1,$2,$3,$4,$5,$6,FALSE,CURRENT_TIMESTAMP)
+                    (guild_id,source_site,source_key,product_id,source_url,source_price,price_locked,disabled_by_admin,synced_at)
+                VALUES ($1,$2,$3,$4,$5,$6,$7,FALSE,CURRENT_TIMESTAMP)
                 ON CONFLICT (guild_id,source_site,source_key) DO UPDATE SET
                     product_id=EXCLUDED.product_id, source_url=EXCLUDED.source_url,
-                    source_price=EXCLUDED.source_price, disabled_by_admin=FALSE,
+                    source_price=EXCLUDED.source_price, price_locked=EXCLUDED.price_locked,
+                    disabled_by_admin=FALSE,
                     synced_at=CURRENT_TIMESTAMP
                 """,
                 guild_id, product.source_site, product.source_key, product_id,
-                product.source_url, product.source_price,
+                product.source_url, product.source_price, price_locked,
             )
+            await _store_product_image(conn, guild_id, int(product_id), product)
             names.append(product.name)
     return {
         "inserted": inserted,
@@ -517,7 +777,7 @@ async def sync_scraped_products(conn, guild_id: int, grouped: dict[str, list[Scr
                 seen_keys.append(product.source_key)
                 source = await conn.fetchrow(
                     """
-                    SELECT product_id, disabled_by_admin FROM web_product_sources
+                    SELECT product_id, disabled_by_admin, price_locked FROM web_product_sources
                     WHERE guild_id=$1 AND source_site=$2 AND source_key=$3
                     """,
                     guild_id, site, product.source_key,
@@ -528,13 +788,16 @@ async def sync_scraped_products(conn, guild_id: int, grouped: dict[str, list[Scr
                     await conn.execute(
                         """
                         UPDATE web_products
-                        SET category_id=$3,name=$4,description=$5,price=$6,stock=$7,image_url=$8,
+                        SET category_id=$3,name=$4,description=$5,
+                            price=CASE WHEN $12 THEN price ELSE $6 END,
+                            stock=$7,image_url=$8,
                             option_label=$9,options=$10,is_active=$11,updated_at=CURRENT_TIMESTAMP
                         WHERE id=$1 AND guild_id=$2
                         """,
                         product_id, guild_id, category_id, product.name, product.description,
                         product.price, product.stock, product.image_url,
                         product.option_label, product.options, not bool(source["disabled_by_admin"]),
+                        bool(source["price_locked"]),
                     )
                     updated += 1
                 else:
@@ -562,6 +825,7 @@ async def sync_scraped_products(conn, guild_id: int, grouped: dict[str, list[Scr
                     guild_id, site, product.source_key, product_id,
                     product.source_url, product.source_price,
                 )
+                await _store_product_image(conn, guild_id, int(product_id), product)
 
             hidden_result = await conn.execute(
                 """

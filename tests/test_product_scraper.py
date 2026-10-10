@@ -1,9 +1,13 @@
 import unittest
+from io import BytesIO
 
 from bs4 import BeautifulSoup
+from PIL import Image
 
 from product_scraper import (
     _bibibins_card,
+    _bibibins_detail_options,
+    _cover_store_logo,
     _device_category,
     _option_label,
     _parse_elec_detail,
@@ -84,6 +88,30 @@ class ProductScraperTests(unittest.TestCase):
         self.assertEqual(product.price, 31_000)
         self.assertEqual(product.options, ["블랙", "화이트"])
         self.assertEqual(product.option_label, "색상")
+
+    def test_bibibins_detail_reads_authenticated_color_options(self):
+        soup = BeautifulSoup(
+            """
+            <div class="xans-product-option">
+              <select id="product_option_id1">
+                <option value="">- [필수] 색상을 선택해 주세요 -</option>
+                <option value="black">블랙</option>
+                <option value="white">화이트 (품절)</option>
+              </select>
+            </div>
+            """,
+            "html.parser",
+        )
+        self.assertEqual(_bibibins_detail_options(soup), ["블랙", "화이트"])
+
+    def test_bibibins_logos_are_covered_in_both_top_corners(self):
+        source = BytesIO()
+        Image.new("RGB", (400, 400), (180, 20, 20)).save(source, format="PNG")
+
+        bibibins = Image.open(BytesIO(_cover_store_logo(source.getvalue(), "bibibins"))).convert("RGB")
+        self.assertGreater(min(bibibins.getpixel((20, 20))), 240)
+        self.assertGreater(min(bibibins.getpixel((350, 25))), 240)
+        self.assertGreater(bibibins.getpixel((200, 200))[0], 150)
 
 
 if __name__ == "__main__":

@@ -118,9 +118,18 @@ async def initialize_web_store_schema(conn):
             product_id BIGINT NOT NULL REFERENCES web_products(id) ON DELETE CASCADE,
             source_url TEXT NOT NULL DEFAULT '',
             source_price BIGINT NOT NULL DEFAULT 0,
+            price_locked BOOLEAN NOT NULL DEFAULT FALSE,
             disabled_by_admin BOOLEAN NOT NULL DEFAULT FALSE,
             synced_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
             PRIMARY KEY (guild_id, source_site, source_key)
+        );
+        CREATE TABLE IF NOT EXISTS web_product_images (
+            product_id BIGINT PRIMARY KEY REFERENCES web_products(id) ON DELETE CASCADE,
+            guild_id BIGINT NOT NULL,
+            mime_type TEXT NOT NULL DEFAULT 'image/webp',
+            content_hash TEXT NOT NULL,
+            image_data BYTEA NOT NULL,
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
         ALTER TABLE web_categories ADD COLUMN IF NOT EXISTS guild_id BIGINT NOT NULL DEFAULT 0;
         ALTER TABLE web_categories ADD COLUMN IF NOT EXISTS name TEXT NOT NULL DEFAULT '';
@@ -141,6 +150,7 @@ async def initialize_web_store_schema(conn):
         ALTER TABLE web_cart_items ADD COLUMN IF NOT EXISTS selected_option TEXT NOT NULL DEFAULT '';
         ALTER TABLE web_order_items ADD COLUMN IF NOT EXISTS product_option TEXT NOT NULL DEFAULT '';
         ALTER TABLE web_product_sources ADD COLUMN IF NOT EXISTS disabled_by_admin BOOLEAN NOT NULL DEFAULT FALSE;
+        ALTER TABLE web_product_sources ADD COLUMN IF NOT EXISTS price_locked BOOLEAN NOT NULL DEFAULT FALSE;
         ALTER TABLE orders ADD COLUMN IF NOT EXISTS shipping_name TEXT;
         ALTER TABLE orders ADD COLUMN IF NOT EXISTS shipping_contact TEXT;
         ALTER TABLE orders ADD COLUMN IF NOT EXISTS shipping_address TEXT;
@@ -283,6 +293,7 @@ class StoreServer:
             web.get("/auth/callback", self.callback),
             web.post("/api/logout", self.logout),
             web.get("/api/me", self.me),
+            web.get(r"/api/products/{product_id:\d+}/image", self.product_image),
             web.get("/api/catalog", self.catalog),
             web.get("/api/reviews", self.reviews),
             web.get("/api/stores", self.stores),
@@ -626,6 +637,33 @@ class StoreServer:
             samesite="Strict", max_age=60 * 60 * 8,
         )
         return response
+
+    async def product_image(self, request):
+        product_id = int(request.match_info["product_id"])
+        async with self.bot.db_pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT mime_type,content_hash,image_data
+                FROM web_product_images
+                WHERE product_id=$1 AND guild_id=$2
+                """,
+                product_id, self.guild_id,
+            )
+        if not row:
+            raise web.HTTPNotFound(text="상품 이미지를 찾을 수 없습니다.")
+        etag = f'"{row["content_hash"]}"'
+        cache_headers = {
+            "ETag": etag,
+            "Cache-Control": "public, max-age=31536000, immutable",
+            "X-Content-Type-Options": "nosniff",
+        }
+        if request.headers.get("If-None-Match") == etag:
+            return web.Response(status=304, headers=cache_headers)
+        return web.Response(
+            body=bytes(row["image_data"]),
+            content_type=row["mime_type"],
+            headers=cache_headers,
+        )
 
     async def catalog(self, request):
         guild = self._guild()
@@ -1144,6 +1182,10 @@ class StoreServer:
         async with self.bot.db_pool.acquire() as conn:
             if data.get("id"):
                 await conn.execute("UPDATE web_products SET category_id=$3,name=$4,description=$5,price=$6,stock=$7,image_url=$8,option_label=$9,options=$10,is_active=$11,updated_at=CURRENT_TIMESTAMP WHERE id=$1 AND guild_id=$2", int(data["id"]), *args)
+                await conn.execute(
+                    "UPDATE web_product_sources SET price_locked=TRUE WHERE product_id=$1 AND guild_id=$2",
+                    int(data["id"]), self.guild_id,
+                )
             else:
                 await conn.execute("INSERT INTO web_products (guild_id,category_id,name,description,price,stock,image_url,option_label,options,is_active) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)", *args)
         return web.json_response({"ok": True})
@@ -1180,6 +1222,12 @@ class StoreServer:
             raise StoreError("상품을 넣을 카테고리를 선택해 주세요.")
         if not source_url:
             raise StoreError("상품 또는 목록 링크를 입력해 주세요.")
+        try:
+            manual_price = int(data.get("price", -1))
+        except (TypeError, ValueError):
+            manual_price = -1
+        if manual_price < 0:
+            raise StoreError("판매 가격을 올바르게 입력해 주세요.")
         option_label = str(data.get("option_label", "색상")).strip()
         if option_label not in {"색상", "맛"}:
             raise StoreError("상품 옵션은 색상 또는 맛으로 선택해 주세요.")
@@ -1215,9 +1263,11 @@ class StoreServer:
                 for product in products:
                     product.option_label = option_label
                     product.options = manual_options.copy()
+            for product in products:
+                product.price = manual_price
             async with self.bot.db_pool.acquire() as conn:
                 summary = await import_scraped_products(
-                    conn, self.guild_id, category_id, products,
+                    conn, self.guild_id, category_id, products, price_locked=True,
                 )
         return web.json_response(
             summary, dumps=lambda value: json.dumps(value, ensure_ascii=False),

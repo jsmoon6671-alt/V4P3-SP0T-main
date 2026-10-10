@@ -858,13 +858,16 @@ function openEditor(type, item = {}) {
       <label>상품 또는 목록 링크
         <input name="source_url" type="url" inputmode="url" placeholder="https://..." autocomplete="off" required>
       </label>
+      <label>판매 가격
+        <input name="price" type="number" inputmode="numeric" min="0" step="1" placeholder="직접 판매할 가격을 입력해 주세요" required>
+      </label>
       <label>옵션 종류
         <select name="option_label"><option value="색상">색상</option><option value="맛">맛</option></select>
       </label>
       <label>색상 또는 맛 목록
         <textarea name="options" placeholder="예: 블랙, 화이트&#10;여러 값은 한 줄씩 또는 쉼표로 입력"></textarea>
       </label>
-      <small>비비빈스와 일렉샵 링크를 지원합니다. 직접 입력한 색상·맛은 크롤링된 옵션보다 우선 적용됩니다. 목록 링크에 입력하면 가져온 모든 상품에 같은 옵션이 적용됩니다. 판매 가격에는 원래 가격보다 3,000원이 더해집니다.</small>`;
+      <small>비비빈스와 일렉샵 링크를 지원합니다. 입력한 가격은 자동 동기화 후에도 유지됩니다. 목록 링크를 사용하면 가져온 모든 상품에 같은 가격과 옵션이 적용됩니다.</small>`;
   } else {
     fields.innerHTML = `<input type="hidden" name="id" value="${item.id || ""}">
       <label>카테고리
@@ -944,7 +947,7 @@ async function saveChannels(event) {
 }
 
 async function syncProducts() {
-  if (!confirm("비비빈스와 일렉샵의 기기 상품을 가져올까요?\n판매 가격에는 3,000원이 더해집니다.")) return;
+  if (!confirm("비비빈스와 일렉샵의 기기 상품을 가져올까요?\n직접 설정한 판매 가격은 변경되지 않습니다. 새로 발견한 상품만 원가 + 3,000원의 임시 가격으로 추가됩니다.")) return;
   const button = $("#sync-products");
   const label = button.textContent;
   button.disabled = true;
