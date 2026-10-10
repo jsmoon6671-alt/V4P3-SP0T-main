@@ -214,6 +214,7 @@ h3,strong { font-weight: 800; }
 .admin-row { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 13px 0; border-bottom: 1px solid var(--line); font-size: 13px; font-weight: 600; }
 .admin-row:last-child { border-bottom: 0; }
 .admin-actions { display: flex; flex: 0 0 auto; align-items: center; gap: 5px; }
+.panel-head>.admin-actions { flex-wrap: wrap; justify-content: flex-end; }
 .admin-bulk-actions { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin: 8px 0 2px; padding: 10px 0; border-bottom: 1px solid var(--line); }
 .admin-bulk-actions label,.admin-product-info { display: flex; align-items: center; gap: 10px; }
 .admin-bulk-actions label { color: var(--muted); font-size: 12px; font-weight: 800; cursor: pointer; }

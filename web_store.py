@@ -1257,8 +1257,17 @@ class StoreServer:
                 products = await scrape_products_from_url(source_url)
             except RuntimeError as exc:
                 raise StoreError(str(exc), 422) from exc
-            except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
-                raise StoreError("쇼핑몰 페이지를 불러오지 못했습니다. 링크를 확인하고 다시 시도해 주세요.", 502) from exc
+            except aiohttp.ClientResponseError as exc:
+                raise StoreError(
+                    f"쇼핑몰 요청이 거부되었습니다. (HTTP {exc.status}) 잠시 후 다시 시도해 주세요.",
+                    502,
+                ) from exc
+            except (aiohttp.ClientConnectionError, asyncio.TimeoutError) as exc:
+                raise StoreError(
+                    "쇼핑몰 서버에 연결하지 못했습니다. 잠시 후 다시 시도해 주세요.", 502,
+                ) from exc
+            except aiohttp.ClientError as exc:
+                raise StoreError("쇼핑몰 응답을 처리하지 못했습니다. 잠시 후 다시 시도해 주세요.", 502) from exc
             if manual_options:
                 for product in products:
                     product.option_label = option_label

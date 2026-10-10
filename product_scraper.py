@@ -108,9 +108,24 @@ def _bibibins_card(node, category: str, page_url: str) -> ScrapedProduct | None:
 
 
 async def _soup(session: aiohttp.ClientSession, url: str) -> BeautifulSoup:
-    async with session.get(url, timeout=aiohttp.ClientTimeout(total=30)) as response:
-        response.raise_for_status()
-        return BeautifulSoup(await response.read(), "html.parser")
+    transient_statuses = {408, 425, 429, 500, 502, 503, 504}
+    for attempt in range(3):
+        try:
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=40)) as response:
+                response.raise_for_status()
+                return BeautifulSoup(await response.read(), "html.parser")
+        except aiohttp.ClientResponseError as exc:
+            if exc.status not in transient_statuses or attempt == 2:
+                raise RuntimeError(
+                    f"쇼핑몰 페이지 요청이 거부되었습니다. (HTTP {exc.status})"
+                ) from exc
+        except (aiohttp.ClientConnectionError, aiohttp.ServerTimeoutError, asyncio.TimeoutError) as exc:
+            if attempt == 2:
+                raise RuntimeError(
+                    "쇼핑몰 서버 연결이 지연되고 있습니다. 잠시 후 다시 시도해 주세요."
+                ) from exc
+        await asyncio.sleep(0.8 * (attempt + 1))
+    raise RuntimeError("쇼핑몰 페이지를 불러오지 못했습니다.")
 
 
 async def _login_bibibins(session: aiohttp.ClientSession) -> bool:

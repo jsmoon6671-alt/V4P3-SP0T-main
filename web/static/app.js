@@ -572,6 +572,7 @@ function bindForms() {
   $("#store-search").onclick = searchStores;
   $("#store-results").onchange = chooseStore;
   $("#add-category").onclick = () => openEditor("category");
+  $("#add-manual-product").onclick = () => openEditor("product", { manualCreate: true });
   $("#add-product").onclick = () => openEditor("product");
   $("#sync-products").onclick = syncProducts;
   $("#editor-close").onclick = closeEditor;
@@ -840,10 +841,11 @@ function closeEditor() {
 
 function openEditor(type, item = {}) {
   const fields = $("#editor-fields");
-  const isLinkImport = type === "product" && !item.id;
+  const isManualCreate = type === "product" && Boolean(item.manualCreate);
+  const isLinkImport = type === "product" && !item.id && !isManualCreate;
   $("#editor-title").textContent = type === "category"
     ? "카테고리 설정"
-    : isLinkImport ? "링크로 상품 추가" : "상품 설정";
+    : isLinkImport ? "링크로 상품 추가" : isManualCreate ? "직접 상품 추가" : "상품 설정";
   if (type === "category") {
     fields.innerHTML = `<input type="hidden" name="id" value="${item.id || ""}">
       <label>이름<input name="name" value="${escapeHtml(item.name || "")}" required></label>
