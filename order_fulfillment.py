@@ -60,16 +60,22 @@ async def finalize_approved_order(bot, order: dict, *, processor: str = "Pushbul
 
     if settings.get("buyer_info_channel_id"):
         info = dict(user_info) if user_info else {}
+        shipping_name = order.get("shipping_name") or info.get("name") or "미등록"
+        shipping_contact = order.get("shipping_contact") or info.get("contact") or "미등록"
+        shipping_address = order.get("shipping_address") or info.get("address") or "미등록"
+        shipping_cvs = order.get("shipping_cvs") or info.get("cvs") or "X"
+        shipping_method = order.get("shipping_method") or "미등록"
         products = "\n".join(f"`{part.strip()}`" for part in str(order["product"]).split(",") if part.strip())
         content = (
             "## 📋 구매자 상세 배송 정보\n\n"
             f"`👤` **구매자:** <@{buyer_id}>\n"
             f"`🕒` **구매일시:** `{datetime.datetime.now(KST):%Y-%m-%d %H:%M:%S}`\n"
             f"`🧾` **주문번호:** `{order['order_id']}`\n"
-            f"`👤` **성함:** `{info.get('name') or '미등록'}`\n"
-            f"`📞` **연락처:** `{info.get('contact') or '미등록'}`\n"
-            f"`🏠` **주소:** `{info.get('address') or '미등록'}`\n"
-            f"`🏪` **편의점:** `{info.get('cvs') or 'X'}`\n"
+            f"`👤` **성함:** `{shipping_name}`\n"
+            f"`📞` **연락처:** `{shipping_contact}`\n"
+            f"`🚚` **배송방식:** `{shipping_method}`\n"
+            f"`🏠` **주소:** `{shipping_address}`\n"
+            f"`🏪` **편의점:** `{shipping_cvs}`\n"
             f"`📦` **상품:**\n{products}\n\n"
             f"`💰` **금액:** `{order['amount']}`"
         )

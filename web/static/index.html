@@ -53,16 +53,43 @@
     <section id="cart" class="page">
       <div class="page-title"><p class="eyebrow">YOUR CART</p><h1>장바구니</h1></div>
       <div class="checkout-grid">
-        <div id="cart-items" class="panel"></div>
-        <form id="checkout-form" class="panel form-panel sticky">
-          <h2>주문 신청</h2>
-          <div class="total-row"><span>상품 합계</span><strong id="cart-total">0원</strong></div>
+        <form id="checkout-form" class="panel form-panel">
+          <h2>배송 정보</h2>
+          <p>입금 화면으로 넘어가기 전에 받는 정보를 다시 확인해 주세요.</p>
+          <label>받는 분<input name="name" autocomplete="name" required></label>
+          <label>연락처<input name="contact" autocomplete="tel" required></label>
+          <label>택배 방식
+            <select name="shipping_method" id="shipping-method" required>
+              <option value="GENERAL">일반택배</option>
+              <option value="GS25">GS25반값택배</option>
+              <option value="CU">CU알뜰택배</option>
+            </select>
+          </label>
+          <div id="store-lookup" class="store-lookup" hidden>
+            <label>편의점명
+              <span class="input-action"><input id="store-query" placeholder="지점명을 입력해 주세요"><button type="button" id="store-search" class="button secondary compact">주소 조회</button></span>
+            </label>
+            <label>검색 결과<select id="store-results"><option value="">조회할 편의점명을 입력해 주세요</option></select></label>
+          </div>
+          <label>배송 주소<textarea name="address" id="shipping-address" autocomplete="street-address" required></textarea></label>
+          <input type="hidden" name="cvs" id="shipping-cvs">
+          <p class="shipping-notice">배송비는 택배 방식과 관계없이 <strong>3,000원</strong>입니다.</p>
+          <h2>결제 정보</h2>
           <label>입금자명<input name="depositor_name" required maxlength="30"></label>
           <label>사용 포인트<input name="points" type="number" min="0" max="2000" value="0"></label>
           <label class="check"><input name="adult_confirmed" type="checkbox" required><span>본인은 성인이며 구매 내용을 확인했습니다.</span></label>
-          <button class="button wide" type="submit">주문하고 5분 타이머 시작</button>
           <small class="hint">입금자명과 결제금액이 알림과 정확히 일치하면 자동 승인됩니다.</small>
         </form>
+        <div class="panel sticky order-summary">
+          <div class="panel-head"><h2>주문 상품</h2><span id="selected-count">0개 선택</span></div>
+          <div id="cart-items"></div>
+          <div class="summary-lines">
+            <div class="total-row"><span>상품 금액</span><strong id="cart-subtotal">0원</strong></div>
+            <div class="total-row"><span>배송비</span><strong>3,000원</strong></div>
+            <div class="total-row grand"><span>총 결제금액</span><strong id="cart-total">0원</strong></div>
+          </div>
+          <button class="button wide" type="submit" form="checkout-form">결제하기</button>
+        </div>
       </div>
     </section>
 
@@ -75,14 +102,46 @@
       <div id="metrics" class="metrics"></div>
       <div class="admin-grid"><div class="panel"><div class="panel-head"><h2 id="trend-title">최근 7일 매출</h2><div class="tabs period-tabs"><button class="active" data-period="week">주간</button><button data-period="month">월간</button><button data-period="year">연간</button></div></div><div id="trend" class="bars"></div></div><div class="panel"><h2>카테고리별 인기 상품 TOP 5</h2><div id="top-products"></div></div></div>
       <div class="admin-grid">
-        <div class="panel"><div class="panel-head"><h2>카테고리</h2><button class="text-button" data-modal="category">+ 추가</button></div><div id="category-admin"></div></div>
-        <div class="panel"><div class="panel-head"><h2>상품 관리</h2><button class="text-button" data-modal="product">+ 상품 추가</button></div><div id="product-admin"></div></div>
+        <div class="panel"><div class="panel-head"><h2>카테고리</h2><button type="button" id="add-category" class="button secondary compact">+ 카테고리 추가</button></div><div id="category-admin"></div></div>
+        <div class="panel"><div class="panel-head"><h2>상품 관리</h2><button type="button" id="add-product" class="button secondary compact">+ 상품 추가</button></div><div id="product-admin"></div></div>
       </div>
       <form id="channel-form" class="panel form-panel channels"><h2>Discord 채널 설정</h2><label>결제 승인 채널 ID<input name="approval_channel_id"></label><label>구매로그 채널 ID<input name="log_channel_id"></label><label>구매자정보 채널 ID<input name="buyer_info_channel_id"></label><label>구매후기 채널 ID<input name="review_channel_id"></label><button class="button" type="submit">채널 저장</button></form>
     </section>
   </main>
 
-  <dialog id="editor"><form method="dialog" id="editor-form" class="form-panel"><button class="dialog-close" value="cancel">×</button><h2 id="editor-title">추가</h2><div id="editor-fields"></div><button class="button wide" value="default">저장</button></form></dialog>
+  <div id="editor" class="modal-backdrop" hidden>
+    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="editor-title">
+      <form id="editor-form" class="form-panel">
+        <button type="button" id="editor-close" class="dialog-close" aria-label="닫기">×</button>
+        <h2 id="editor-title">추가</h2>
+        <div id="editor-fields"></div>
+        <button class="button wide" type="submit">저장</button>
+      </form>
+    </div>
+  </div>
+  <div id="admin-gate" class="modal-backdrop" hidden>
+    <div class="modal-card compact-modal" role="dialog" aria-modal="true" aria-labelledby="admin-gate-title">
+      <form id="admin-password-form" class="form-panel">
+        <button type="button" id="admin-gate-close" class="dialog-close" aria-label="닫기">×</button>
+        <p class="eyebrow">ADMIN ACCESS</p>
+        <h2 id="admin-gate-title">관리자 비밀번호</h2>
+        <p>관리자 패널에 들어가려면 비밀번호를 입력해 주세요.</p>
+        <label>비밀번호<input name="password" type="password" autocomplete="current-password" required></label>
+        <button class="button wide" type="submit">관리자 패널 열기</button>
+      </form>
+    </div>
+  </div>
+  <div id="discord-notice" class="modal-backdrop" hidden>
+    <div class="modal-card notice-card" role="dialog" aria-modal="true" aria-labelledby="discord-notice-title">
+      <div class="notice-content">
+        <p class="eyebrow">V4P3 SP0T DISCORD</p>
+        <h2 id="discord-notice-title">Discord 서버에 먼저 가입해 주세요.</h2>
+        <p>상품 구매와 주문 알림, 구매후기는 V4P3 SP0T Discord 서버에서 함께 확인할 수 있습니다.</p>
+        <a class="button wide" href="https://discord.gg/v4p3sp0t" target="_blank" rel="noopener">Discord 서버 가입하기</a>
+        <div class="notice-actions"><button type="button" id="notice-close" class="button secondary">닫기</button><button type="button" id="notice-day" class="button secondary">24시간 동안 닫기</button></div>
+      </div>
+    </div>
+  </div>
   <div id="toast"></div>
   <script src="/static/app.js"></script>
 </body>

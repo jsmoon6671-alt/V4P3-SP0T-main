@@ -23,11 +23,14 @@ from payment_automation import (
     arm_web_payment,
     initialize_payment_automation_schema,
 )
+from store_lookup import StoreLookupError, search_stores
 
 
 ROOT = Path(__file__).resolve().parent
 STATIC = ROOT / "web" / "static"
 COOKIE = "v4p3_session"
+ADMIN_COOKIE = "v4p3_admin"
+SHIPPING_FEE = 3_000
 
 
 class StoreError(Exception):
@@ -56,6 +59,8 @@ async def initialize_web_store_schema(conn):
             price BIGINT NOT NULL CHECK (price >= 0),
             stock INTEGER NOT NULL DEFAULT 0 CHECK (stock >= 0),
             image_url TEXT NOT NULL DEFAULT '',
+            option_label TEXT NOT NULL DEFAULT '색상',
+            options TEXT[] NOT NULL DEFAULT '{}',
             is_active BOOLEAN NOT NULL DEFAULT TRUE,
             created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -65,6 +70,7 @@ async def initialize_web_store_schema(conn):
             user_id BIGINT NOT NULL,
             product_id BIGINT NOT NULL REFERENCES web_products(id) ON DELETE CASCADE,
             quantity INTEGER NOT NULL CHECK (quantity BETWEEN 1 AND 99),
+            selected_option TEXT NOT NULL DEFAULT '',
             created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
             PRIMARY KEY (guild_id, user_id, product_id)
         );
@@ -74,8 +80,19 @@ async def initialize_web_store_schema(conn):
             product_name TEXT NOT NULL,
             unit_price BIGINT NOT NULL CHECK (unit_price >= 0),
             quantity INTEGER NOT NULL CHECK (quantity > 0),
+            product_option TEXT NOT NULL DEFAULT '',
             PRIMARY KEY (order_id, product_id)
         );
+        ALTER TABLE web_products ADD COLUMN IF NOT EXISTS option_label TEXT NOT NULL DEFAULT '색상';
+        ALTER TABLE web_products ADD COLUMN IF NOT EXISTS options TEXT[] NOT NULL DEFAULT '{}';
+        ALTER TABLE web_cart_items ADD COLUMN IF NOT EXISTS selected_option TEXT NOT NULL DEFAULT '';
+        ALTER TABLE web_order_items ADD COLUMN IF NOT EXISTS product_option TEXT NOT NULL DEFAULT '';
+        ALTER TABLE orders ADD COLUMN IF NOT EXISTS shipping_name TEXT;
+        ALTER TABLE orders ADD COLUMN IF NOT EXISTS shipping_contact TEXT;
+        ALTER TABLE orders ADD COLUMN IF NOT EXISTS shipping_address TEXT;
+        ALTER TABLE orders ADD COLUMN IF NOT EXISTS shipping_cvs TEXT;
+        ALTER TABLE orders ADD COLUMN IF NOT EXISTS shipping_method TEXT;
+        ALTER TABLE orders ADD COLUMN IF NOT EXISTS shipping_fee BIGINT NOT NULL DEFAULT 0;
         """
     )
     await initialize_payment_automation_schema(conn)
@@ -98,13 +115,14 @@ class StoreServer:
         self.client_secret = os.getenv("DISCORD_CLIENT_SECRET", "").strip()
         self.redirect_uri = os.getenv("DISCORD_REDIRECT_URI", "").strip()
         self.public_url = os.getenv("WEB_PUBLIC_URL", "").rstrip("/")
+        self.admin_password = os.getenv("WEB_ADMIN_PASSWORD", "").strip() or "tb9988230.."
         self.runner: web.AppRunner | None = None
         self.payment_service = PushbulletPaymentService(
             bot,
             self._payment_approved,
             self._payment_expired,
         )
-        self.app = web.Application(middlewares=[self._errors, self._session])
+        self.app = web.Application(client_max_size=8 * 1024 ** 2, middlewares=[self._errors, self._session])
         self._routes()
 
     @web.middleware
@@ -155,6 +173,7 @@ class StoreServer:
             web.post("/api/logout", self.logout),
             web.get("/api/me", self.me),
             web.get("/api/catalog", self.catalog),
+            web.get("/api/stores", self.stores),
             web.get("/api/customer", self.customer),
             web.put("/api/customer", self.save_customer),
             web.get("/api/cart", self.cart),
@@ -163,6 +182,7 @@ class StoreServer:
             web.post("/api/checkout", self.checkout),
             web.get("/api/orders", self.orders),
             web.get(r"/api/orders/{order_id}", self.order),
+            web.post("/api/admin/unlock", self.admin_unlock),
             web.get("/api/admin/dashboard", self.admin_dashboard),
             web.get("/api/admin/categories", self.admin_categories),
             web.post("/api/admin/categories", self.admin_save_category),
@@ -204,7 +224,7 @@ class StoreServer:
             raise StoreError("Discord 로그인이 필요합니다.", 401)
         return session
 
-    async def _admin(self, request) -> dict:
+    async def _admin_member(self, request) -> dict:
         session = await self._user(request)
         guild = self._guild()
         if guild is None:
@@ -220,6 +240,13 @@ class StoreServer:
         role_ids = {int(row["role_id"]) for row in role_rows}
         if not member.guild_permissions.administrator and not any(role.id in role_ids for role in member.roles):
             raise StoreError("관리자 전용 메뉴입니다.", 403)
+        return session
+
+    async def _admin(self, request) -> dict:
+        session = await self._admin_member(request)
+        unlocked = self._decode(request.cookies.get(ADMIN_COOKIE, ""))
+        if not unlocked or str(unlocked.get("admin_for")) != str(session["id"]):
+            raise StoreError("관리자 비밀번호를 입력해 주세요.", 403)
         return session
 
     async def _body(self, request) -> dict:
@@ -304,16 +331,31 @@ class StoreServer:
     async def logout(self, request):
         response = web.json_response({"ok": True})
         response.del_cookie(COOKIE)
+        response.del_cookie(ADMIN_COOKIE)
         return response
 
     async def me(self, request):
         user = await self._user(request)
         is_admin = True
         try:
-            await self._admin(request)
+            await self._admin_member(request)
         except StoreError:
             is_admin = False
         return web.json_response({"user": {"id": user["id"], "username": user["username"], "avatar": user.get("avatar")}, "csrf": user["csrf"], "is_admin": is_admin})
+
+    async def admin_unlock(self, request):
+        user = await self._admin_member(request)
+        data = await self._body(request)
+        password = str(data.get("password", ""))
+        if not hmac.compare_digest(password, self.admin_password):
+            raise StoreError("관리자 비밀번호가 올바르지 않습니다.", 403)
+        payload = {"admin_for": str(user["id"]), "exp": int(time.time()) + 60 * 60 * 8}
+        response = web.json_response({"ok": True})
+        response.set_cookie(
+            ADMIN_COOKIE, self._encode(payload), httponly=True, secure=True,
+            samesite="Strict", max_age=60 * 60 * 8,
+        )
+        return response
 
     async def catalog(self, request):
         guild = self._guild()
@@ -331,6 +373,16 @@ class StoreServer:
             {"products": [dict(row) for row in rows]},
             dumps=lambda value: json.dumps(value, ensure_ascii=False, default=str),
         )
+
+    async def stores(self, request):
+        await self._user(request)
+        brand = str(request.query.get("brand", "")).strip().upper()
+        query = str(request.query.get("q", "")).strip()
+        try:
+            results = await search_stores(brand, query)
+        except StoreLookupError as exc:
+            raise StoreError(str(exc)) from exc
+        return web.json_response({"stores": results[:25]}, dumps=lambda value: json.dumps(value, ensure_ascii=False))
 
     async def customer(self, request):
         user = await self._user(request)
@@ -361,7 +413,8 @@ class StoreServer:
         async with self.bot.db_pool.acquire() as conn:
             rows = await conn.fetch(
                 """
-                SELECT c.product_id, c.quantity, p.name, p.price, p.stock, p.image_url,
+                SELECT c.product_id, c.quantity, c.selected_option, p.name, p.price,
+                       p.stock, p.image_url, p.option_label, p.options,
                        p.is_active, cat.name AS category_name
                 FROM web_cart_items c JOIN web_products p ON p.id = c.product_id
                 LEFT JOIN web_categories cat ON cat.id = p.category_id
@@ -373,20 +426,25 @@ class StoreServer:
     async def save_cart(self, request):
         user, data = await self._user(request), await self._body(request)
         product_id, quantity = int(data.get("product_id", 0)), int(data.get("quantity", 1))
+        selected_option = str(data.get("selected_option", "")).strip()
         if not 1 <= quantity <= 99:
             raise StoreError("수량은 1~99개로 입력해 주세요.")
         async with self.bot.db_pool.acquire() as conn:
-            product = await conn.fetchrow("SELECT stock, is_active FROM web_products WHERE id = $1 AND guild_id = $2", product_id, self.guild_id)
+            product = await conn.fetchrow("SELECT stock, is_active, options FROM web_products WHERE id = $1 AND guild_id = $2", product_id, self.guild_id)
             if not product or not product["is_active"]:
                 raise StoreError("판매 중인 상품이 아닙니다.", 404)
             if quantity > product["stock"]:
                 raise StoreError("현재 재고보다 많은 수량입니다.")
+            options = list(product["options"] or [])
+            if options and selected_option not in options:
+                raise StoreError("상품의 색상 또는 맛을 선택해 주세요.")
             await conn.execute(
                 """
-                INSERT INTO web_cart_items (guild_id, user_id, product_id, quantity)
-                VALUES ($1, $2, $3, $4)
-                ON CONFLICT (guild_id, user_id, product_id) DO UPDATE SET quantity = EXCLUDED.quantity
-                """, self.guild_id, int(user["id"]), product_id, quantity,
+                INSERT INTO web_cart_items (guild_id, user_id, product_id, quantity, selected_option)
+                VALUES ($1, $2, $3, $4, $5)
+                ON CONFLICT (guild_id, user_id, product_id) DO UPDATE SET
+                    quantity = EXCLUDED.quantity, selected_option = EXCLUDED.selected_option
+                """, self.guild_id, int(user["id"]), product_id, quantity, selected_option,
             )
         return web.json_response({"ok": True})
 
@@ -403,6 +461,24 @@ class StoreServer:
         depositor = str(data.get("depositor_name", "")).strip()
         if not depositor:
             raise StoreError("입금자명을 입력해 주세요.")
+        shipping_labels = {
+            "GENERAL": "일반택배",
+            "GS25": "GS25반값택배",
+            "CU": "CU알뜰택배",
+        }
+        shipping_method = str(data.get("shipping_method", "")).strip().upper()
+        if shipping_method not in shipping_labels:
+            raise StoreError("택배 방식을 선택해 주세요.")
+        shipping_name = str(data.get("name", "")).strip()
+        shipping_contact = str(data.get("contact", "")).strip()
+        shipping_address = str(data.get("address", "")).strip()
+        shipping_cvs = str(data.get("cvs", "")).strip()
+        if not shipping_name or not shipping_contact or not shipping_address:
+            raise StoreError("받는 분의 이름, 연락처, 배송 주소를 모두 입력해 주세요.")
+        if shipping_method in {"GS25", "CU"} and not shipping_cvs:
+            raise StoreError("조회 결과에서 받을 편의점을 선택해 주세요.")
+        if shipping_method == "GENERAL":
+            shipping_cvs = ""
         points = int(data.get("points", 0) or 0)
         selected = [int(value) for value in data.get("product_ids", [])]
         if not selected:
@@ -412,12 +488,19 @@ class StoreServer:
         cash_amount = None
         async with self.bot.db_pool.acquire() as conn:
             async with conn.transaction():
-                info = await conn.fetchrow("SELECT name, contact, address FROM user_info WHERE user_id = $1", user_id)
-                if not info or not all(info[key] for key in ("name", "contact", "address")):
-                    raise StoreError("고객정보에서 배송 정보를 먼저 등록해 주세요.")
+                await conn.execute(
+                    """
+                    INSERT INTO user_info (user_id, name, contact, address, cvs)
+                    VALUES ($1, $2, $3, $4, $5)
+                    ON CONFLICT (user_id) DO UPDATE SET
+                        name=EXCLUDED.name, contact=EXCLUDED.contact,
+                        address=EXCLUDED.address, cvs=EXCLUDED.cvs
+                    """, user_id, shipping_name, shipping_contact, shipping_address, shipping_cvs,
+                )
                 rows = await conn.fetch(
                     """
-                    SELECT c.product_id, c.quantity, p.name, p.price, p.stock, p.is_active
+                    SELECT c.product_id, c.quantity, c.selected_option,
+                           p.name, p.price, p.stock, p.is_active, p.options
                     FROM web_cart_items c JOIN web_products p ON p.id = c.product_id
                     WHERE c.guild_id = $1 AND c.user_id = $2 AND c.product_id = ANY($3::bigint[])
                     ORDER BY c.product_id FOR UPDATE OF p
@@ -427,25 +510,40 @@ class StoreServer:
                     raise StoreError("장바구니 상품 일부를 찾을 수 없습니다.")
                 if any(not row["is_active"] or row["quantity"] > row["stock"] for row in rows):
                     raise StoreError("판매가 종료되었거나 재고가 부족한 상품이 있습니다.")
-                total = sum(int(row["price"]) * int(row["quantity"]) for row in rows)
+                for row in rows:
+                    options = list(row["options"] or [])
+                    if options and row["selected_option"] not in options:
+                        raise StoreError(f"{row['name']} 상품의 색상 또는 맛을 다시 선택해 주세요.")
+                subtotal = sum(int(row["price"]) * int(row["quantity"]) for row in rows)
+                total = subtotal + SHIPPING_FEE
                 if not self.payment_service.enabled and total - points > 0:
                     raise StoreError("Pushbullet 자동결제가 아직 설정되지 않았습니다. 관리자에게 문의해 주세요.", 503)
-                product_text = ", ".join(row["name"] for row in rows)
+                product_text = ", ".join(
+                    f"{row['name']} ({row['selected_option']})" if row["selected_option"] else row["name"]
+                    for row in rows
+                )
                 quantity_text = f"총 {sum(int(row['quantity']) for row in rows)}개"
                 await conn.execute(
                     """
                     INSERT INTO orders (
                         order_id, guild_id, original_channel_id, buyer_id, product,
-                        quantity, amount, status, points_allowed, source
-                    ) VALUES ($1, $2, NULL, $3, $4, $5, $6, 'PENDING', TRUE, 'WEB')
+                        quantity, amount, status, points_allowed, source,
+                        shipping_name, shipping_contact, shipping_address, shipping_cvs,
+                        shipping_method, shipping_fee
+                    ) VALUES ($1, $2, NULL, $3, $4, $5, $6, 'PENDING', TRUE, 'WEB',
+                              $7, $8, $9, $10, $11, $12)
                     """, order_id, self.guild_id, user_id, product_text, quantity_text, f"{total:,}원",
+                    shipping_name, shipping_contact, shipping_address, shipping_cvs,
+                    shipping_labels[shipping_method], SHIPPING_FEE,
                 )
                 for row in rows:
                     await conn.execute(
                         """
-                        INSERT INTO web_order_items (order_id, product_id, product_name, unit_price, quantity)
-                        VALUES ($1, $2, $3, $4, $5)
-                        """, order_id, row["product_id"], row["name"], row["price"], row["quantity"],
+                        INSERT INTO web_order_items
+                            (order_id, product_id, product_name, unit_price, quantity, product_option)
+                        VALUES ($1, $2, $3, $4, $5, $6)
+                        """, order_id, row["product_id"], row["name"], row["price"],
+                        row["quantity"], row["selected_option"],
                     )
                     await conn.execute("UPDATE web_products SET stock = stock - $2, updated_at = CURRENT_TIMESTAMP WHERE id = $1", row["product_id"], row["quantity"])
                 order = await request_payment(conn, order_id, self.guild_id, user_id, depositor, points)
@@ -478,6 +576,7 @@ class StoreServer:
             "order_id": order_id,
             "status": status,
             "cash_amount": cash_amount,
+            "shipping_fee": SHIPPING_FEE,
             "deadline_seconds": 300,
             "bank": dict(settings) if settings else {},
         })
@@ -599,13 +698,35 @@ class StoreServer:
         await self._admin(request); data = await self._body(request)
         name = str(data.get("name", "")).strip()
         price, stock = int(data.get("price", -1)), int(data.get("stock", -1))
-        if not name or price < 0 or stock < 0: raise StoreError("상품명, 가격, 재고를 올바르게 입력해 주세요.")
-        args = (self.guild_id, int(data["category_id"]) if data.get("category_id") else None, name, str(data.get("description", "")).strip(), price, stock, str(data.get("image_url", "")).strip(), bool(data.get("is_active", True)))
+        if not data.get("category_id"):
+            raise StoreError("카테고리를 먼저 선택해 주세요.")
+        if not name or price < 0 or stock < 0:
+            raise StoreError("상품명, 가격, 재고를 올바르게 입력해 주세요.")
+        image_url = str(data.get("image_url", "")).strip()
+        if not image_url:
+            raise StoreError("상품 이미지를 URL 또는 파일로 등록해 주세요.")
+        option_label = str(data.get("option_label", "색상")).strip()
+        if option_label not in {"색상", "맛"}:
+            raise StoreError("상품 옵션은 색상 또는 맛으로 선택해 주세요.")
+        raw_options = data.get("options", [])
+        if isinstance(raw_options, str):
+            raw_options = raw_options.replace("\r", "\n").replace(",", "\n").split("\n")
+        options = list(dict.fromkeys(str(value).strip() for value in raw_options if str(value).strip()))
+        if not options:
+            raise StoreError("색상 또는 맛을 한 개 이상 입력해 주세요.")
+        if len(options) > 50:
+            raise StoreError("색상 또는 맛은 최대 50개까지 등록할 수 있습니다.")
+        args = (
+            self.guild_id, int(data["category_id"]), name,
+            str(data.get("description", "")).strip(), price, stock,
+            image_url, option_label, options,
+            bool(data.get("is_active", True)),
+        )
         async with self.bot.db_pool.acquire() as conn:
             if data.get("id"):
-                await conn.execute("UPDATE web_products SET category_id=$3,name=$4,description=$5,price=$6,stock=$7,image_url=$8,is_active=$9,updated_at=CURRENT_TIMESTAMP WHERE id=$1 AND guild_id=$2", int(data["id"]), *args)
+                await conn.execute("UPDATE web_products SET category_id=$3,name=$4,description=$5,price=$6,stock=$7,image_url=$8,option_label=$9,options=$10,is_active=$11,updated_at=CURRENT_TIMESTAMP WHERE id=$1 AND guild_id=$2", int(data["id"]), *args)
             else:
-                await conn.execute("INSERT INTO web_products (guild_id,category_id,name,description,price,stock,image_url,is_active) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)", *args)
+                await conn.execute("INSERT INTO web_products (guild_id,category_id,name,description,price,stock,image_url,option_label,options,is_active) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)", *args)
         return web.json_response({"ok": True})
 
     async def admin_delete_product(self, request):
@@ -618,7 +739,11 @@ class StoreServer:
         await self._admin(request)
         async with self.bot.db_pool.acquire() as conn:
             row = await conn.fetchrow("SELECT approval_channel_id,log_channel_id,buyer_info_channel_id,review_channel_id FROM guild_settings WHERE guild_id=$1", self.guild_id)
-        return web.json_response({"channels": dict(row) if row else {}})
+        channels = {
+            key: str(value) if value is not None else ""
+            for key, value in (dict(row).items() if row else [])
+        }
+        return web.json_response({"channels": channels})
 
     async def admin_save_channels(self, request):
         await self._admin(request); data = await self._body(request)
@@ -627,7 +752,10 @@ class StoreServer:
         async with self.bot.db_pool.acquire() as conn:
             await conn.execute("INSERT INTO guild_settings (guild_id) VALUES ($1) ON CONFLICT DO NOTHING", self.guild_id)
             await conn.execute("UPDATE guild_settings SET approval_channel_id=$2,log_channel_id=$3,buyer_info_channel_id=$4,review_channel_id=$5 WHERE guild_id=$1", self.guild_id, *values)
-        return web.json_response({"ok": True})
+        return web.json_response({
+            "ok": True,
+            "channels": {key: str(value) if value is not None else "" for key, value in zip(keys, values)},
+        })
 
     async def _payment_approved(self, order: dict, notice: DepositNotice):
         await finalize_approved_order(self.bot, order, processor=f"Pushbullet · {notice.application_name or notice.package_name}")
