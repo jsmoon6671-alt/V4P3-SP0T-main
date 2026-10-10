@@ -784,7 +784,7 @@ function renderAdminLists() {
   $$("[data-del-product]").forEach(button => {
     button.onclick = async () => {
       const product = state.adminProducts.find(item => item.id == button.dataset.delProduct);
-      if (!product || !confirm(`"${product.name}" 상품을 삭제할까요?\n장바구니에서는 제거되며 기존 주문내역은 유지됩니다.`)) return;
+      if (!product || !confirm(`"${product.name}" 상품을 삭제할까요?\n상품 목록과 장바구니에서 제거되며 기존 주문내역은 유지됩니다.`)) return;
       try {
         await api(`/api/admin/products/${button.dataset.delProduct}`, { method: "DELETE", body: "{}" });
         await Promise.all([loadAdmin(), loadCatalog(), loadCart()]);

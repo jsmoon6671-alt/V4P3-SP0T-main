@@ -1086,7 +1086,7 @@ class StoreServer:
     async def admin_products(self, request):
         await self._admin(request)
         async with self.bot.db_pool.acquire() as conn:
-            rows = await conn.fetch("SELECT p.*, c.name category_name FROM web_products p LEFT JOIN web_categories c ON c.id=p.category_id WHERE p.guild_id=$1 ORDER BY p.updated_at DESC", self.guild_id)
+            rows = await conn.fetch("SELECT p.*, c.name category_name FROM web_products p LEFT JOIN web_categories c ON c.id=p.category_id WHERE p.guild_id=$1 AND p.is_active=TRUE ORDER BY p.updated_at DESC", self.guild_id)
         return web.json_response({"products": [dict(row) for row in rows]}, dumps=lambda v: json.dumps(v, ensure_ascii=False, default=str))
 
     async def admin_save_product(self, request):
@@ -1126,11 +1126,18 @@ class StoreServer:
 
     async def admin_delete_product(self, request):
         await self._admin(request)
+        product_id = int(request.match_info["product_id"])
         async with self.bot.db_pool.acquire() as conn:
-            deleted = await conn.fetchrow(
-                "DELETE FROM web_products WHERE id=$1 AND guild_id=$2 RETURNING name",
-                int(request.match_info["product_id"]), self.guild_id,
-            )
+            async with conn.transaction():
+                deleted = await conn.fetchrow(
+                    "UPDATE web_products SET is_active=FALSE, updated_at=CURRENT_TIMESTAMP WHERE id=$1 AND guild_id=$2 AND is_active=TRUE RETURNING name",
+                    product_id, self.guild_id,
+                )
+                if deleted:
+                    await conn.execute(
+                        "DELETE FROM web_cart_items WHERE product_id=$1 AND guild_id=$2",
+                        product_id, self.guild_id,
+                    )
         if not deleted:
             raise StoreError("삭제할 상품을 찾을 수 없습니다.", 404)
         return web.json_response({"ok": True, "name": deleted["name"]})
