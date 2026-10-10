@@ -59,6 +59,7 @@ async def initialize_database(conn):
             depositor_name TEXT,
             purchase_log_channel_id BIGINT,
             purchase_log_message_id BIGINT,
+            purchase_ticket_channel_id BIGINT,
             processed_at TIMESTAMPTZ,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
@@ -110,6 +111,7 @@ async def initialize_database(conn):
         'ALTER TABLE orders ADD COLUMN created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP;',
         'ALTER TABLE orders ADD COLUMN purchase_log_channel_id BIGINT;',
         'ALTER TABLE orders ADD COLUMN purchase_log_message_id BIGINT;',
+        'ALTER TABLE orders ADD COLUMN purchase_ticket_channel_id BIGINT;',
         'ALTER TABLE orders ADD COLUMN processed_at TIMESTAMPTZ;',
         'ALTER TABLE guild_settings ADD COLUMN ticket_cat_purchase BIGINT;',
         'ALTER TABLE guild_settings ADD COLUMN ticket_cat_general BIGINT;',

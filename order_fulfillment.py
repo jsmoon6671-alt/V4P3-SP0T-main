@@ -9,6 +9,7 @@ import discord
 
 from loyalty_points import payment_summary
 from order_editing import build_purchase_log_payload, sync_buyer_roles
+from purchase_tickets import ensure_approved_purchase_ticket
 
 
 LOGGER = logging.getLogger(__name__)
@@ -61,6 +62,10 @@ async def finalize_approved_order(bot, order: dict, *, processor: str = "Pushbul
     settings = dict(settings_row) if settings_row else {}
 
     if guild:
+        try:
+            await ensure_approved_purchase_ticket(bot, order)
+        except Exception:
+            LOGGER.exception("자동승인 구매티켓 생성 실패: order=%s", order["order_id"])
         try:
             await sync_buyer_roles(bot, guild, buyer_id)
         except Exception:

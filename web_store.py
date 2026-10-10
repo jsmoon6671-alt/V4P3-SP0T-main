@@ -132,6 +132,7 @@ async def initialize_web_store_schema(conn):
         ALTER TABLE orders ADD COLUMN IF NOT EXISTS carrier_id TEXT;
         ALTER TABLE orders ADD COLUMN IF NOT EXISTS fulfillment_status TEXT NOT NULL DEFAULT 'PAYMENT_APPROVED';
         ALTER TABLE orders ADD COLUMN IF NOT EXISTS fulfillment_updated_at TIMESTAMPTZ;
+        ALTER TABLE orders ADD COLUMN IF NOT EXISTS purchase_ticket_channel_id BIGINT;
         """
     )
     await initialize_payment_automation_schema(conn)

@@ -43,6 +43,7 @@ from chat_ranking import (
 )
 from database import initialize_database
 from order_editing import build_purchase_log_payload, register_order_edit_command
+from purchase_tickets import ensure_approved_purchase_ticket
 from web_store import save_web_review, start_web_store
 from web_order_progress import (
     WebOrderProgressCog,
@@ -3662,6 +3663,11 @@ async def on_interaction(interaction: discord.Interaction):
         )
 
         if action == 'approve':
+            try:
+                await ensure_approved_purchase_ticket(bot, order)
+            except Exception:
+                logging.exception("수동승인 구매티켓 생성 실패: order=%s", order_id)
+
             if settings and settings['log_channel_id']:
                 log_payload = build_purchase_log_payload(order, anonymous_role_id)
                 log_response = await interaction.client.http.request(
