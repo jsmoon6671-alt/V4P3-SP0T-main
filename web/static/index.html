@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@500;600;700;800&family=Noto+Sans+KR:wght@500;600;700;800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/static/styles.css?v=20261010-19">
+  <link rel="stylesheet" href="/static/styles.css?v=20261010-20">
 </head>
 <body>
   <div class="grain"></div>
@@ -35,7 +35,13 @@
         </div>
         <div class="hero-card"><span>자동 입금 확인</span><strong>5:00</strong><small>주문 신청 뒤 입금 가능 시간</small></div>
       </div>
-      <div class="toolbar"><h2>전체 상품</h2><div id="category-tabs" class="tabs"></div></div>
+      <div class="toolbar catalog-toolbar">
+        <h2 id="catalog-title">전체 상품</h2>
+        <div class="category-navigation">
+          <div id="parent-category-tabs" class="tabs parent-tabs" aria-label="대분류"></div>
+          <div id="category-tabs" class="tabs subcategory-tabs" aria-label="하위 카테고리" hidden></div>
+        </div>
+      </div>
       <div id="products" class="product-grid"></div>
     </section>
 
@@ -141,7 +147,7 @@
       <div id="metrics" class="metrics"></div>
       <div class="admin-grid"><div class="panel"><div class="panel-head"><h2 id="trend-title">최근 7일 매출</h2><div class="tabs period-tabs"><button class="active" data-period="week">주간</button><button data-period="month">월간</button><button data-period="year">연간</button></div></div><div id="trend" class="bars"></div></div><div class="panel"><h2>카테고리별 인기 상품 TOP 5</h2><div id="top-products"></div></div></div>
       <div class="admin-grid">
-        <div class="panel"><div class="panel-head"><h2>카테고리</h2><button type="button" id="add-category" class="button secondary compact">+ 카테고리 추가</button></div><div id="category-admin"></div></div>
+        <div class="panel"><div class="panel-head"><h2>카테고리</h2><span class="admin-actions"><button type="button" id="add-parent-category" class="button secondary compact">+ 대분류 추가</button><button type="button" id="add-category" class="button secondary compact">+ 하위 카테고리 추가</button></span></div><div id="category-admin"></div></div>
         <div class="panel"><div class="panel-head"><h2>상품 관리</h2><span class="admin-actions"><button type="button" id="sync-products" class="button secondary compact">상품 자동 동기화</button><button type="button" id="add-manual-product" class="button secondary compact">+ 직접 상품 추가</button><button type="button" id="add-product" class="button secondary compact">+ 링크로 상품 추가</button></span></div><div id="product-admin"></div></div>
       </div>
       <form id="channel-form" class="panel form-panel channels"><h2>Discord 채널 설정</h2><label>결제 승인 채널 ID<input name="approval_channel_id" inputmode="numeric" autocomplete="off"></label><label>구매로그 채널 ID<input name="log_channel_id" inputmode="numeric" autocomplete="off"></label><label>구매자정보 채널 ID<input name="buyer_info_channel_id" inputmode="numeric" autocomplete="off"></label><label>구매후기 채널 ID<input name="review_channel_id" inputmode="numeric" autocomplete="off"></label><button class="button" type="submit">채널 저장</button></form>
@@ -193,6 +199,6 @@
     </div>
   </div>
   <div id="toast"></div>
-  <script src="/static/app.js?v=20261010-23"></script>
+  <script src="/static/app.js?v=20261010-24"></script>
 </body>
 </html>

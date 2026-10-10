@@ -77,6 +77,7 @@ async def initialize_web_store_schema(conn):
             id BIGSERIAL PRIMARY KEY,
             guild_id BIGINT NOT NULL,
             name TEXT NOT NULL,
+            parent_id BIGINT REFERENCES web_categories(id) ON DELETE SET NULL,
             sort_order INTEGER NOT NULL DEFAULT 0,
             created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
             UNIQUE (guild_id, name)
@@ -146,6 +147,7 @@ async def initialize_web_store_schema(conn):
         );
         ALTER TABLE web_categories ADD COLUMN IF NOT EXISTS guild_id BIGINT NOT NULL DEFAULT 0;
         ALTER TABLE web_categories ADD COLUMN IF NOT EXISTS name TEXT NOT NULL DEFAULT '';
+        ALTER TABLE web_categories ADD COLUMN IF NOT EXISTS parent_id BIGINT REFERENCES web_categories(id) ON DELETE SET NULL;
         ALTER TABLE web_categories ADD COLUMN IF NOT EXISTS sort_order INTEGER NOT NULL DEFAULT 0;
         ALTER TABLE web_categories ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP;
         ALTER TABLE web_products ADD COLUMN IF NOT EXISTS guild_id BIGINT NOT NULL DEFAULT 0;
@@ -684,14 +686,30 @@ class StoreServer:
         async with self.bot.db_pool.acquire() as conn:
             rows = await conn.fetch(
                 """
-                SELECT p.*, c.name AS category_name FROM web_products p
+                SELECT p.*, c.name AS category_name, c.parent_id,
+                       parent.name AS parent_category_name
+                FROM web_products p
                 LEFT JOIN web_categories c ON c.id = p.category_id
+                LEFT JOIN web_categories parent ON parent.id = c.parent_id
                 WHERE p.guild_id = $1 AND p.is_active = TRUE
-                ORDER BY c.sort_order, c.name, p.name
+                ORDER BY COALESCE(parent.sort_order, c.sort_order), parent.name,
+                         c.sort_order, c.name, p.name
                 """, guild_id,
             )
+            categories = await conn.fetch(
+                """
+                SELECT c.id, c.name, c.parent_id, c.sort_order,
+                       parent.name AS parent_name
+                FROM web_categories c
+                LEFT JOIN web_categories parent ON parent.id = c.parent_id
+                WHERE c.guild_id=$1
+                ORDER BY COALESCE(parent.sort_order, c.sort_order), parent.name,
+                         c.parent_id NULLS FIRST, c.sort_order, c.name
+                """,
+                guild_id,
+            )
         return web.json_response(
-            {"products": [dict(row) for row in rows]},
+            {"products": [dict(row) for row in rows], "categories": [dict(row) for row in categories]},
             dumps=lambda value: json.dumps(value, ensure_ascii=False, default=str),
         )
 
@@ -1097,7 +1115,17 @@ class StoreServer:
     async def admin_categories(self, request):
         await self._admin(request)
         async with self.bot.db_pool.acquire() as conn:
-            rows = await conn.fetch("SELECT * FROM web_categories WHERE guild_id=$1 ORDER BY sort_order, name", self.guild_id)
+            rows = await conn.fetch(
+                """
+                SELECT c.*, parent.name AS parent_name
+                FROM web_categories c
+                LEFT JOIN web_categories parent ON parent.id=c.parent_id
+                WHERE c.guild_id=$1
+                ORDER BY COALESCE(parent.sort_order, c.sort_order), parent.name,
+                         c.parent_id NULLS FIRST, c.sort_order, c.name
+                """,
+                self.guild_id,
+            )
         return web.json_response({"categories": [dict(row) for row in rows]}, dumps=lambda v: json.dumps(v, ensure_ascii=False, default=str))
 
     async def admin_save_category(self, request):
@@ -1109,9 +1137,29 @@ class StoreServer:
             sort_order = int(data.get("sort_order", 0) or 0)
         except (TypeError, ValueError) as exc:
             raise StoreError("정렬 순서는 숫자로 입력해 주세요.") from exc
+        try:
+            parent_id = int(data["parent_id"]) if data.get("parent_id") else None
+        except (TypeError, ValueError) as exc:
+            raise StoreError("대분류를 올바르게 선택해 주세요.") from exc
         async with self.bot.db_pool.acquire() as conn:
+            category_id = int(data["id"]) if data.get("id") else None
+            if category_id and parent_id == category_id:
+                raise StoreError("카테고리 자신을 대분류로 선택할 수 없습니다.")
+            if parent_id:
+                parent = await conn.fetchrow(
+                    "SELECT id, parent_id FROM web_categories WHERE id=$1 AND guild_id=$2",
+                    parent_id, self.guild_id,
+                )
+                if not parent:
+                    raise StoreError("선택한 대분류를 찾을 수 없습니다.")
+                if parent["parent_id"]:
+                    raise StoreError("하위 카테고리 아래에 카테고리를 추가할 수 없습니다.")
+                if category_id and await conn.fetchval(
+                    "SELECT EXISTS(SELECT 1 FROM web_categories WHERE parent_id=$1 AND guild_id=$2)",
+                    category_id, self.guild_id,
+                ):
+                    raise StoreError("하위 카테고리가 있는 대분류는 다른 대분류 아래로 이동할 수 없습니다.")
             if data.get("id"):
-                category_id = int(data["id"])
                 duplicate = await conn.fetchval(
                     "SELECT id FROM web_categories WHERE guild_id=$1 AND name=$2 AND id<>$3",
                     self.guild_id, name, category_id,
@@ -1120,33 +1168,33 @@ class StoreServer:
                     raise StoreError("같은 이름의 카테고리가 이미 있습니다.")
                 result = await conn.fetchrow(
                     """
-                    UPDATE web_categories SET name=$3, sort_order=$4
+                    UPDATE web_categories SET name=$3, sort_order=$4, parent_id=$5
                     WHERE id=$1 AND guild_id=$2
-                    RETURNING id, guild_id, name, sort_order, created_at
-                    """, category_id, self.guild_id, name, sort_order,
+                    RETURNING id, guild_id, name, parent_id, sort_order, created_at
+                    """, category_id, self.guild_id, name, sort_order, parent_id,
                 )
                 if not result:
                     raise StoreError("수정할 카테고리를 찾을 수 없습니다.", 404)
             else:
                 result = await conn.fetchrow(
-                    "SELECT id, guild_id, name, sort_order, created_at FROM web_categories WHERE guild_id=$1 AND name=$2",
+                    "SELECT id, guild_id, name, parent_id, sort_order, created_at FROM web_categories WHERE guild_id=$1 AND name=$2",
                     self.guild_id, name,
                 )
                 if result:
                     result = await conn.fetchrow(
                         """
-                        UPDATE web_categories SET sort_order=$3
+                        UPDATE web_categories SET sort_order=$3, parent_id=$4
                         WHERE id=$1 AND guild_id=$2
-                        RETURNING id, guild_id, name, sort_order, created_at
-                        """, result["id"], self.guild_id, sort_order,
+                        RETURNING id, guild_id, name, parent_id, sort_order, created_at
+                        """, result["id"], self.guild_id, sort_order, parent_id,
                     )
                 else:
                     result = await conn.fetchrow(
                         """
-                        INSERT INTO web_categories (guild_id,name,sort_order)
-                        VALUES ($1,$2,$3)
-                        RETURNING id, guild_id, name, sort_order, created_at
-                        """, self.guild_id, name, sort_order,
+                        INSERT INTO web_categories (guild_id,name,parent_id,sort_order)
+                        VALUES ($1,$2,$3,$4)
+                        RETURNING id, guild_id, name, parent_id, sort_order, created_at
+                        """, self.guild_id, name, parent_id, sort_order,
                     )
         return web.json_response(
             {"ok": True, "category": dict(result)},
@@ -1162,7 +1210,18 @@ class StoreServer:
     async def admin_products(self, request):
         await self._admin(request)
         async with self.bot.db_pool.acquire() as conn:
-            rows = await conn.fetch("SELECT p.*, c.name category_name FROM web_products p LEFT JOIN web_categories c ON c.id=p.category_id WHERE p.guild_id=$1 AND p.is_active=TRUE ORDER BY p.updated_at DESC", self.guild_id)
+            rows = await conn.fetch(
+                """
+                SELECT p.*, c.name category_name, c.parent_id,
+                       parent.name parent_category_name
+                FROM web_products p
+                LEFT JOIN web_categories c ON c.id=p.category_id
+                LEFT JOIN web_categories parent ON parent.id=c.parent_id
+                WHERE p.guild_id=$1 AND p.is_active=TRUE
+                ORDER BY p.updated_at DESC
+                """,
+                self.guild_id,
+            )
         return web.json_response({"products": [dict(row) for row in rows]}, dumps=lambda v: json.dumps(v, ensure_ascii=False, default=str))
 
     async def admin_save_product(self, request):
@@ -1194,6 +1253,21 @@ class StoreServer:
             bool(data.get("is_active", True)),
         )
         async with self.bot.db_pool.acquire() as conn:
+            category_is_leaf = await conn.fetchval(
+                """
+                SELECT EXISTS(
+                    SELECT 1 FROM web_categories c
+                    WHERE c.id=$1 AND c.guild_id=$2
+                      AND NOT EXISTS(
+                          SELECT 1 FROM web_categories child
+                          WHERE child.parent_id=c.id AND child.guild_id=$2
+                      )
+                )
+                """,
+                int(data["category_id"]), self.guild_id,
+            )
+            if not category_is_leaf:
+                raise StoreError("상품은 하위 카테고리에만 등록할 수 있습니다.")
             if data.get("id"):
                 await conn.execute("UPDATE web_products SET category_id=$3,name=$4,description=$5,price=$6,stock=$7,image_url=$8,option_label=$9,options=$10,is_active=$11,updated_at=CURRENT_TIMESTAMP WHERE id=$1 AND guild_id=$2", int(data["id"]), *args)
                 await conn.execute(
@@ -1260,11 +1334,20 @@ class StoreServer:
 
         async with self.bot.db_pool.acquire() as conn:
             category_exists = await conn.fetchval(
-                "SELECT EXISTS(SELECT 1 FROM web_categories WHERE id=$1 AND guild_id=$2)",
+                """
+                SELECT EXISTS(
+                    SELECT 1 FROM web_categories c
+                    WHERE c.id=$1 AND c.guild_id=$2
+                      AND NOT EXISTS(
+                          SELECT 1 FROM web_categories child
+                          WHERE child.parent_id=c.id AND child.guild_id=$2
+                      )
+                )
+                """,
                 category_id, self.guild_id,
             )
         if not category_exists:
-            raise StoreError("선택한 카테고리를 찾을 수 없습니다.", 404)
+            raise StoreError("상품을 넣을 하위 카테고리를 찾을 수 없습니다.", 404)
 
         async with self._product_sync_lock:
             try:

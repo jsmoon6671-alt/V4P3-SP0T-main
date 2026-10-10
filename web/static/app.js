@@ -2,9 +2,11 @@ const state = {
   me: null,
   csrf: "",
   products: [],
+  catalogCategories: [],
   cart: [],
   selected: new Set(),
-  activeCategory: "전체",
+  activeParentCategory: "all",
+  activeCategory: "all",
   currentOrder: null,
   timer: null,
   storeResults: [],
@@ -110,6 +112,15 @@ async function logout() {
 async function loadCatalog() {
   const data = await api("/api/catalog");
   state.products = data.products;
+  state.catalogCategories = Array.isArray(data.categories) ? data.categories : [];
+  const validCategoryIds = new Set(state.catalogCategories.map(category => String(category.id)));
+  if (state.activeParentCategory !== "all" && !validCategoryIds.has(String(state.activeParentCategory))) {
+    state.activeParentCategory = "all";
+    state.activeCategory = "all";
+  }
+  if (state.activeCategory !== "all" && !validCategoryIds.has(String(state.activeCategory))) {
+    state.activeCategory = "all";
+  }
   renderTabs();
   renderProducts();
 }
@@ -174,11 +185,33 @@ async function loadReviews() {
 }
 
 function renderTabs() {
-  const categories = ["전체", ...new Set(state.products.map(product => product.category_name || "미분류"))];
-  $("#category-tabs").innerHTML = categories.map(category => (
-    `<button class="${category === state.activeCategory ? "active" : ""}" data-cat="${escapeHtml(category)}">${escapeHtml(category)}</button>`
+  const categories = state.catalogCategories;
+  const roots = categories.filter(category => !category.parent_id);
+  const rootIds = new Set(roots.map(category => Number(category.id)));
+  const orphanRoots = categories.filter(category => category.parent_id && !rootIds.has(Number(category.parent_id)));
+  const parentTabs = [{ id: "all", name: "전체" }, ...roots, ...orphanRoots];
+  $("#parent-category-tabs").innerHTML = parentTabs.map(category => (
+    `<button class="${String(category.id) === String(state.activeParentCategory) ? "active" : ""}" data-parent-cat="${category.id}">${escapeHtml(category.name)}</button>`
   )).join("");
-  $$("[data-cat]").forEach(button => {
+  $$("[data-parent-cat]").forEach(button => {
+    button.onclick = () => {
+      state.activeParentCategory = button.dataset.parentCat;
+      state.activeCategory = "all";
+      renderTabs();
+      renderProducts();
+    };
+  });
+
+  const activeParent = Number(state.activeParentCategory);
+  const children = Number.isFinite(activeParent)
+    ? categories.filter(category => Number(category.parent_id) === activeParent)
+    : [];
+  const childBox = $("#category-tabs");
+  childBox.hidden = children.length === 0;
+  childBox.innerHTML = children.length ? [{ id: "all", name: "전체" }, ...children].map(category => (
+    `<button class="${String(category.id) === String(state.activeCategory) ? "active" : ""}" data-cat="${category.id}">${escapeHtml(category.name)}</button>`
+  )).join("") : "";
+  $$("[data-cat]", childBox).forEach(button => {
     button.onclick = () => {
       state.activeCategory = button.dataset.cat;
       renderTabs();
@@ -188,9 +221,16 @@ function renderTabs() {
 }
 
 function renderProducts() {
-  const rows = state.products.filter(product => (
-    state.activeCategory === "전체" || (product.category_name || "미분류") === state.activeCategory
-  ));
+  const rows = state.products.filter(product => {
+    if (state.activeParentCategory === "all") return true;
+    const inParent = Number(product.category_id) === Number(state.activeParentCategory)
+      || Number(product.parent_id) === Number(state.activeParentCategory);
+    if (!inParent) return false;
+    return state.activeCategory === "all" || Number(product.category_id) === Number(state.activeCategory);
+  });
+  const activeParent = state.catalogCategories.find(category => Number(category.id) === Number(state.activeParentCategory));
+  const activeChild = state.catalogCategories.find(category => Number(category.id) === Number(state.activeCategory));
+  $("#catalog-title").textContent = activeChild?.name || activeParent?.name || "전체 상품";
   $("#products").innerHTML = rows.length ? rows.map(product => {
     const options = productOptions(product);
     const optionSelect = options.length ? `
@@ -203,7 +243,7 @@ function renderProducts() {
     return `<article class="product">
       <div class="product-media">${product.image_url ? `<img src="${escapeHtml(product.image_url)}" alt="${escapeHtml(product.name)}">` : "<span>V</span>"}</div>
       <div class="product-body">
-        <small>${escapeHtml(product.category_name || "미분류")}</small>
+        <small>${escapeHtml(product.parent_category_name ? `${product.parent_category_name} · ${product.category_name}` : (product.category_name || "미분류"))}</small>
         <h3>${escapeHtml(product.name)}</h3>
         <p>${escapeHtml(product.description)}</p>
         ${optionSelect}
@@ -636,7 +676,8 @@ function bindForms() {
   $("#shipping-method").onchange = updateShippingMode;
   $("#store-search").onclick = searchStores;
   $("#store-results").onchange = chooseStore;
-  $("#add-category").onclick = () => openEditor("category");
+  $("#add-parent-category").onclick = () => openEditor("category", { parentMode: true });
+  $("#add-category").onclick = () => openEditor("category", { childMode: true });
   $("#add-manual-product").onclick = () => openEditor("product", { manualCreate: true });
   $("#add-product").onclick = () => openEditor("product");
   $("#sync-products").onclick = syncProducts;
@@ -841,10 +882,20 @@ function restoreChannelForm() {
 }
 
 function renderAdminLists() {
-  $("#category-admin").innerHTML = state.adminCategories.map(category => `<div class="admin-row"><span>${escapeHtml(category.name)}</span><span><button class="text-button" data-edit-cat="${category.id}">수정</button> <button class="remove" data-del-cat="${category.id}">삭제</button></span></div>`).join("");
+  const categoryRows = [];
+  const roots = state.adminCategories.filter(category => !category.parent_id);
+  const rootIds = new Set(roots.map(category => Number(category.id)));
+  [...roots, ...state.adminCategories.filter(category => category.parent_id && !rootIds.has(Number(category.parent_id)))].forEach(parent => {
+    categoryRows.push(`<div class="admin-row category-parent-row"><span><b>${escapeHtml(parent.name)}</b><small>대분류</small></span><span><button class="text-button" data-edit-cat="${parent.id}">수정</button> <button class="remove" data-del-cat="${parent.id}">삭제</button></span></div>`);
+    state.adminCategories.filter(category => Number(category.parent_id) === Number(parent.id)).forEach(category => {
+      categoryRows.push(`<div class="admin-row category-child-row"><span><i>↳</i> ${escapeHtml(category.name)}</span><span><button class="text-button" data-edit-cat="${category.id}">수정</button> <button class="remove" data-del-cat="${category.id}">삭제</button></span></div>`);
+    });
+  });
+  $("#category-admin").innerHTML = categoryRows.join("") || '<p class="admin-empty">등록된 카테고리가 없습니다.</p>';
   const productRows = state.adminProducts.map(product => {
     const options = productOptions(product);
-    return `<div class="admin-row"><span class="admin-product-info"><input class="admin-product-check" type="checkbox" value="${product.id}" aria-label="${escapeHtml(product.name)} 선택"><span><b>${escapeHtml(product.name)}</b><br>${escapeHtml(product.category_name || "미분류")} · ${money(product.price)} · ${product.stock}개${options.length ? `<br><small>${escapeHtml(product.option_label)}: ${options.map(escapeHtml).join(", ")}</small>` : ""}</span></span><span class="admin-actions"><button class="text-button" data-edit-product="${product.id}">수정</button><button class="remove" data-del-product="${product.id}">삭제</button></span></div>`;
+    const categoryPath = product.parent_category_name ? `${product.parent_category_name} › ${product.category_name}` : (product.category_name || "미분류");
+    return `<div class="admin-row"><span class="admin-product-info"><input class="admin-product-check" type="checkbox" value="${product.id}" aria-label="${escapeHtml(product.name)} 선택"><span><b>${escapeHtml(product.name)}</b><br>${escapeHtml(categoryPath)} · ${money(product.price)} · ${product.stock}개${options.length ? `<br><small>${escapeHtml(product.option_label)}: ${options.map(escapeHtml).join(", ")}</small>` : ""}</span></span><span class="admin-actions"><button class="text-button" data-edit-product="${product.id}">수정</button><button class="remove" data-del-product="${product.id}">삭제</button></span></div>`;
   }).join("");
   $("#product-admin").innerHTML = `<div class="admin-bulk-actions">
     <label><input id="select-all-products" type="checkbox" ${state.adminProducts.length ? "" : "disabled"}> 전체 선택</label>
@@ -917,22 +968,40 @@ function closeEditor() {
   document.body.classList.remove("modal-open");
 }
 
+function productCategoryOptions(selectedId = null) {
+  const parentIds = new Set(state.adminCategories.filter(category => category.parent_id).map(category => Number(category.parent_id)));
+  return state.adminCategories
+    .filter(category => !parentIds.has(Number(category.id)))
+    .map(category => {
+      const label = category.parent_name ? `${category.parent_name} › ${category.name}` : category.name;
+      return `<option value="${category.id}" ${Number(category.id) === Number(selectedId) ? "selected" : ""}>${escapeHtml(label)}</option>`;
+    }).join("");
+}
+
 function openEditor(type, item = {}) {
   const fields = $("#editor-fields");
   const isManualCreate = type === "product" && Boolean(item.manualCreate);
   const isLinkImport = type === "product" && !item.id && !isManualCreate;
   $("#editor-title").textContent = type === "category"
-    ? "카테고리 설정"
+    ? item.parentMode ? "대분류 추가" : item.childMode ? "하위 카테고리 추가" : "카테고리 설정"
     : isLinkImport ? "링크로 상품 추가" : isManualCreate ? "직접 상품 추가" : "상품 설정";
   if (type === "category") {
+    const rootCategories = state.adminCategories.filter(category => !category.parent_id && Number(category.id) !== Number(item.id));
+    const parentField = item.parentMode
+      ? '<input type="hidden" name="parent_id" value="">'
+      : `<label>상위 대분류<select name="parent_id" ${item.childMode ? "required" : ""}>
+          <option value="">${item.childMode ? "대분류를 선택해 주세요" : "대분류로 사용"}</option>
+          ${rootCategories.map(category => `<option value="${category.id}" ${Number(category.id) === Number(item.parent_id) ? "selected" : ""}>${escapeHtml(category.name)}</option>`).join("")}
+        </select></label>`;
     fields.innerHTML = `<input type="hidden" name="id" value="${item.id || ""}">
       <label>이름<input name="name" value="${escapeHtml(item.name || "")}" required></label>
+      ${parentField}
       <label>정렬 순서<input name="sort_order" type="number" value="${item.sort_order || 0}"></label>`;
   } else if (isLinkImport) {
     fields.innerHTML = `<label>추가할 카테고리
         <select name="category_id" required>
           <option value="">카테고리를 먼저 선택해 주세요</option>
-          ${state.adminCategories.map(category => `<option value="${category.id}">${escapeHtml(category.name)}</option>`).join("")}
+          ${productCategoryOptions()}
         </select>
       </label>
       <label>상품 또는 목록 링크
@@ -953,7 +1022,7 @@ function openEditor(type, item = {}) {
       <label>카테고리
         <select name="category_id" required>
           <option value="">카테고리를 먼저 선택해 주세요</option>
-          ${state.adminCategories.map(category => `<option value="${category.id}" ${category.id === item.category_id ? "selected" : ""}>${escapeHtml(category.name)}</option>`).join("")}
+          ${productCategoryOptions(item.category_id)}
         </select>
       </label>
       <label>상품명<input name="name" value="${escapeHtml(item.name || "")}" required></label>
