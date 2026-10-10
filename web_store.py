@@ -6,6 +6,7 @@ import base64
 import hashlib
 import hmac
 import json
+import logging
 import os
 import secrets
 import time
@@ -31,6 +32,7 @@ STATIC = ROOT / "web" / "static"
 COOKIE = "v4p3_session"
 ADMIN_COOKIE = "v4p3_admin"
 SHIPPING_FEE = 3_000
+LOGGER = logging.getLogger(__name__)
 
 
 class StoreError(Exception):
@@ -122,7 +124,10 @@ class StoreServer:
             self._payment_approved,
             self._payment_expired,
         )
-        self.app = web.Application(client_max_size=8 * 1024 ** 2, middlewares=[self._errors, self._session])
+        self.app = web.Application(
+            client_max_size=8 * 1024 ** 2,
+            middlewares=[self._errors, self._no_cache, self._session],
+        )
         self._routes()
 
     @web.middleware
@@ -133,6 +138,27 @@ class StoreServer:
             return web.json_response({"error": str(exc)}, status=exc.status)
         except PointsError as exc:
             return web.json_response({"error": str(exc)}, status=400)
+        except web.HTTPException:
+            raise
+        except Exception:
+            error_id = secrets.token_hex(4).upper()
+            LOGGER.exception(
+                "웹 스토어 요청 처리 실패: error_id=%s method=%s path=%s",
+                error_id, request.method, request.path,
+            )
+            return web.json_response(
+                {"error": f"서버 처리 중 오류가 발생했습니다. 오류코드: {error_id}"},
+                status=500,
+            )
+
+    @web.middleware
+    async def _no_cache(self, request, handler):
+        response = await handler(request)
+        if request.path.startswith("/static/") or not request.path.startswith("/api/"):
+            response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
+            response.headers["Pragma"] = "no-cache"
+            response.headers["Expires"] = "0"
+        return response
 
     @web.middleware
     async def _session(self, request, handler):
@@ -748,7 +774,10 @@ class StoreServer:
     async def admin_save_channels(self, request):
         await self._admin(request); data = await self._body(request)
         keys = ("approval_channel_id", "log_channel_id", "buyer_info_channel_id", "review_channel_id")
-        values = [int(data[key]) if str(data.get(key, "")).strip() else None for key in keys]
+        raw_values = [str(data.get(key, "")).strip() for key in keys]
+        if any(value and (not value.isdigit() or len(value) > 20) for value in raw_values):
+            raise StoreError("Discord 채널 ID는 숫자만 입력해 주세요.")
+        values = [int(value) if value else None for value in raw_values]
         async with self.bot.db_pool.acquire() as conn:
             await conn.execute("INSERT INTO guild_settings (guild_id) VALUES ($1) ON CONFLICT DO NOTHING", self.guild_id)
             await conn.execute("UPDATE guild_settings SET approval_channel_id=$2,log_channel_id=$3,buyer_info_channel_id=$4,review_channel_id=$5 WHERE guild_id=$1", self.guild_id, *values)

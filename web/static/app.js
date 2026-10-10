@@ -19,6 +19,7 @@ const escapeHtml = value => String(value ?? "").replace(/[&<>'"]/g, char => ({
   "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;",
 })[char]);
 const productOptions = product => Array.isArray(product.options) ? product.options : [];
+const CHANNEL_CACHE_KEY = "v4p3DiscordChannelIds";
 
 function toast(message) {
   const element = $("#toast");
@@ -36,8 +37,15 @@ async function api(path, options = {}) {
     request.headers["X-CSRF-Token"] = state.csrf;
   }
   const response = await fetch(path, request);
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(data.error || "요청을 처리하지 못했습니다.");
+  const body = await response.text();
+  let data = {};
+  try { data = body ? JSON.parse(body) : {}; } catch {}
+  if (!response.ok) {
+    if ((response.status === 404 || response.status === 405) && path.startsWith("/api/admin/")) {
+      throw new Error("웹 서버가 이전 버전으로 실행 중입니다. 봇을 완전히 재시작한 뒤 다시 시도해 주세요.");
+    }
+    throw new Error(data.error || `요청 처리에 실패했습니다. (HTTP ${response.status})`);
+  }
   return data;
 }
 
@@ -319,6 +327,10 @@ const statusText = status => ({
 })[status] || status;
 
 function bindForms() {
+  restoreChannelForm();
+  $$("#channel-form input").forEach(input => {
+    input.addEventListener("input", () => cacheChannelForm());
+  });
   $("#customer-form").onsubmit = async event => {
     event.preventDefault();
     try {
@@ -454,6 +466,7 @@ async function loadAdmin(period = "week") {
     $("#top-products").innerHTML = Object.entries(groups).map(([category, items]) => `<h3>${escapeHtml(category)}</h3>${items.map(item => `<div class="admin-row"><span>${escapeHtml(item.product_name)}</span><b>${item.quantity}개</b></div>`).join("")}`).join("") || '<p class="empty">판매 데이터가 없습니다.</p>';
     renderAdminLists();
     fillChannelForm(channels.channels);
+    cacheChannelForm(channels.channels);
   } catch (error) {
     if (error.message.includes("비밀번호")) openAdminGate();
     else toast(error.message);
@@ -467,6 +480,23 @@ function fillChannelForm(channels) {
   });
 }
 
+function channelFormValues() {
+  return Object.fromEntries(new FormData($("#channel-form")));
+}
+
+function cacheChannelForm(channels = channelFormValues()) {
+  try {
+    localStorage.setItem(CHANNEL_CACHE_KEY, JSON.stringify(channels));
+  } catch {}
+}
+
+function restoreChannelForm() {
+  try {
+    const cached = JSON.parse(localStorage.getItem(CHANNEL_CACHE_KEY) || "{}");
+    fillChannelForm(cached);
+  } catch {}
+}
+
 function renderAdminLists() {
   $("#category-admin").innerHTML = state.adminCategories.map(category => `<div class="admin-row"><span>${escapeHtml(category.name)}</span><span><button class="text-button" data-edit-cat="${category.id}">수정</button> <button class="remove" data-del-cat="${category.id}">삭제</button></span></div>`).join("");
   $("#product-admin").innerHTML = state.adminProducts.map(product => {
@@ -477,8 +507,14 @@ function renderAdminLists() {
   $$("[data-del-cat]").forEach(button => {
     button.onclick = async () => {
       if (!confirm("카테고리를 삭제할까요?")) return;
-      await api(`/api/admin/categories/${button.dataset.delCat}`, { method: "DELETE", body: "{}" });
-      await loadAdmin();
+      try {
+        await api(`/api/admin/categories/${button.dataset.delCat}`, { method: "DELETE", body: "{}" });
+        await loadAdmin();
+        await loadCatalog();
+        toast("카테고리를 삭제했습니다.");
+      } catch (error) {
+        toast(error.message);
+      }
     };
   });
   $$("[data-edit-product]").forEach(button => { button.onclick = () => openEditor("product", state.adminProducts.find(item => item.id == button.dataset.editProduct)); });
@@ -554,6 +590,7 @@ async function saveChannels(event) {
   try {
     const data = await api("/api/admin/channels", { method: "PUT", body: JSON.stringify(Object.fromEntries(new FormData(event.target))) });
     fillChannelForm(data.channels);
+    cacheChannelForm(data.channels);
     toast("Discord 채널을 저장했습니다.");
   } catch (error) {
     toast(error.message);
