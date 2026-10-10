@@ -859,7 +859,7 @@ class StoreServer:
             rows = await conn.fetch(
                 """
                 SELECT c.product_id, c.quantity, c.selected_option, p.name, p.price,
-                       p.stock, p.image_url, p.option_label, p.options,
+                       p.image_url, p.option_label, p.options,
                        p.is_active, cat.name AS category_name
                 FROM web_cart_items c JOIN web_products p ON p.id = c.product_id
                 LEFT JOIN web_categories cat ON cat.id = p.category_id
@@ -875,11 +875,9 @@ class StoreServer:
         if not 1 <= quantity <= 99:
             raise StoreError("수량은 1~99개로 입력해 주세요.")
         async with self.bot.db_pool.acquire() as conn:
-            product = await conn.fetchrow("SELECT stock, is_active, options FROM web_products WHERE id = $1 AND guild_id = $2", product_id, self.guild_id)
+            product = await conn.fetchrow("SELECT is_active, options FROM web_products WHERE id = $1 AND guild_id = $2", product_id, self.guild_id)
             if not product or not product["is_active"]:
                 raise StoreError("판매 중인 상품이 아닙니다.", 404)
-            if quantity > product["stock"]:
-                raise StoreError("현재 재고보다 많은 수량입니다.")
             options = list(product["options"] or [])
             if options and selected_option not in options:
                 raise StoreError("상품의 색상, 맛 또는 패키지를 선택해 주세요.")
@@ -950,7 +948,7 @@ class StoreServer:
                 rows = await conn.fetch(
                     """
                     SELECT c.product_id, c.quantity, c.selected_option,
-                           p.name, p.price, p.stock, p.is_active, p.options
+                           p.name, p.price, p.is_active, p.options
                     FROM web_cart_items c JOIN web_products p ON p.id = c.product_id
                     WHERE c.guild_id = $1 AND c.user_id = $2 AND c.product_id = ANY($3::bigint[])
                     ORDER BY c.product_id FOR UPDATE OF p
@@ -958,8 +956,8 @@ class StoreServer:
                 )
                 if len(rows) != len(set(selected)):
                     raise StoreError("장바구니 상품 일부를 찾을 수 없습니다.")
-                if any(not row["is_active"] or row["quantity"] > row["stock"] for row in rows):
-                    raise StoreError("판매가 종료되었거나 재고가 부족한 상품이 있습니다.")
+                if any(not row["is_active"] for row in rows):
+                    raise StoreError("판매가 종료된 상품이 있습니다.")
                 for row in rows:
                     options = list(row["options"] or [])
                     if options and row["selected_option"] not in options:
@@ -1000,7 +998,6 @@ class StoreServer:
                         int(row["price"]) + option_surcharge(row["selected_option"]),
                         row["quantity"], row["selected_option"],
                     )
-                    await conn.execute("UPDATE web_products SET stock = stock - $2, updated_at = CURRENT_TIMESTAMP WHERE id = $1", row["product_id"], row["quantity"])
                 order = await request_payment(conn, order_id, self.guild_id, user_id, depositor, points)
                 order = await arm_web_payment(conn, order_id, self.guild_id)
                 cash_amount = int(order["cash_amount"] or 0)
@@ -1260,11 +1257,11 @@ class StoreServer:
     async def admin_save_product(self, request):
         await self._admin(request); data = await self._body(request)
         name = str(data.get("name", "")).strip()
-        price, stock = int(data.get("price", -1)), int(data.get("stock", -1))
+        price = int(data.get("price", -1))
         if not data.get("category_id"):
             raise StoreError("카테고리를 먼저 선택해 주세요.")
-        if not name or price < 0 or stock < 0:
-            raise StoreError("상품명, 가격, 재고를 올바르게 입력해 주세요.")
+        if not name or price < 0:
+            raise StoreError("상품명과 가격을 올바르게 입력해 주세요.")
         image_url = str(data.get("image_url", "")).strip()
         if not image_url:
             raise StoreError("상품 이미지를 URL 또는 파일로 등록해 주세요.")
@@ -1278,7 +1275,7 @@ class StoreServer:
             raise StoreError("색상, 맛 또는 패키지 옵션은 최대 50개까지 등록할 수 있습니다.")
         args = (
             self.guild_id, int(data["category_id"]), name,
-            str(data.get("description", "")).strip(), price, stock,
+            str(data.get("description", "")).strip(), price, 0,
             image_url, option_label, options,
             bool(data.get("is_active", True)),
         )

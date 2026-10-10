@@ -251,8 +251,8 @@ function renderProducts() {
         <p>${escapeHtml(product.description)}</p>
         ${optionSelect}
         <div class="product-foot">
-          <div><strong data-product-price="${product.id}">${money(product.price)}</strong><br><small>재고 ${product.stock}</small></div>
-          <button type="button" aria-label="장바구니에 담기" data-add="${product.id}" ${product.stock < 1 ? "disabled" : ""}>+</button>
+          <div><strong data-product-price="${product.id}">${money(product.price)}</strong></div>
+          <button type="button" aria-label="장바구니에 담기" data-add="${product.id}">+</button>
         </div>
       </div>
     </article>`;
@@ -312,11 +312,11 @@ function renderCart() {
     </select>` : "";
     return `<div class="cart-row">
       <input class="cart-check" type="checkbox" aria-label="상품 선택" data-select="${item.product_id}" ${state.selected.has(Number(item.product_id)) ? "checked" : ""}>
-      <div class="grow"><strong>${escapeHtml(item.name)}</strong><br><small>${money(itemUnitPrice(item))}${optionSurcharge(item.selected_option) ? ` · 옵션 +${money(optionSurcharge(item.selected_option))}` : ""} · 재고 ${item.stock}</small>${optionField}</div>
+      <div class="grow"><strong>${escapeHtml(item.name)}</strong><br><small>${money(itemUnitPrice(item))}${optionSurcharge(item.selected_option) ? ` · 옵션 +${money(optionSurcharge(item.selected_option))}` : ""}</small>${optionField}</div>
       <div class="cart-controls">
         <div class="quantity-stepper" aria-label="수량 조절">
           <button type="button" aria-label="수량 줄이기" data-qty-minus="${item.product_id}">−</button>
-          <input type="number" aria-label="수량" min="1" max="${item.stock}" value="${item.quantity}" data-qty="${item.product_id}">
+          <input type="number" aria-label="수량" min="1" max="99" value="${item.quantity}" data-qty="${item.product_id}">
           <button type="button" aria-label="수량 늘리기" data-qty-plus="${item.product_id}">+</button>
         </div>
         <button type="button" class="remove" data-remove="${item.product_id}">삭제</button>
@@ -905,7 +905,7 @@ function renderAdminLists() {
   const productRows = state.adminProducts.map(product => {
     const options = productOptions(product);
     const categoryPath = product.parent_category_name ? `${product.parent_category_name} › ${product.category_name}` : (product.category_name || "미분류");
-    return `<div class="admin-row"><span class="admin-product-info"><input class="admin-product-check" type="checkbox" value="${product.id}" aria-label="${escapeHtml(product.name)} 선택"><span><b>${escapeHtml(product.name)}</b><br>${escapeHtml(categoryPath)} · ${money(product.price)} · ${product.stock}개${options.length ? `<br><small>${escapeHtml(product.option_label)}: ${options.map(escapeHtml).join(", ")}</small>` : ""}</span></span><span class="admin-actions"><button class="text-button" data-edit-product="${product.id}">수정</button><button class="remove" data-del-product="${product.id}">삭제</button></span></div>`;
+    return `<div class="admin-row"><span class="admin-product-info"><input class="admin-product-check" type="checkbox" value="${product.id}" aria-label="${escapeHtml(product.name)} 선택"><span><b>${escapeHtml(product.name)}</b><br>${escapeHtml(categoryPath)} · ${money(product.price)}${options.length ? `<br><small>${escapeHtml(product.option_label)}: ${options.map(escapeHtml).join(", ")}</small>` : ""}</span></span><span class="admin-actions"><button class="text-button" data-edit-product="${product.id}">수정</button><button class="remove" data-del-product="${product.id}">삭제</button></span></div>`;
   }).join("");
   $("#product-admin").innerHTML = `<div class="admin-bulk-actions">
     <label><input id="select-all-products" type="checkbox" ${state.adminProducts.length ? "" : "disabled"}> 전체 선택</label>
@@ -1041,7 +1041,6 @@ function openEditor(type, item = {}) {
       <label>이미지 파일<input id="product-image-file" type="file" accept="image/*"></label>
       <label>설명<textarea name="description">${escapeHtml(item.description || "")}</textarea></label>
       <label>가격<input name="price" type="number" min="0" value="${item.price || 0}" required></label>
-      <label>재고<input name="stock" type="number" min="0" value="${item.stock || 0}" required></label>
       <label>옵션 종류
         <select name="option_label" required><option value="색상" ${item.option_label === "색상" || !item.option_label ? "selected" : ""}>색상</option><option value="맛" ${item.option_label === "맛" ? "selected" : ""}>맛</option><option value="패키지" ${item.option_label === "패키지" ? "selected" : ""}>패키지</option></select>
       </label>

@@ -324,17 +324,6 @@ async def _expire_order(conn, order_id: str) -> dict | None:
                 points,
             )
 
-        if not order.get("stock_restored"):
-            await conn.execute(
-                """
-                UPDATE web_products p
-                SET stock = p.stock + i.quantity
-                FROM web_order_items i
-                WHERE i.order_id = $1 AND i.product_id = p.id
-                """,
-                order_id,
-            )
-
         updated = await conn.fetchrow(
             """
             UPDATE orders

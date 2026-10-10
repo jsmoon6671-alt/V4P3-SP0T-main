@@ -149,6 +149,7 @@ h3,strong { font-weight: 800; }
 .shipping-notice strong { color: var(--accent-hover); }
 .shipping-notice span { display: inline-block; margin-top: 5px; color: #f0f5f2; }
 .order-summary .panel-head>span { color: var(--muted); font-size: 12px; }
+.checkout-stock-note { display: block; margin-top: 10px; text-align: center; }
 .summary-lines { margin: 14px 0 18px; border-top: 1px solid var(--line); }
 .summary-lines .discount { color: #8edfb4; }
 .summary-lines .discount strong { color: var(--accent-hover); }
