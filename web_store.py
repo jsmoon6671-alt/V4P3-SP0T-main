@@ -85,6 +85,15 @@ async def initialize_web_store_schema(conn):
             product_option TEXT NOT NULL DEFAULT '',
             PRIMARY KEY (order_id, product_id)
         );
+        ALTER TABLE web_categories ADD COLUMN IF NOT EXISTS sort_order INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE web_categories ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP;
+        ALTER TABLE web_products ADD COLUMN IF NOT EXISTS description TEXT NOT NULL DEFAULT '';
+        ALTER TABLE web_products ADD COLUMN IF NOT EXISTS price BIGINT NOT NULL DEFAULT 0;
+        ALTER TABLE web_products ADD COLUMN IF NOT EXISTS stock INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE web_products ADD COLUMN IF NOT EXISTS image_url TEXT NOT NULL DEFAULT '';
+        ALTER TABLE web_products ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT TRUE;
+        ALTER TABLE web_products ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP;
+        ALTER TABLE web_products ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP;
         ALTER TABLE web_products ADD COLUMN IF NOT EXISTS option_label TEXT NOT NULL DEFAULT '색상';
         ALTER TABLE web_products ADD COLUMN IF NOT EXISTS options TEXT[] NOT NULL DEFAULT '{}';
         ALTER TABLE web_cart_items ADD COLUMN IF NOT EXISTS selected_option TEXT NOT NULL DEFAULT '';
@@ -140,16 +149,21 @@ class StoreServer:
             return web.json_response({"error": str(exc)}, status=400)
         except web.HTTPException:
             raise
-        except Exception:
+        except Exception as exc:
             error_id = secrets.token_hex(4).upper()
             LOGGER.exception(
                 "웹 스토어 요청 처리 실패: error_id=%s method=%s path=%s",
                 error_id, request.method, request.path,
             )
-            return web.json_response(
-                {"error": f"서버 처리 중 오류가 발생했습니다. 오류코드: {error_id}"},
-                status=500,
-            )
+            if request.path.startswith("/api/admin/"):
+                detail = str(exc).strip().replace("\n", " ")[:240]
+                message = f"관리자 기능 오류: {type(exc).__name__}"
+                if detail:
+                    message += f" · {detail}"
+                message += f" (오류코드: {error_id})"
+            else:
+                message = f"서버 처리 중 오류가 발생했습니다. 오류코드: {error_id}"
+            return web.json_response({"error": message}, status=500)
 
     @web.middleware
     async def _no_cache(self, request, handler):
@@ -700,13 +714,55 @@ class StoreServer:
     async def admin_save_category(self, request):
         await self._admin(request); data = await self._body(request)
         name = str(data.get("name", "")).strip()
-        if not name: raise StoreError("카테고리명을 입력해 주세요.")
+        if not name:
+            raise StoreError("카테고리명을 입력해 주세요.")
+        try:
+            sort_order = int(data.get("sort_order", 0) or 0)
+        except (TypeError, ValueError) as exc:
+            raise StoreError("정렬 순서는 숫자로 입력해 주세요.") from exc
         async with self.bot.db_pool.acquire() as conn:
             if data.get("id"):
-                await conn.execute("UPDATE web_categories SET name=$3, sort_order=$4 WHERE id=$1 AND guild_id=$2", int(data["id"]), self.guild_id, name, int(data.get("sort_order", 0)))
+                category_id = int(data["id"])
+                duplicate = await conn.fetchval(
+                    "SELECT id FROM web_categories WHERE guild_id=$1 AND name=$2 AND id<>$3",
+                    self.guild_id, name, category_id,
+                )
+                if duplicate:
+                    raise StoreError("같은 이름의 카테고리가 이미 있습니다.")
+                result = await conn.fetchrow(
+                    """
+                    UPDATE web_categories SET name=$3, sort_order=$4
+                    WHERE id=$1 AND guild_id=$2
+                    RETURNING id, guild_id, name, sort_order, created_at
+                    """, category_id, self.guild_id, name, sort_order,
+                )
+                if not result:
+                    raise StoreError("수정할 카테고리를 찾을 수 없습니다.", 404)
             else:
-                await conn.execute("INSERT INTO web_categories (guild_id,name,sort_order) VALUES ($1,$2,$3)", self.guild_id, name, int(data.get("sort_order", 0)))
-        return web.json_response({"ok": True})
+                result = await conn.fetchrow(
+                    "SELECT id, guild_id, name, sort_order, created_at FROM web_categories WHERE guild_id=$1 AND name=$2",
+                    self.guild_id, name,
+                )
+                if result:
+                    result = await conn.fetchrow(
+                        """
+                        UPDATE web_categories SET sort_order=$3
+                        WHERE id=$1 AND guild_id=$2
+                        RETURNING id, guild_id, name, sort_order, created_at
+                        """, result["id"], self.guild_id, sort_order,
+                    )
+                else:
+                    result = await conn.fetchrow(
+                        """
+                        INSERT INTO web_categories (guild_id,name,sort_order)
+                        VALUES ($1,$2,$3)
+                        RETURNING id, guild_id, name, sort_order, created_at
+                        """, self.guild_id, name, sort_order,
+                    )
+        return web.json_response(
+            {"ok": True, "category": dict(result)},
+            dumps=lambda value: json.dumps(value, ensure_ascii=False, default=str),
+        )
 
     async def admin_delete_category(self, request):
         await self._admin(request)

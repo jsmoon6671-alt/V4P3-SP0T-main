@@ -141,7 +141,7 @@ h2 { font-size: 20px; letter-spacing: -.035em; }
 .notice-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; margin-top: 9px; }
 .dialog-close { position: absolute; right: 18px; top: 17px; width: 34px; height: 34px; border: 1px solid var(--line); border-radius: 4px; background: var(--surface-3); color: var(--muted); font-size: 22px; line-height: 1; cursor: pointer; }
 .dialog-close:hover { color: var(--text); border-color: var(--line-strong); }
-#toast { position: fixed; right: 24px; bottom: 24px; z-index: 120; padding: 13px 18px; border: 1px solid var(--line-strong); border-left: 3px solid var(--accent); border-radius: 4px; background: #222824; color: var(--text); box-shadow: var(--shadow); transform: translateY(90px); opacity: 0; transition: .2s; }
+#toast { position: fixed; right: 24px; bottom: 24px; z-index: 120; max-width: min(560px,calc(100vw - 32px)); padding: 13px 18px; border: 1px solid var(--line-strong); border-left: 3px solid var(--accent); border-radius: 4px; background: #222824; color: var(--text); box-shadow: var(--shadow); line-height: 1.55; overflow-wrap: anywhere; transform: translateY(90px); opacity: 0; transition: .2s; }
 #toast.show { transform: translateY(0); opacity: 1; }
 .empty { padding: 40px; text-align: center; color: var(--muted); }
 

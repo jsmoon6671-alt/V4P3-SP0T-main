@@ -25,7 +25,8 @@ function toast(message) {
   const element = $("#toast");
   element.textContent = message;
   element.classList.add("show");
-  setTimeout(() => element.classList.remove("show"), 2800);
+  clearTimeout(toast.timer);
+  toast.timer = setTimeout(() => element.classList.remove("show"), String(message).length > 55 ? 6000 : 2800);
 }
 
 async function api(path, options = {}) {
@@ -442,15 +443,30 @@ async function unlockAdmin(event) {
 
 async function loadAdmin(period = "week") {
   if (!state.me) return;
-  try {
-    const [dashboard, categories, products, channels] = await Promise.all([
-      api(`/api/admin/dashboard?period=${period}`),
-      api("/api/admin/categories"),
-      api("/api/admin/products"),
-      api("/api/admin/channels"),
-    ]);
-    state.adminCategories = categories.categories;
-    state.adminProducts = products.products;
+  const results = await Promise.allSettled([
+    api(`/api/admin/dashboard?period=${period}`),
+    api("/api/admin/categories"),
+    api("/api/admin/products"),
+    api("/api/admin/channels"),
+  ]);
+  const failures = results.filter(result => result.status === "rejected");
+  const passwordFailure = failures.find(result => result.reason?.message?.includes("비밀번호"));
+  if (passwordFailure) {
+    openAdminGate();
+    return;
+  }
+
+  const [dashboardResult, categoriesResult, productsResult, channelsResult] = results;
+  if (categoriesResult.status === "fulfilled") {
+    state.adminCategories = categoriesResult.value.categories;
+  }
+  if (productsResult.status === "fulfilled") {
+    state.adminProducts = productsResult.value.products;
+  }
+  renderAdminLists();
+
+  if (dashboardResult.status === "fulfilled") {
+    const dashboard = dashboardResult.value;
     $("#metrics").innerHTML = [
       ["총 매출", money(dashboard.summary.revenue)], ["승인", dashboard.summary.approved],
       ["대기", dashboard.summary.pending], ["취소", dashboard.summary.cancelled],
@@ -464,13 +480,13 @@ async function loadAdmin(period = "week") {
     $("#trend").innerHTML = dashboard.trend.map(item => `<div class="bar" style="height:${Math.max(3, Number(item.value) / max * 100)}%"><span>${item.label}</span></div>`).join("");
     const groups = Object.groupBy ? Object.groupBy(dashboard.top, item => item.category) : dashboard.top.reduce((result, item) => ((result[item.category] ??= []).push(item), result), {});
     $("#top-products").innerHTML = Object.entries(groups).map(([category, items]) => `<h3>${escapeHtml(category)}</h3>${items.map(item => `<div class="admin-row"><span>${escapeHtml(item.product_name)}</span><b>${item.quantity}개</b></div>`).join("")}`).join("") || '<p class="empty">판매 데이터가 없습니다.</p>';
-    renderAdminLists();
-    fillChannelForm(channels.channels);
-    cacheChannelForm(channels.channels);
-  } catch (error) {
-    if (error.message.includes("비밀번호")) openAdminGate();
-    else toast(error.message);
   }
+
+  if (channelsResult.status === "fulfilled") {
+    fillChannelForm(channelsResult.value.channels);
+    cacheChannelForm(channelsResult.value.channels);
+  }
+  if (failures.length) toast(failures[0].reason?.message || "관리자 정보를 일부 불러오지 못했습니다.");
 }
 
 function fillChannelForm(channels) {
