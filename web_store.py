@@ -89,7 +89,7 @@ def parse_product_options(raw_options) -> list[str]:
                 buffer.append(char)
         values.append("".join(buffer))
     else:
-        raise StoreError("색상, 맛 또는 패키지 옵션 목록을 확인해 주세요.")
+        raise StoreError("옵션 목록을 확인해 주세요.")
     return list(dict.fromkeys(str(value).strip() for value in values if str(value).strip()))
 
 
@@ -880,7 +880,7 @@ class StoreServer:
                 raise StoreError("판매 중인 상품이 아닙니다.", 404)
             options = list(product["options"] or [])
             if options and selected_option not in options:
-                raise StoreError("상품의 색상, 맛 또는 패키지를 선택해 주세요.")
+                raise StoreError("상품 옵션을 선택해 주세요.")
             await conn.execute(
                 """
                 INSERT INTO web_cart_items (guild_id, user_id, product_id, quantity, selected_option)
@@ -961,7 +961,7 @@ class StoreServer:
                 for row in rows:
                     options = list(row["options"] or [])
                     if options and row["selected_option"] not in options:
-                        raise StoreError(f"{row['name']} 상품의 색상, 맛 또는 패키지를 다시 선택해 주세요.")
+                        raise StoreError(f"{row['name']} 상품의 옵션을 다시 선택해 주세요.")
                 subtotal = sum(
                     (int(row["price"]) + option_surcharge(row["selected_option"])) * int(row["quantity"])
                     for row in rows
@@ -1266,13 +1266,13 @@ class StoreServer:
         if not image_url:
             raise StoreError("상품 이미지를 URL 또는 파일로 등록해 주세요.")
         option_label = str(data.get("option_label", "색상")).strip()
-        if option_label not in {"색상", "맛", "패키지"}:
-            raise StoreError("상품 옵션은 색상, 맛 또는 패키지로 선택해 주세요.")
-        options = parse_product_options(data.get("options", []))
-        if not options:
-            raise StoreError("색상, 맛 또는 패키지 옵션을 한 개 이상 입력해 주세요.")
+        if option_label not in {"없음", "옵션", "색상", "맛", "패키지"}:
+            raise StoreError("상품 옵션 종류를 올바르게 선택해 주세요.")
+        options = [] if option_label == "없음" else parse_product_options(data.get("options", []))
+        if option_label != "없음" and not options:
+            raise StoreError("옵션을 한 개 이상 입력해 주세요.")
         if len(options) > 50:
-            raise StoreError("색상, 맛 또는 패키지 옵션은 최대 50개까지 등록할 수 있습니다.")
+            raise StoreError("옵션은 최대 50개까지 등록할 수 있습니다.")
         args = (
             self.guild_id, int(data["category_id"]), name,
             str(data.get("description", "")).strip(), price, 0,
@@ -1344,11 +1344,11 @@ class StoreServer:
         if manual_price < 0:
             raise StoreError("판매 가격을 올바르게 입력해 주세요.")
         option_label = str(data.get("option_label", "색상")).strip()
-        if option_label not in {"색상", "맛", "패키지"}:
-            raise StoreError("상품 옵션은 색상, 맛 또는 패키지로 선택해 주세요.")
-        manual_options = parse_product_options(data.get("options", ""))
+        if option_label not in {"없음", "옵션", "색상", "맛", "패키지"}:
+            raise StoreError("상품 옵션 종류를 올바르게 선택해 주세요.")
+        manual_options = [] if option_label == "없음" else parse_product_options(data.get("options", ""))
         if len(manual_options) > 50:
-            raise StoreError("색상, 맛 또는 패키지 옵션은 최대 50개까지 입력할 수 있습니다.")
+            raise StoreError("옵션은 최대 50개까지 입력할 수 있습니다.")
         if self._product_sync_lock.locked():
             raise StoreError("다른 상품 가져오기가 진행 중입니다. 잠시 후 다시 시도해 주세요.", 409)
 
@@ -1385,7 +1385,7 @@ class StoreServer:
                 ) from exc
             except aiohttp.ClientError as exc:
                 raise StoreError("쇼핑몰 응답을 처리하지 못했습니다. 잠시 후 다시 시도해 주세요.", 502) from exc
-            if manual_options:
+            if option_label == "없음" or manual_options:
                 for product in products:
                     product.option_label = option_label
                     product.options = manual_options.copy()

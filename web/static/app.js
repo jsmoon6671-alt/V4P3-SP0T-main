@@ -1021,12 +1021,12 @@ function openEditor(type, item = {}) {
         <input name="price" type="number" inputmode="numeric" min="0" step="1" placeholder="직접 판매할 가격을 입력해 주세요" required>
       </label>
       <label>옵션 종류
-        <select name="option_label"><option value="색상">색상</option><option value="맛">맛</option><option value="패키지">패키지</option></select>
+        <select name="option_label"><option value="없음">없음</option><option value="옵션">옵션</option><option value="색상">색상</option><option value="맛">맛</option><option value="패키지">패키지</option></select>
       </label>
-      <label>색상, 맛 또는 패키지 옵션 목록
+      <label data-option-list>옵션 목록
         <textarea name="options" placeholder="예: 기본 패키지&#10;선물 패키지 (+2000)&#10;여러 값은 한 줄씩 또는 쉼표로 입력"></textarea>
       </label>
-      <small>옵션명에 (+2000)을 붙이면 선택 시 개당 2,000원이 추가됩니다.</small>
+      <small data-option-help>옵션명에 (+2000)을 붙이면 선택 시 개당 2,000원이 추가됩니다.</small>
       <small>비비빈스와 일렉샵 링크를 지원합니다. 입력한 가격은 자동 동기화 후에도 유지됩니다. 목록 링크를 사용하면 가져온 모든 상품에 같은 가격과 옵션이 적용됩니다.</small>`;
   } else {
     fields.innerHTML = `<input type="hidden" name="id" value="${item.id || ""}">
@@ -1042,15 +1042,32 @@ function openEditor(type, item = {}) {
       <label>설명<textarea name="description">${escapeHtml(item.description || "")}</textarea></label>
       <label>가격<input name="price" type="number" min="0" value="${item.price || 0}" required></label>
       <label>옵션 종류
-        <select name="option_label" required><option value="색상" ${item.option_label === "색상" || !item.option_label ? "selected" : ""}>색상</option><option value="맛" ${item.option_label === "맛" ? "selected" : ""}>맛</option><option value="패키지" ${item.option_label === "패키지" ? "selected" : ""}>패키지</option></select>
+        <select name="option_label" required><option value="없음" ${item.option_label === "없음" ? "selected" : ""}>없음</option><option value="옵션" ${item.option_label === "옵션" ? "selected" : ""}>옵션</option><option value="색상" ${item.option_label === "색상" || !item.option_label ? "selected" : ""}>색상</option><option value="맛" ${item.option_label === "맛" ? "selected" : ""}>맛</option><option value="패키지" ${item.option_label === "패키지" ? "selected" : ""}>패키지</option></select>
       </label>
-      <label>색상, 맛 또는 패키지 옵션 목록<textarea name="options" placeholder="예: 기본 패키지&#10;선물 패키지 (+2000)" required>${escapeHtml(productOptions(item).join("\n"))}</textarea></label>
-      <small>옵션명에 (+2000)을 붙이면 선택 시 개당 2,000원이 추가됩니다.</small>
+      <label data-option-list>옵션 목록<textarea name="options" placeholder="예: 기본 옵션&#10;추가 옵션 (+2000)" required>${escapeHtml(productOptions(item).join("\n"))}</textarea></label>
+      <small data-option-help>옵션명에 (+2000)을 붙이면 선택 시 개당 2,000원이 추가됩니다.</small>
       <label class="check"><input name="is_active" type="checkbox" ${item.is_active !== false ? "checked" : ""}> 판매 활성화</label>`;
   }
   $("#editor-form button[type='submit']").textContent = isLinkImport ? "링크에서 가져오기" : "저장";
   $("#editor").hidden = false;
   document.body.classList.add("modal-open");
+  if (type === "product") {
+    const optionType = fields.querySelector('[name="option_label"]');
+    const optionList = fields.querySelector("[data-option-list]");
+    const optionInput = optionList?.querySelector('[name="options"]');
+    const optionHelp = fields.querySelector("[data-option-help]");
+    const syncOptionFields = () => {
+      const hasNoOptions = optionType?.value === "없음";
+      if (optionList) optionList.hidden = hasNoOptions;
+      if (optionHelp) optionHelp.hidden = hasNoOptions;
+      if (optionInput) {
+        optionInput.disabled = hasNoOptions;
+        optionInput.required = !isLinkImport && !hasNoOptions;
+      }
+    };
+    optionType?.addEventListener("change", syncOptionFields);
+    syncOptionFields();
+  }
   if (type === "product" && !isLinkImport) {
     $("#product-image-file").onchange = event => {
       const file = event.target.files[0];
