@@ -6,6 +6,8 @@ from product_scraper import (
     _bibibins_card,
     _device_category,
     _option_label,
+    _parse_elec_detail,
+    _source_site_for_url,
 )
 
 
@@ -42,6 +44,46 @@ class ProductScraperTests(unittest.TestCase):
         self.assertEqual(_device_category("헬베이프 젤로 킷"), "입호흡 기기")
         self.assertEqual(_option_label(["블랙", "화이트", "퍼플"]), "색상")
         self.assertEqual(_option_label(["망고 아이스", "포도 민트"]), "맛")
+        self.assertEqual(_option_label(["색상은 구매티켓에서 확인"]), "색상")
+
+    def test_link_import_allows_only_supported_store_hosts(self):
+        self.assertEqual(
+            _source_site_for_url("https://xn--jk1bo8sa06werixle.com/product/list.html?cate_no=50"),
+            "bibibins",
+        )
+        self.assertEqual(
+            _source_site_for_url("https://xn--352bl9av7r2tn.com/product-category/devices/"),
+            "elecshop",
+        )
+        with self.assertRaisesRegex(RuntimeError, "비비빈스 또는 일렉샵"):
+            _source_site_for_url("https://xn--352bl9av7r2tn.com.example.com/product/test/")
+
+    def test_elecshop_detail_adds_markup_and_reads_options(self):
+        soup = BeautifulSoup(
+            """
+            <html><body class="single-product postid-321">
+              <h1 class="product_title">테스트 팟 기기</h1>
+              <div class="summary"><p class="price">$20.00</p>
+                <div class="woocommerce-product-details__short-description">테스트 설명</div>
+                <form class="variations_form" data-product_id="321">
+                  <table class="variations"><select><option value="">선택</option>
+                    <option value="black">블랙</option><option value="white">화이트</option>
+                  </select></table>
+                </form>
+              </div>
+              <div class="woocommerce-product-gallery"><img src="/sample.jpg"></div>
+              <script type="application/ld+json">{"priceCurrency":"USD"}</script>
+            </body></html>
+            """,
+            "html.parser",
+        )
+        product = _parse_elec_detail(
+            soup, "https://xn--352bl9av7r2tn.com/product/sample/", "321", 1_400,
+        )
+        self.assertEqual(product.source_price, 28_000)
+        self.assertEqual(product.price, 31_000)
+        self.assertEqual(product.options, ["블랙", "화이트"])
+        self.assertEqual(product.option_label, "색상")
 
 
 if __name__ == "__main__":

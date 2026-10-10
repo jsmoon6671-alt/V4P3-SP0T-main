@@ -7,7 +7,7 @@ import json
 import os
 import re
 from dataclasses import dataclass
-from urllib.parse import urljoin
+from urllib.parse import parse_qs, parse_qsl, urlencode, urljoin, urlparse, urlunparse
 
 import aiohttp
 from bs4 import BeautifulSoup, Comment
@@ -104,6 +104,85 @@ async def _soup(session: aiohttp.ClientSession, url: str) -> BeautifulSoup:
         return BeautifulSoup(await response.read(), "html.parser")
 
 
+def _source_site_for_url(url: str) -> str:
+    """링크 가져오기에 허용된 쇼핑몰인지 확인한다 (SSRF 방지 포함)."""
+    parsed = urlparse((url or "").strip())
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise RuntimeError("http 또는 https로 시작하는 올바른 상품 링크를 입력해 주세요.")
+    try:
+        hostname = parsed.hostname.rstrip(".").encode("idna").decode("ascii").lower()
+    except UnicodeError as exc:
+        raise RuntimeError("상품 링크의 주소를 확인해 주세요.") from exc
+    allowed = {
+        urlparse(BIBIBINS_BASE).hostname: "bibibins",
+        urlparse(ELECSHOP_BASE).hostname: "elecshop",
+    }
+    site = allowed.get(hostname)
+    if not site:
+        raise RuntimeError("비비빈스 또는 일렉샵 링크만 가져올 수 있습니다.")
+    return site
+
+
+def _with_query(url: str, **values) -> str:
+    parsed = urlparse(url)
+    query = dict(parse_qsl(parsed.query, keep_blank_values=True))
+    query.update({key: str(value) for key, value in values.items()})
+    return urlunparse(parsed._replace(query=urlencode(query)))
+
+
+async def _scrape_bibibins_url(
+    session: aiohttp.ClientSession, url: str,
+) -> list[ScrapedProduct]:
+    parsed = urlparse(url)
+    query = parse_qs(parsed.query)
+    product_match = re.search(r"/(\d+)(?:/category/|/?)", parsed.path)
+    target_key = product_match.group(1) if "/product/" in parsed.path and product_match else None
+    if not target_key:
+        values = query.get("product_no", [])
+        target_key = values[0] if values and values[0].isdigit() else None
+
+    category_match = re.search(r"/category/(\d+)", parsed.path)
+    category_number = (
+        (query.get("cate_no") or [None])[0]
+        or (category_match.group(1) if category_match else None)
+    )
+    category_numbers = [category_number] if category_number and str(category_number).isdigit() else [50, 52]
+    products: dict[str, ScrapedProduct] = {}
+    for number in category_numbers:
+        if "/product/list" in parsed.path and str(number) == str(category_number):
+            base_url = url
+        else:
+            base_url = f"{BIBIBINS_BASE}/product/list.html?cate_no={number}"
+        seen_in_category: set[str] = set()
+        for page in range(1, 21):
+            page_url = _with_query(base_url, cate_no=number, page=page)
+            soup = await _soup(session, page_url)
+            cards = soup.select(".xans-product-listnormal .prdList > li")
+            if not cards:
+                break
+            new_on_page = 0
+            for card in cards:
+                product = _bibibins_card(card, "선택 카테고리", page_url)
+                if not product:
+                    continue
+                if target_key and product.source_key != target_key:
+                    continue
+                if product.source_key not in seen_in_category:
+                    seen_in_category.add(product.source_key)
+                    new_on_page += 1
+                products[product.source_key] = product
+            if target_key and target_key in products:
+                return [products[target_key]]
+            if not new_on_page:
+                break
+            await asyncio.sleep(0.12)
+    if target_key:
+        raise RuntimeError("해당 비비빈스 상품을 공개 목록에서 찾지 못했습니다.")
+    if not products:
+        raise RuntimeError("링크에서 비비빈스 상품을 찾지 못했습니다.")
+    return list(products.values())
+
+
 async def scrape_bibibins(session: aiohttp.ClientSession) -> list[ScrapedProduct]:
     products: dict[str, ScrapedProduct] = {}
     categories = (("입호흡 기기", 50), ("폐호흡 기기", 52))
@@ -167,6 +246,8 @@ COLOR_WORDS = (
 
 
 def _option_label(options: list[str]) -> str:
+    if options == ["색상은 구매티켓에서 확인"]:
+        return "색상"
     color_count = sum(any(word in option for word in COLOR_WORDS) for option in options)
     return "색상" if color_count * 2 > len(options) else "맛"
 
@@ -194,24 +275,33 @@ async def _usd_krw_rate(session: aiohttp.ClientSession) -> float:
     return 1_400.0
 
 
-async def _elec_detail(
-    session: aiohttp.ClientSession, card, usd_krw_rate: float,
+def _elec_product_id(soup: BeautifulSoup, url: str) -> str:
+    form = soup.select_one("form.variations_form[data-product_id]")
+    if form and form.get("data-product_id"):
+        return str(form.get("data-product_id"))
+    body = soup.select_one("body")
+    for class_name in body.get("class", []) if body else []:
+        match = re.fullmatch(r"postid-(\d+)", class_name)
+        if match:
+            return match.group(1)
+    return urlparse(url).path.rstrip("/").rsplit("/", 1)[-1]
+
+
+def _parse_elec_detail(
+    soup: BeautifulSoup, url: str, product_id: str, usd_krw_rate: float,
+    in_stock: bool = True,
 ) -> ScrapedProduct | None:
-    link = card.select_one('a[href*="/product/"]')
-    product_id = card.get("data-product_id")
-    if not link or not product_id:
-        return None
-    url = urljoin(ELECSHOP_BASE, link.get("href"))
-    soup = await _soup(session, url)
     name_node = soup.select_one("h1.product_title")
     price_node = soup.select_one(".summary .price")
     if not name_node or not price_node:
         return None
-    raw_price = float(re.search(r"[0-9][0-9,.]*", price_node.get_text(" ", strip=True)).group().replace(",", ""))
+    price_match = re.search(r"[0-9][0-9,.]*", price_node.get_text(" ", strip=True))
+    if not price_match:
+        return None
+    raw_price = float(price_match.group().replace(",", ""))
     currency = _elec_currency(soup)
     source_price = round(raw_price * usd_krw_rate) if currency == "USD" else round(raw_price)
     description_node = soup.select_one(".woocommerce-product-details__short-description")
-    in_stock = "outofstock" not in " ".join(card.get("class", [])).lower()
     options = _elec_options(soup)
     return ScrapedProduct(
         source_site="elecshop",
@@ -227,6 +317,77 @@ async def _elec_detail(
         options=options,
         stock=99 if in_stock else 0,
     )
+
+
+async def _elec_detail(
+    session: aiohttp.ClientSession, card, usd_krw_rate: float,
+) -> ScrapedProduct | None:
+    link = card.select_one('a[href*="/product/"]')
+    product_id = card.get("data-product_id")
+    if not link or not product_id:
+        return None
+    url = urljoin(ELECSHOP_BASE, link.get("href"))
+    soup = await _soup(session, url)
+    return _parse_elec_detail(
+        soup, url, str(product_id), usd_krw_rate,
+        "outofstock" not in " ".join(card.get("class", [])).lower(),
+    )
+
+
+async def _scrape_elecshop_url(
+    session: aiohttp.ClientSession, url: str,
+) -> list[ScrapedProduct]:
+    rate = await _usd_krw_rate(session)
+    soup = await _soup(session, url)
+    if soup.select_one("h1.product_title"):
+        product = _parse_elec_detail(soup, url, _elec_product_id(soup, url), rate)
+        if not product:
+            raise RuntimeError("일렉샵 상품 상세정보를 읽지 못했습니다.")
+        return [product]
+
+    cards_by_id = {}
+    current_url = url
+    visited: set[str] = set()
+    for _ in range(20):
+        if current_url in visited:
+            break
+        visited.add(current_url)
+        for card in soup.select(".products .product[data-product_id]"):
+            cards_by_id[str(card.get("data-product_id"))] = card
+        next_link = soup.select_one(".woocommerce-pagination a.next, a.next.page-numbers")
+        if not next_link or not next_link.get("href"):
+            break
+        next_url = urljoin(current_url, next_link.get("href"))
+        if _source_site_for_url(next_url) != "elecshop":
+            break
+        current_url = next_url
+        soup = await _soup(session, current_url)
+    cards = list(cards_by_id.values())
+    if not cards:
+        raise RuntimeError("링크에서 일렉샵 상품을 찾지 못했습니다.")
+    semaphore = asyncio.Semaphore(4)
+
+    async def load(card):
+        async with semaphore:
+            return await _elec_detail(session, card, rate)
+
+    results = await asyncio.gather(*(load(card) for card in cards), return_exceptions=True)
+    products = [result for result in results if isinstance(result, ScrapedProduct)]
+    if not products:
+        raise RuntimeError("일렉샵 상품 상세정보를 읽지 못했습니다.")
+    return list({product.source_key: product for product in products}.values())
+
+
+async def scrape_products_from_url(url: str) -> list[ScrapedProduct]:
+    """허용된 쇼핑몰의 상품/목록 링크에서 상품을 가져온다."""
+    url = (url or "").strip()
+    site = _source_site_for_url(url)
+    headers = {"User-Agent": USER_AGENT, "Accept-Language": "ko-KR,ko;q=0.9,en;q=0.5"}
+    connector = aiohttp.TCPConnector(limit_per_host=4)
+    async with aiohttp.ClientSession(headers=headers, connector=connector) as session:
+        if site == "bibibins":
+            return await _scrape_bibibins_url(session, url)
+        return await _scrape_elecshop_url(session, url)
 
 
 async def scrape_elecshop(session: aiohttp.ClientSession) -> list[ScrapedProduct]:
@@ -265,6 +426,72 @@ async def scrape_device_stores() -> tuple[dict[str, list[ScrapedProduct]], dict[
     if not products:
         raise RuntimeError("두 쇼핑몰의 상품 정보를 모두 불러오지 못했습니다.")
     return products, errors
+
+
+async def import_scraped_products(
+    conn, guild_id: int, category_id: int, products: list[ScrapedProduct],
+) -> dict:
+    """링크에서 가져온 상품을 관리자가 선택한 카테고리에 추가하거나 갱신한다."""
+    inserted = updated = 0
+    names: list[str] = []
+    async with conn.transaction():
+        for product in products:
+            source = await conn.fetchrow(
+                """
+                SELECT product_id FROM web_product_sources
+                WHERE guild_id=$1 AND source_site=$2 AND source_key=$3
+                """,
+                guild_id, product.source_site, product.source_key,
+            )
+            if source:
+                product_id = int(source["product_id"])
+                await conn.execute(
+                    """
+                    UPDATE web_products
+                    SET category_id=$3,name=$4,description=$5,price=$6,stock=$7,image_url=$8,
+                        option_label=$9,options=$10,is_active=TRUE,updated_at=CURRENT_TIMESTAMP
+                    WHERE id=$1 AND guild_id=$2
+                    """,
+                    product_id, guild_id, category_id, product.name, product.description,
+                    product.price, product.stock, product.image_url,
+                    product.option_label, product.options,
+                )
+                updated += 1
+            else:
+                product_id = await conn.fetchval(
+                    """
+                    INSERT INTO web_products
+                        (guild_id,category_id,name,description,price,stock,image_url,option_label,options,is_active)
+                    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,TRUE)
+                    RETURNING id
+                    """,
+                    guild_id, category_id, product.name, product.description, product.price,
+                    product.stock, product.image_url, product.option_label, product.options,
+                )
+                inserted += 1
+            await conn.execute(
+                """
+                INSERT INTO web_product_sources
+                    (guild_id,source_site,source_key,product_id,source_url,source_price,disabled_by_admin,synced_at)
+                VALUES ($1,$2,$3,$4,$5,$6,FALSE,CURRENT_TIMESTAMP)
+                ON CONFLICT (guild_id,source_site,source_key) DO UPDATE SET
+                    product_id=EXCLUDED.product_id, source_url=EXCLUDED.source_url,
+                    source_price=EXCLUDED.source_price, disabled_by_admin=FALSE,
+                    synced_at=CURRENT_TIMESTAMP
+                """,
+                guild_id, product.source_site, product.source_key, product_id,
+                product.source_url, product.source_price,
+            )
+            names.append(product.name)
+    return {
+        "inserted": inserted,
+        "updated": updated,
+        "total": len(products),
+        "unknown_options": sum(
+            product.options == ["색상은 구매티켓에서 확인"] for product in products
+        ),
+        "names": names[:20],
+    }
 
 
 async def sync_scraped_products(conn, guild_id: int, grouped: dict[str, list[ScrapedProduct]]) -> dict:

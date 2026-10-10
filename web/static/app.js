@@ -763,10 +763,46 @@ function restoreChannelForm() {
 
 function renderAdminLists() {
   $("#category-admin").innerHTML = state.adminCategories.map(category => `<div class="admin-row"><span>${escapeHtml(category.name)}</span><span><button class="text-button" data-edit-cat="${category.id}">수정</button> <button class="remove" data-del-cat="${category.id}">삭제</button></span></div>`).join("");
-  $("#product-admin").innerHTML = state.adminProducts.map(product => {
+  const productRows = state.adminProducts.map(product => {
     const options = productOptions(product);
-    return `<div class="admin-row"><span><b>${escapeHtml(product.name)}</b><br>${escapeHtml(product.category_name || "미분류")} · ${money(product.price)} · ${product.stock}개${options.length ? `<br><small>${escapeHtml(product.option_label)}: ${options.map(escapeHtml).join(", ")}</small>` : ""}</span><span class="admin-actions"><button class="text-button" data-edit-product="${product.id}">수정</button><button class="remove" data-del-product="${product.id}">삭제</button></span></div>`;
+    return `<div class="admin-row"><span class="admin-product-info"><input class="admin-product-check" type="checkbox" value="${product.id}" aria-label="${escapeHtml(product.name)} 선택"><span><b>${escapeHtml(product.name)}</b><br>${escapeHtml(product.category_name || "미분류")} · ${money(product.price)} · ${product.stock}개${options.length ? `<br><small>${escapeHtml(product.option_label)}: ${options.map(escapeHtml).join(", ")}</small>` : ""}</span></span><span class="admin-actions"><button class="text-button" data-edit-product="${product.id}">수정</button><button class="remove" data-del-product="${product.id}">삭제</button></span></div>`;
   }).join("");
+  $("#product-admin").innerHTML = `<div class="admin-bulk-actions">
+    <label><input id="select-all-products" type="checkbox" ${state.adminProducts.length ? "" : "disabled"}> 전체 선택</label>
+    <button id="delete-selected-products" class="button danger compact" type="button" disabled>선택 삭제</button>
+  </div>${productRows || '<p class="admin-empty">등록된 상품이 없습니다.</p>'}`;
+
+  const productChecks = $$(".admin-product-check");
+  const selectAll = $("#select-all-products");
+  const deleteSelected = $("#delete-selected-products");
+  const updateBulkSelection = () => {
+    const selectedCount = productChecks.filter(input => input.checked).length;
+    selectAll.checked = productChecks.length > 0 && selectedCount === productChecks.length;
+    selectAll.indeterminate = selectedCount > 0 && selectedCount < productChecks.length;
+    deleteSelected.disabled = selectedCount === 0;
+    deleteSelected.textContent = selectedCount ? `선택 삭제 (${selectedCount})` : "선택 삭제";
+  };
+  selectAll.onchange = () => {
+    productChecks.forEach(input => { input.checked = selectAll.checked; });
+    updateBulkSelection();
+  };
+  productChecks.forEach(input => { input.onchange = updateBulkSelection; });
+  deleteSelected.onclick = async () => {
+    const productIds = productChecks.filter(input => input.checked).map(input => Number(input.value));
+    if (!productIds.length || !confirm(`선택한 상품 ${productIds.length}개를 모두 삭제할까요?\n상품 목록과 장바구니에서 제거되며 기존 주문내역은 유지됩니다.`)) return;
+    deleteSelected.disabled = true;
+    try {
+      const result = await api("/api/admin/products/delete-batch", {
+        method: "POST",
+        body: JSON.stringify({ product_ids: productIds }),
+      });
+      await Promise.all([loadAdmin(), loadCatalog(), loadCart()]);
+      toast(`상품 ${result.deleted}개를 삭제했습니다.`);
+    } catch (error) {
+      deleteSelected.disabled = false;
+      toast(error.message);
+    }
+  };
   $$("[data-edit-cat]").forEach(button => { button.onclick = () => openEditor("category", state.adminCategories.find(item => item.id == button.dataset.editCat)); });
   $$("[data-del-cat]").forEach(button => {
     button.onclick = async () => {
@@ -804,11 +840,31 @@ function closeEditor() {
 
 function openEditor(type, item = {}) {
   const fields = $("#editor-fields");
-  $("#editor-title").textContent = type === "category" ? "카테고리 설정" : "상품 설정";
+  const isLinkImport = type === "product" && !item.id;
+  $("#editor-title").textContent = type === "category"
+    ? "카테고리 설정"
+    : isLinkImport ? "링크로 상품 추가" : "상품 설정";
   if (type === "category") {
     fields.innerHTML = `<input type="hidden" name="id" value="${item.id || ""}">
       <label>이름<input name="name" value="${escapeHtml(item.name || "")}" required></label>
       <label>정렬 순서<input name="sort_order" type="number" value="${item.sort_order || 0}"></label>`;
+  } else if (isLinkImport) {
+    fields.innerHTML = `<label>추가할 카테고리
+        <select name="category_id" required>
+          <option value="">카테고리를 먼저 선택해 주세요</option>
+          ${state.adminCategories.map(category => `<option value="${category.id}">${escapeHtml(category.name)}</option>`).join("")}
+        </select>
+      </label>
+      <label>상품 또는 목록 링크
+        <input name="source_url" type="url" inputmode="url" placeholder="https://..." autocomplete="off" required>
+      </label>
+      <label>옵션 종류
+        <select name="option_label"><option value="색상">색상</option><option value="맛">맛</option></select>
+      </label>
+      <label>색상 또는 맛 목록
+        <textarea name="options" placeholder="예: 블랙, 화이트&#10;여러 값은 한 줄씩 또는 쉼표로 입력"></textarea>
+      </label>
+      <small>비비빈스와 일렉샵 링크를 지원합니다. 직접 입력한 색상·맛은 크롤링된 옵션보다 우선 적용됩니다. 목록 링크에 입력하면 가져온 모든 상품에 같은 옵션이 적용됩니다. 판매 가격에는 원래 가격보다 3,000원이 더해집니다.</small>`;
   } else {
     fields.innerHTML = `<input type="hidden" name="id" value="${item.id || ""}">
       <label>카테고리
@@ -829,9 +885,10 @@ function openEditor(type, item = {}) {
       <label>색상 또는 맛 목록<textarea name="options" placeholder="한 줄에 하나씩 또는 쉼표로 여러 개 입력" required>${escapeHtml(productOptions(item).join("\n"))}</textarea></label>
       <label class="check"><input name="is_active" type="checkbox" ${item.is_active !== false ? "checked" : ""}> 판매 활성화</label>`;
   }
+  $("#editor-form button[type='submit']").textContent = isLinkImport ? "링크에서 가져오기" : "저장";
   $("#editor").hidden = false;
   document.body.classList.add("modal-open");
-  if (type === "product") {
+  if (type === "product" && !isLinkImport) {
     $("#product-image-file").onchange = event => {
       const file = event.target.files[0];
       if (!file) return;
@@ -849,15 +906,27 @@ function openEditor(type, item = {}) {
   $("#editor-form").onsubmit = async event => {
     event.preventDefault();
     const data = Object.fromEntries(new FormData(event.target));
-    if (type === "product") data.is_active = Boolean(data.is_active);
+    if (type === "product" && !isLinkImport) data.is_active = Boolean(data.is_active);
+    const submit = event.target.querySelector('button[type="submit"]');
+    const originalLabel = submit.textContent;
+    submit.disabled = true;
+    submit.textContent = isLinkImport ? "상품 가져오는 중..." : "저장 중...";
     try {
-      await api(`/api/admin/${type === "category" ? "categories" : "products"}`, { method: "POST", body: JSON.stringify(data) });
+      const endpoint = type === "category"
+        ? "/api/admin/categories"
+        : isLinkImport ? "/api/admin/products/import" : "/api/admin/products";
+      const result = await api(endpoint, { method: "POST", body: JSON.stringify(data) });
       closeEditor();
       await loadAdmin();
       await loadCatalog();
-      toast("저장했습니다.");
+      toast(isLinkImport
+        ? `상품 ${result.total}개를 가져왔습니다. (신규 ${result.inserted}개 · 갱신 ${result.updated}개)`
+        : "저장했습니다.");
     } catch (error) {
       toast(error.message);
+    } finally {
+      submit.disabled = false;
+      submit.textContent = originalLabel;
     }
   };
 }

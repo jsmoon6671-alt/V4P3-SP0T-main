@@ -33,7 +33,12 @@ from payment_automation import (
     arm_web_payment,
     initialize_payment_automation_schema,
 )
-from product_scraper import scrape_device_stores, sync_scraped_products
+from product_scraper import (
+    import_scraped_products,
+    scrape_device_stores,
+    scrape_products_from_url,
+    sync_scraped_products,
+)
 from store_lookup import StoreLookupError, search_stores
 
 
@@ -299,7 +304,9 @@ class StoreServer:
             web.delete(r"/api/admin/categories/{category_id:\d+}", self.admin_delete_category),
             web.get("/api/admin/products", self.admin_products),
             web.post("/api/admin/products", self.admin_save_product),
+            web.post("/api/admin/products/import", self.admin_import_products),
             web.post("/api/admin/products/sync", self.admin_sync_products),
+            web.post("/api/admin/products/delete-batch", self.admin_delete_products_batch),
             web.delete(r"/api/admin/products/{product_id:\d+}", self.admin_delete_product),
             web.get("/api/admin/channels", self.admin_channels),
             web.put("/api/admin/channels", self.admin_save_channels),
@@ -1161,6 +1168,61 @@ class StoreServer:
         summary["warnings"] = errors
         return web.json_response(summary, dumps=lambda value: json.dumps(value, ensure_ascii=False))
 
+    async def admin_import_products(self, request):
+        await self._admin(request)
+        data = await self._body(request)
+        source_url = str(data.get("source_url", "")).strip()
+        try:
+            category_id = int(data.get("category_id", 0))
+        except (TypeError, ValueError):
+            category_id = 0
+        if not category_id:
+            raise StoreError("상품을 넣을 카테고리를 선택해 주세요.")
+        if not source_url:
+            raise StoreError("상품 또는 목록 링크를 입력해 주세요.")
+        option_label = str(data.get("option_label", "색상")).strip()
+        if option_label not in {"색상", "맛"}:
+            raise StoreError("상품 옵션은 색상 또는 맛으로 선택해 주세요.")
+        raw_options = data.get("options", "")
+        if isinstance(raw_options, str):
+            raw_options = raw_options.replace("\r", "\n").replace(",", "\n").split("\n")
+        if not isinstance(raw_options, list):
+            raise StoreError("색상 또는 맛 목록을 확인해 주세요.")
+        manual_options = list(dict.fromkeys(
+            str(value).strip() for value in raw_options if str(value).strip()
+        ))
+        if len(manual_options) > 50:
+            raise StoreError("색상 또는 맛은 최대 50개까지 입력할 수 있습니다.")
+        if self._product_sync_lock.locked():
+            raise StoreError("다른 상품 가져오기가 진행 중입니다. 잠시 후 다시 시도해 주세요.", 409)
+
+        async with self.bot.db_pool.acquire() as conn:
+            category_exists = await conn.fetchval(
+                "SELECT EXISTS(SELECT 1 FROM web_categories WHERE id=$1 AND guild_id=$2)",
+                category_id, self.guild_id,
+            )
+        if not category_exists:
+            raise StoreError("선택한 카테고리를 찾을 수 없습니다.", 404)
+
+        async with self._product_sync_lock:
+            try:
+                products = await scrape_products_from_url(source_url)
+            except RuntimeError as exc:
+                raise StoreError(str(exc), 422) from exc
+            except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+                raise StoreError("쇼핑몰 페이지를 불러오지 못했습니다. 링크를 확인하고 다시 시도해 주세요.", 502) from exc
+            if manual_options:
+                for product in products:
+                    product.option_label = option_label
+                    product.options = manual_options.copy()
+            async with self.bot.db_pool.acquire() as conn:
+                summary = await import_scraped_products(
+                    conn, self.guild_id, category_id, products,
+                )
+        return web.json_response(
+            summary, dumps=lambda value: json.dumps(value, ensure_ascii=False),
+        )
+
     async def admin_delete_product(self, request):
         await self._admin(request)
         product_id = int(request.match_info["product_id"])
@@ -1182,6 +1244,53 @@ class StoreServer:
         if not deleted:
             raise StoreError("삭제할 상품을 찾을 수 없습니다.", 404)
         return web.json_response({"ok": True, "name": deleted["name"]})
+
+    async def admin_delete_products_batch(self, request):
+        await self._admin(request)
+        data = await self._body(request)
+        raw_ids = data.get("product_ids", [])
+        if not isinstance(raw_ids, list):
+            raise StoreError("삭제할 상품을 선택해 주세요.")
+        try:
+            product_ids = list(dict.fromkeys(int(value) for value in raw_ids if int(value) > 0))
+        except (TypeError, ValueError):
+            raise StoreError("삭제할 상품 목록이 올바르지 않습니다.")
+        if not product_ids:
+            raise StoreError("삭제할 상품을 한 개 이상 선택해 주세요.")
+        if len(product_ids) > 2_000:
+            raise StoreError("한 번에 삭제할 수 있는 상품은 최대 2,000개입니다.")
+
+        async with self.bot.db_pool.acquire() as conn:
+            async with conn.transaction():
+                deleted = await conn.fetch(
+                    """
+                    UPDATE web_products
+                    SET is_active=FALSE, updated_at=CURRENT_TIMESTAMP
+                    WHERE guild_id=$1 AND id=ANY($2::bigint[]) AND is_active=TRUE
+                    RETURNING id,name
+                    """,
+                    self.guild_id, product_ids,
+                )
+                deleted_ids = [int(row["id"]) for row in deleted]
+                if deleted_ids:
+                    await conn.execute(
+                        "DELETE FROM web_cart_items WHERE guild_id=$1 AND product_id=ANY($2::bigint[])",
+                        self.guild_id, deleted_ids,
+                    )
+                    await conn.execute(
+                        """
+                        UPDATE web_product_sources SET disabled_by_admin=TRUE
+                        WHERE guild_id=$1 AND product_id=ANY($2::bigint[])
+                        """,
+                        self.guild_id, deleted_ids,
+                    )
+        if not deleted:
+            raise StoreError("삭제할 상품을 찾을 수 없습니다.", 404)
+        return web.json_response({
+            "ok": True,
+            "deleted": len(deleted),
+            "names": [row["name"] for row in deleted[:20]],
+        })
 
     async def admin_channels(self, request):
         await self._admin(request)

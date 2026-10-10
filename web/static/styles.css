@@ -214,6 +214,14 @@ h3,strong { font-weight: 800; }
 .admin-row { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 13px 0; border-bottom: 1px solid var(--line); font-size: 13px; font-weight: 600; }
 .admin-row:last-child { border-bottom: 0; }
 .admin-actions { display: flex; flex: 0 0 auto; align-items: center; gap: 5px; }
+.admin-bulk-actions { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin: 8px 0 2px; padding: 10px 0; border-bottom: 1px solid var(--line); }
+.admin-bulk-actions label,.admin-product-info { display: flex; align-items: center; gap: 10px; }
+.admin-bulk-actions label { color: var(--muted); font-size: 12px; font-weight: 800; cursor: pointer; }
+.admin-product-info { min-width: 0; }
+.admin-product-check,.admin-bulk-actions input { width: 18px; height: 18px; flex: 0 0 auto; accent-color: var(--accent); cursor: pointer; }
+.admin-empty { margin: 0; padding: 24px 0 8px; color: var(--muted); text-align: center; }
+.button.danger { border-color: #71353b; background: #32191d; color: #ff9ba3; }
+.button.danger:hover:not(:disabled) { border-color: #a84c55; background: #492026; color: #ffd7da; }
 .channels { display: grid; grid-template-columns: repeat(2,1fr); margin-top: 20px; }
 .channels h2,.channels button { grid-column: 1/-1; }
 
