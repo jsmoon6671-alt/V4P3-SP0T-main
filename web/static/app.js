@@ -24,6 +24,9 @@ const escapeHtml = value => String(value ?? "").replace(/[&<>'"]/g, char => ({
   "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;",
 })[char]);
 const productOptions = product => Array.isArray(product.options) ? product.options : [];
+const optionSurcharge = option => [...String(option || "").matchAll(/\(\+\s*([\d,]+)\s*(?:원)?\)/g)]
+  .reduce((sum, match) => sum + Number(match[1].replaceAll(",", "")), 0);
+const itemUnitPrice = item => Number(item.price || 0) + optionSurcharge(item.selected_option);
 const CHANNEL_CACHE_KEY = "v4p3DiscordChannelIds";
 const SHIPPING_BANNER_KEY = "v4p3ShippingBannerClosed";
 
@@ -248,7 +251,7 @@ function renderProducts() {
         <p>${escapeHtml(product.description)}</p>
         ${optionSelect}
         <div class="product-foot">
-          <div><strong>${money(product.price)}</strong><br><small>재고 ${product.stock}</small></div>
+          <div><strong data-product-price="${product.id}">${money(product.price)}</strong><br><small>재고 ${product.stock}</small></div>
           <button type="button" aria-label="장바구니에 담기" data-add="${product.id}" ${product.stock < 1 ? "disabled" : ""}>+</button>
         </div>
       </div>
@@ -256,6 +259,13 @@ function renderProducts() {
   }).join("") : '<p class="empty">등록된 상품이 없습니다.</p>';
   $$("[data-add]").forEach(button => {
     button.onclick = () => addCart(Number(button.dataset.add));
+  });
+  $$("[data-product-option]").forEach(select => {
+    select.onchange = () => {
+      const product = state.products.find(item => Number(item.id) === Number(select.dataset.productOption));
+      const price = $(`[data-product-price="${select.dataset.productOption}"]`);
+      if (product && price) price.textContent = money(Number(product.price) + optionSurcharge(select.value));
+    };
   });
 }
 
@@ -302,7 +312,7 @@ function renderCart() {
     </select>` : "";
     return `<div class="cart-row">
       <input class="cart-check" type="checkbox" aria-label="상품 선택" data-select="${item.product_id}" ${state.selected.has(Number(item.product_id)) ? "checked" : ""}>
-      <div class="grow"><strong>${escapeHtml(item.name)}</strong><br><small>${money(item.price)} · 재고 ${item.stock}</small>${optionField}</div>
+      <div class="grow"><strong>${escapeHtml(item.name)}</strong><br><small>${money(itemUnitPrice(item))}${optionSurcharge(item.selected_option) ? ` · 옵션 +${money(optionSurcharge(item.selected_option))}` : ""} · 재고 ${item.stock}</small>${optionField}</div>
       <div class="cart-controls">
         <div class="quantity-stepper" aria-label="수량 조절">
           <button type="button" aria-label="수량 줄이기" data-qty-minus="${item.product_id}">−</button>
@@ -371,7 +381,7 @@ async function saveCartRow(productId, quantity, selectedOption = null) {
 
 function cartTotal() {
   const selectedRows = state.cart.filter(item => state.selected.has(Number(item.product_id)));
-  const subtotal = selectedRows.reduce((sum, item) => sum + Number(item.price) * Number(item.quantity), 0);
+  const subtotal = selectedRows.reduce((sum, item) => sum + itemUnitPrice(item) * Number(item.quantity), 0);
   const shipping = selectedRows.length ? shippingFee(subtotal) : 0;
   const beforeDiscount = subtotal + shipping;
   const discount = checkoutPointDiscount(beforeDiscount);
@@ -430,7 +440,7 @@ function selectedCartRows() {
 
 function selectedCartTotal() {
   const rows = selectedCartRows();
-  const subtotal = rows.reduce((sum, item) => sum + Number(item.price) * Number(item.quantity), 0);
+  const subtotal = rows.reduce((sum, item) => sum + itemUnitPrice(item) * Number(item.quantity), 0);
   return rows.length ? subtotal + shippingFee(subtotal) : 0;
 }
 
@@ -1011,11 +1021,12 @@ function openEditor(type, item = {}) {
         <input name="price" type="number" inputmode="numeric" min="0" step="1" placeholder="직접 판매할 가격을 입력해 주세요" required>
       </label>
       <label>옵션 종류
-        <select name="option_label"><option value="색상">색상</option><option value="맛">맛</option></select>
+        <select name="option_label"><option value="색상">색상</option><option value="맛">맛</option><option value="패키지">패키지</option></select>
       </label>
-      <label>색상 또는 맛 목록
-        <textarea name="options" placeholder="예: 블랙, 화이트&#10;여러 값은 한 줄씩 또는 쉼표로 입력"></textarea>
+      <label>색상, 맛 또는 패키지 옵션 목록
+        <textarea name="options" placeholder="예: 기본 패키지&#10;선물 패키지 (+2000)&#10;여러 값은 한 줄씩 또는 쉼표로 입력"></textarea>
       </label>
+      <small>옵션명에 (+2000)을 붙이면 선택 시 개당 2,000원이 추가됩니다.</small>
       <small>비비빈스와 일렉샵 링크를 지원합니다. 입력한 가격은 자동 동기화 후에도 유지됩니다. 목록 링크를 사용하면 가져온 모든 상품에 같은 가격과 옵션이 적용됩니다.</small>`;
   } else {
     fields.innerHTML = `<input type="hidden" name="id" value="${item.id || ""}">
@@ -1032,9 +1043,10 @@ function openEditor(type, item = {}) {
       <label>가격<input name="price" type="number" min="0" value="${item.price || 0}" required></label>
       <label>재고<input name="stock" type="number" min="0" value="${item.stock || 0}" required></label>
       <label>옵션 종류
-        <select name="option_label" required><option value="색상" ${item.option_label !== "맛" ? "selected" : ""}>색상</option><option value="맛" ${item.option_label === "맛" ? "selected" : ""}>맛</option></select>
+        <select name="option_label" required><option value="색상" ${item.option_label === "색상" || !item.option_label ? "selected" : ""}>색상</option><option value="맛" ${item.option_label === "맛" ? "selected" : ""}>맛</option><option value="패키지" ${item.option_label === "패키지" ? "selected" : ""}>패키지</option></select>
       </label>
-      <label>색상 또는 맛 목록<textarea name="options" placeholder="한 줄에 하나씩 또는 쉼표로 여러 개 입력" required>${escapeHtml(productOptions(item).join("\n"))}</textarea></label>
+      <label>색상, 맛 또는 패키지 옵션 목록<textarea name="options" placeholder="예: 기본 패키지&#10;선물 패키지 (+2000)" required>${escapeHtml(productOptions(item).join("\n"))}</textarea></label>
+      <small>옵션명에 (+2000)을 붙이면 선택 시 개당 2,000원이 추가됩니다.</small>
       <label class="check"><input name="is_active" type="checkbox" ${item.is_active !== false ? "checked" : ""}> 판매 활성화</label>`;
   }
   $("#editor-form button[type='submit']").textContent = isLinkImport ? "링크에서 가져오기" : "저장";

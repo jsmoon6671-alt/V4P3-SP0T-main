@@ -9,6 +9,7 @@ import hmac
 import json
 import logging
 import os
+import re
 import secrets
 import time
 from datetime import datetime
@@ -52,6 +53,7 @@ DISCOUNTED_SHIPPING_THRESHOLD = 35_000
 FREE_SHIPPING_THRESHOLD = 50_000
 LOGGER = logging.getLogger(__name__)
 REVIEW_SYNC_INTERVAL = 300
+OPTION_SURCHARGE_PATTERN = re.compile(r"\(\+\s*([0-9][0-9,]*)\s*(?:원)?\)")
 
 
 def calculate_shipping_fee(subtotal: int) -> int:
@@ -62,6 +64,33 @@ def calculate_shipping_fee(subtotal: int) -> int:
     if subtotal >= DISCOUNTED_SHIPPING_THRESHOLD:
         return DISCOUNTED_SHIPPING_FEE
     return BASE_SHIPPING_FEE
+
+
+def option_surcharge(option: str) -> int:
+    """옵션명의 (+2000), (+2,000원) 표기를 개당 추가 금액으로 해석한다."""
+    return sum(int(value.replace(",", "")) for value in OPTION_SURCHARGE_PATTERN.findall(str(option or "")))
+
+
+def parse_product_options(raw_options) -> list[str]:
+    """줄바꿈이나 괄호 밖 쉼표로 옵션을 나누고 입력 순서대로 중복을 제거한다."""
+    if isinstance(raw_options, list):
+        values = raw_options
+    elif isinstance(raw_options, str):
+        values, buffer, depth = [], [], 0
+        for char in raw_options.replace("\r\n", "\n").replace("\r", "\n"):
+            if char == "(":
+                depth += 1
+            elif char == ")" and depth:
+                depth -= 1
+            if char == "\n" or (char == "," and depth == 0):
+                values.append("".join(buffer))
+                buffer = []
+            else:
+                buffer.append(char)
+        values.append("".join(buffer))
+    else:
+        raise StoreError("색상, 맛 또는 패키지 옵션 목록을 확인해 주세요.")
+    return list(dict.fromkeys(str(value).strip() for value in values if str(value).strip()))
 
 
 class StoreError(Exception):
@@ -853,7 +882,7 @@ class StoreServer:
                 raise StoreError("현재 재고보다 많은 수량입니다.")
             options = list(product["options"] or [])
             if options and selected_option not in options:
-                raise StoreError("상품의 색상 또는 맛을 선택해 주세요.")
+                raise StoreError("상품의 색상, 맛 또는 패키지를 선택해 주세요.")
             await conn.execute(
                 """
                 INSERT INTO web_cart_items (guild_id, user_id, product_id, quantity, selected_option)
@@ -934,8 +963,11 @@ class StoreServer:
                 for row in rows:
                     options = list(row["options"] or [])
                     if options and row["selected_option"] not in options:
-                        raise StoreError(f"{row['name']} 상품의 색상 또는 맛을 다시 선택해 주세요.")
-                subtotal = sum(int(row["price"]) * int(row["quantity"]) for row in rows)
+                        raise StoreError(f"{row['name']} 상품의 색상, 맛 또는 패키지를 다시 선택해 주세요.")
+                subtotal = sum(
+                    (int(row["price"]) + option_surcharge(row["selected_option"])) * int(row["quantity"])
+                    for row in rows
+                )
                 shipping_fee = calculate_shipping_fee(subtotal)
                 total = subtotal + shipping_fee
                 if not self.payment_service.enabled and total - points > 0:
@@ -964,7 +996,8 @@ class StoreServer:
                         INSERT INTO web_order_items
                             (order_id, product_id, product_name, unit_price, quantity, product_option)
                         VALUES ($1, $2, $3, $4, $5, $6)
-                        """, order_id, row["product_id"], row["name"], row["price"],
+                        """, order_id, row["product_id"], row["name"],
+                        int(row["price"]) + option_surcharge(row["selected_option"]),
                         row["quantity"], row["selected_option"],
                     )
                     await conn.execute("UPDATE web_products SET stock = stock - $2, updated_at = CURRENT_TIMESTAMP WHERE id = $1", row["product_id"], row["quantity"])
@@ -1236,16 +1269,13 @@ class StoreServer:
         if not image_url:
             raise StoreError("상품 이미지를 URL 또는 파일로 등록해 주세요.")
         option_label = str(data.get("option_label", "색상")).strip()
-        if option_label not in {"색상", "맛"}:
-            raise StoreError("상품 옵션은 색상 또는 맛으로 선택해 주세요.")
-        raw_options = data.get("options", [])
-        if isinstance(raw_options, str):
-            raw_options = raw_options.replace("\r", "\n").replace(",", "\n").split("\n")
-        options = list(dict.fromkeys(str(value).strip() for value in raw_options if str(value).strip()))
+        if option_label not in {"색상", "맛", "패키지"}:
+            raise StoreError("상품 옵션은 색상, 맛 또는 패키지로 선택해 주세요.")
+        options = parse_product_options(data.get("options", []))
         if not options:
-            raise StoreError("색상 또는 맛을 한 개 이상 입력해 주세요.")
+            raise StoreError("색상, 맛 또는 패키지 옵션을 한 개 이상 입력해 주세요.")
         if len(options) > 50:
-            raise StoreError("색상 또는 맛은 최대 50개까지 등록할 수 있습니다.")
+            raise StoreError("색상, 맛 또는 패키지 옵션은 최대 50개까지 등록할 수 있습니다.")
         args = (
             self.guild_id, int(data["category_id"]), name,
             str(data.get("description", "")).strip(), price, stock,
@@ -1317,18 +1347,11 @@ class StoreServer:
         if manual_price < 0:
             raise StoreError("판매 가격을 올바르게 입력해 주세요.")
         option_label = str(data.get("option_label", "색상")).strip()
-        if option_label not in {"색상", "맛"}:
-            raise StoreError("상품 옵션은 색상 또는 맛으로 선택해 주세요.")
-        raw_options = data.get("options", "")
-        if isinstance(raw_options, str):
-            raw_options = raw_options.replace("\r", "\n").replace(",", "\n").split("\n")
-        if not isinstance(raw_options, list):
-            raise StoreError("색상 또는 맛 목록을 확인해 주세요.")
-        manual_options = list(dict.fromkeys(
-            str(value).strip() for value in raw_options if str(value).strip()
-        ))
+        if option_label not in {"색상", "맛", "패키지"}:
+            raise StoreError("상품 옵션은 색상, 맛 또는 패키지로 선택해 주세요.")
+        manual_options = parse_product_options(data.get("options", ""))
         if len(manual_options) > 50:
-            raise StoreError("색상 또는 맛은 최대 50개까지 입력할 수 있습니다.")
+            raise StoreError("색상, 맛 또는 패키지 옵션은 최대 50개까지 입력할 수 있습니다.")
         if self._product_sync_lock.locked():
             raise StoreError("다른 상품 가져오기가 진행 중입니다. 잠시 후 다시 시도해 주세요.", 409)
 
