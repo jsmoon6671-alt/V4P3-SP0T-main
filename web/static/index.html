@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@500;600;700;800&family=Noto+Sans+KR:wght@500;600;700;800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/static/styles.css?v=20261010-10">
+  <link rel="stylesheet" href="/static/styles.css?v=20261010-11">
 </head>
 <body>
   <div class="grain"></div>
@@ -126,6 +126,17 @@
     </section>
   </main>
 
+  <section id="review-showcase" class="review-showcase" aria-labelledby="review-showcase-title" hidden>
+    <div class="review-showcase-head">
+      <p class="eyebrow">CUSTOMER REVIEWS</p>
+      <h2 id="review-showcase-title">사진으로 확인하는 구매 후기</h2>
+      <p>Discord에서 작성된 별점 5점 사진 후기입니다.</p>
+    </div>
+    <div class="review-marquee">
+      <div id="review-track" class="review-track"></div>
+    </div>
+  </section>
+
   <div id="editor" class="modal-backdrop" hidden>
     <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="editor-title">
       <form id="editor-form" class="form-panel">
@@ -152,14 +163,14 @@
     <div class="modal-card notice-card" role="dialog" aria-modal="true" aria-labelledby="discord-notice-title">
       <div class="notice-content">
         <p class="eyebrow">V4P3 SP0T DISCORD</p>
-        <h2 id="discord-notice-title">Discord 서버에 먼저 가입해 주세요.</h2>
-        <p>상품 구매와 주문 알림, 구매후기는 V4P3 SP0T Discord 서버에서 함께 확인할 수 있습니다.</p>
-        <a class="button wide" href="https://discord.gg/v4p3sp0t" target="_blank" rel="noopener">Discord 서버 가입하기</a>
+        <h2 id="discord-notice-title">V4P3 SP0T Discord 서버 안내</h2>
+        <p>Discord 로그인 시 서버에 가입되어 있지 않으면 로그인 승인과 함께 자동으로 가입됩니다. 상품 구매와 주문 알림, 구매후기는 Discord 서버에서 함께 확인할 수 있습니다.</p>
+        <a class="button wide" href="https://discord.gg/v4p3sp0t" target="_blank" rel="noopener">Discord 서버 확인하기</a>
         <div class="notice-actions"><button type="button" id="notice-close" class="button secondary">닫기</button><button type="button" id="notice-day" class="button secondary">24시간 동안 닫기</button></div>
       </div>
     </div>
   </div>
   <div id="toast"></div>
-  <script src="/static/app.js?v=20261010-9"></script>
+  <script src="/static/app.js?v=20261010-10"></script>
 </body>
 </html>

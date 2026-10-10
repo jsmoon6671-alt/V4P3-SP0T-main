@@ -39,6 +39,7 @@ COOKIE = "v4p3_session"
 ADMIN_COOKIE = "v4p3_admin"
 SHIPPING_FEE = 3_000
 LOGGER = logging.getLogger(__name__)
+REVIEW_SYNC_INTERVAL = 300
 
 
 class StoreError(Exception):
@@ -91,6 +92,16 @@ async def initialize_web_store_schema(conn):
             product_option TEXT NOT NULL DEFAULT '',
             PRIMARY KEY (order_id, product_id)
         );
+        CREATE TABLE IF NOT EXISTS web_reviews (
+            guild_id BIGINT NOT NULL,
+            discord_message_id BIGINT NOT NULL,
+            user_id BIGINT,
+            rating SMALLINT NOT NULL CHECK (rating BETWEEN 1 AND 5),
+            content TEXT NOT NULL,
+            image_url TEXT NOT NULL DEFAULT '',
+            created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (guild_id, discord_message_id)
+        );
         ALTER TABLE web_categories ADD COLUMN IF NOT EXISTS guild_id BIGINT NOT NULL DEFAULT 0;
         ALTER TABLE web_categories ADD COLUMN IF NOT EXISTS name TEXT NOT NULL DEFAULT '';
         ALTER TABLE web_categories ADD COLUMN IF NOT EXISTS sort_order INTEGER NOT NULL DEFAULT 0;
@@ -124,6 +135,23 @@ async def initialize_web_store_schema(conn):
     await initialize_payment_automation_schema(conn)
 
 
+async def save_web_review(
+    conn, guild_id: int, message_id: int, user_id: int | None,
+    rating: int, content: str, image_url: str = "", created_at=None,
+):
+    await conn.execute(
+        """
+        INSERT INTO web_reviews
+            (guild_id, discord_message_id, user_id, rating, content, image_url)
+        VALUES ($1, $2, $3, $4, $5, $6, COALESCE($7::timestamptz, CURRENT_TIMESTAMP))
+        ON CONFLICT (guild_id, discord_message_id) DO UPDATE SET
+            user_id=EXCLUDED.user_id, rating=EXCLUDED.rating,
+            content=EXCLUDED.content, image_url=EXCLUDED.image_url
+        """,
+        guild_id, message_id, user_id, rating, content.strip(), image_url.strip(), created_at,
+    )
+
+
 def _b64(data: bytes) -> str:
     return base64.urlsafe_b64encode(data).decode().rstrip("=")
 
@@ -142,6 +170,7 @@ class StoreServer:
         self.redirect_uri = os.getenv("DISCORD_REDIRECT_URI", "").strip()
         self.public_url = os.getenv("WEB_PUBLIC_URL", "").rstrip("/")
         self.admin_password = os.getenv("WEB_ADMIN_PASSWORD", "").strip() or "tb9988230.."
+        self._last_review_sync = 0.0
         self.runner: web.AppRunner | None = None
         self.payment_service = PushbulletPaymentService(
             bot,
@@ -228,6 +257,7 @@ class StoreServer:
             web.post("/api/logout", self.logout),
             web.get("/api/me", self.me),
             web.get("/api/catalog", self.catalog),
+            web.get("/api/reviews", self.reviews),
             web.get("/api/stores", self.stores),
             web.get("/api/tracking/carriers", self.tracking_carriers),
             web.post("/api/tracking", self.tracking),
@@ -285,6 +315,75 @@ class StoreServer:
             guild = self.bot.guilds[0]
             self.guild_id = guild.id
         return guild
+
+    @staticmethod
+    def _review_from_message(message):
+        text_parts = []
+
+        def collect(component):
+            payload = component.to_dict() if hasattr(component, "to_dict") else component
+            if not isinstance(payload, dict):
+                return
+            if payload.get("type") == 10 and payload.get("content"):
+                text_parts.append(str(payload["content"]))
+            for child in payload.get("components", []):
+                collect(child)
+
+        for component in getattr(message, "components", []):
+            collect(component)
+
+        rating = 0
+        review = ""
+        for value in text_parts:
+            plain = value.strip().strip("*").strip()
+            if plain and set(plain) == {"⭐"}:
+                rating = len(plain)
+            elif "구매후기" not in plain and len(plain) >= 5:
+                review = plain
+
+        image_url = ""
+        for attachment in getattr(message, "attachments", []):
+            content_type = getattr(attachment, "content_type", "") or ""
+            filename = str(getattr(attachment, "filename", "")).lower()
+            if content_type.startswith("image/") or filename.endswith((".png", ".jpg", ".jpeg", ".webp", ".gif")):
+                image_url = str(getattr(attachment, "url", ""))
+                break
+
+        if rating != 5 or len(review) < 5 or not image_url:
+            return None
+        return rating, review, image_url
+
+    async def _sync_reviews_from_discord(self):
+        if time.monotonic() - self._last_review_sync < REVIEW_SYNC_INTERVAL:
+            return
+        try:
+            guild = self._guild()
+            guild_id = guild.id if guild else self.guild_id
+            if not guild_id:
+                return
+            async with self.bot.db_pool.acquire() as conn:
+                channel_id = await conn.fetchval(
+                    "SELECT review_channel_id FROM guild_settings WHERE guild_id=$1",
+                    guild_id,
+                )
+            channel = self.bot.get_channel(channel_id) if channel_id else None
+            if channel is None or not hasattr(channel, "history"):
+                return
+            self._last_review_sync = time.monotonic()
+            rows = []
+            async for message in channel.history(limit=None):
+                parsed = self._review_from_message(message)
+                if parsed:
+                    rows.append((message, parsed))
+            if rows:
+                async with self.bot.db_pool.acquire() as conn:
+                    for message, (rating, content, image_url) in rows:
+                        await save_web_review(
+                            conn, guild_id, message.id, None,
+                            rating, content, image_url, message.created_at,
+                        )
+        except Exception:
+            LOGGER.exception("Discord 구매후기 동기화 실패: guild=%s", self.guild_id)
 
     async def _user(self, request) -> dict:
         session = request["session"]
@@ -345,8 +444,9 @@ class StoreServer:
             "client_id": self.client_id,
             "redirect_uri": self.redirect_uri,
             "response_type": "code",
-            "scope": "identify",
+            "scope": "identify guilds.join",
             "state": state,
+            "prompt": "consent",
         })
         response = web.HTTPFound(f"https://discord.com/oauth2/authorize?{query}")
         response.set_cookie("v4p3_oauth", self._encode(payload), httponly=True, secure=True, samesite="Lax", max_age=600)
@@ -382,7 +482,29 @@ class StoreServer:
         try:
             member = guild.get_member(int(user["id"])) or await guild.fetch_member(int(user["id"]))
         except Exception:
-            raise StoreError("판매 Discord 서버에 가입한 사용자만 이용할 수 있습니다.", 403)
+            bot_token = os.getenv("BOT_TOKEN", "").strip()
+            if not bot_token:
+                raise StoreError("Discord 서버 자동 가입에 필요한 BOT_TOKEN이 설정되지 않았습니다.", 503)
+            async with aiohttp.ClientSession() as session:
+                async with session.put(
+                    f"https://discord.com/api/v10/guilds/{guild.id}/members/{user['id']}",
+                    headers={"Authorization": f"Bot {bot_token}"},
+                    json={"access_token": token["access_token"]},
+                ) as join_response:
+                    if join_response.status not in {201, 204}:
+                        LOGGER.warning(
+                            "Discord 서버 자동 가입 실패: guild=%s user=%s status=%s body=%s",
+                            guild.id, user["id"], join_response.status,
+                            (await join_response.text())[:300],
+                        )
+                        raise StoreError(
+                            "Discord 서버 자동 가입에 실패했습니다. 잠시 후 다시 로그인해 주세요.",
+                            502,
+                        )
+            try:
+                member = guild.get_member(int(user["id"])) or await guild.fetch_member(int(user["id"]))
+            except Exception as exc:
+                raise StoreError("Discord 서버 가입 확인에 실패했습니다. 다시 로그인해 주세요.", 502) from exc
         csrf = secrets.token_urlsafe(24)
         payload = {
             "id": str(user["id"]),
@@ -439,6 +561,27 @@ class StoreServer:
             )
         return web.json_response(
             {"products": [dict(row) for row in rows]},
+            dumps=lambda value: json.dumps(value, ensure_ascii=False, default=str),
+        )
+
+    async def reviews(self, request):
+        await self._sync_reviews_from_discord()
+        guild = self._guild()
+        guild_id = guild.id if guild else self.guild_id
+        async with self.bot.db_pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT discord_message_id AS id, rating, content, image_url, created_at
+                FROM web_reviews
+                WHERE guild_id=$1 AND rating=5
+                  AND CHAR_LENGTH(BTRIM(content)) >= 5
+                  AND BTRIM(image_url) <> ''
+                ORDER BY created_at DESC
+                """,
+                guild_id,
+            )
+        return web.json_response(
+            {"reviews": [dict(row) for row in rows]},
             dumps=lambda value: json.dumps(value, ensure_ascii=False, default=str),
         )
 

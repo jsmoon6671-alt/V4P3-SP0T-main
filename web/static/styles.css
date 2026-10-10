@@ -181,6 +181,23 @@ h3,strong { font-weight: 800; }
 .completion-review b { color: var(--accent-hover); }
 .pulse { width: 16px; height: 16px; border-radius: 3px; background: var(--accent); margin: 0 auto 20px; }
 #bank-info { padding: 18px; background: var(--surface-2); border: 1px solid var(--line); border-radius: 4px; margin: 20px 0; }
+
+.review-showcase { overflow: hidden; padding: 64px 0 78px; border-top: 1px solid var(--line); background: #080d0a; }
+.review-showcase[hidden] { display: none; }
+.review-showcase-head { max-width: 1500px; margin: 0 auto 26px; padding: 0 42px; }
+.review-showcase-head h2 { margin: 7px 0 9px; font-size: clamp(28px,3vw,42px); }
+.review-showcase-head>p:last-child { margin: 0; color: var(--muted); }
+.review-marquee { overflow: hidden; padding-bottom: 4px; -webkit-mask-image: linear-gradient(90deg,transparent,#000 6%,#000 94%,transparent); mask-image: linear-gradient(90deg,transparent,#000 6%,#000 94%,transparent); }
+.review-track { --review-duration: 42s; display: flex; width: max-content; will-change: transform; animation: review-scroll var(--review-duration) linear infinite; }
+.review-track:hover { animation-play-state: paused; }
+.review-group { display: flex; flex: none; gap: 18px; padding-right: 18px; }
+.review-card { width: clamp(270px,24vw,350px); overflow: hidden; border: 1px solid var(--line-strong); border-radius: 14px; background: var(--surface); box-shadow: 0 14px 32px rgba(0,0,0,.2); }
+.review-card img { display: block; width: 100%; aspect-ratio: 4 / 3; object-fit: cover; background: #0b120e; }
+.review-card-body { padding: 17px 18px 19px; }
+.review-stars { color: #ffd45c; font-size: 17px; font-weight: 800; letter-spacing: 2px; }
+.review-card p { display: -webkit-box; min-height: 48px; margin: 10px 0 0; overflow: hidden; color: #d9e2dc; line-height: 1.6; white-space: pre-line; -webkit-box-orient: vertical; -webkit-line-clamp: 3; }
+@keyframes review-scroll { to { transform: translateX(-50%); } }
+
 .metrics { display: grid; grid-template-columns: repeat(4,1fr); gap: 13px; margin-bottom: 20px; }
 .metric { background: #0e1511; border: 1px solid var(--line); border-top: 2px solid #315c43; border-radius: 4px; padding: 20px; }
 .metric small { color: var(--muted); }
@@ -245,4 +262,11 @@ h3,strong { font-weight: 800; }
   .quantity-stepper button { width: 28px; height: 30px; }
   .quantity-stepper input[type="number"] { width: 34px; height: 30px; }
   .cart-controls .remove { min-height: 32px; padding: 5px 9px; }
+  .review-showcase { padding: 48px 0 58px; }
+  .review-showcase-head { padding: 0 16px; }
+  .review-card { width: 260px; }
+}
+
+@media(prefers-reduced-motion:reduce) {
+  .review-track { animation-play-state: paused; }
 }

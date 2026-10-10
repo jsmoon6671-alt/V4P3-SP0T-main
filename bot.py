@@ -43,7 +43,7 @@ from chat_ranking import (
 )
 from database import initialize_database
 from order_editing import build_purchase_log_payload, register_order_edit_command
-from web_store import start_web_store
+from web_store import save_web_review, start_web_store
 from web_order_progress import (
     WebOrderProgressCog,
     handle_web_progress_interaction,
@@ -2826,14 +2826,28 @@ async def write_review(
 
     # 1. 후기 등록
     route = discord.http.Route("POST", f"/channels/{review_channel.id}/messages")
+    sent_review = None
     if watermarked_file:
         with discord.http.handle_message_parameters(file=watermarked_file) as params:
             params.multipart[0]["value"] = json.dumps(
                 review_payload, ensure_ascii=False, separators=(",", ":")
             )
-            await interaction.client.http.request(route, files=params.files, form=params.multipart)
+            sent_review = await interaction.client.http.request(route, files=params.files, form=params.multipart)
     else:
-        await interaction.client.http.request(route, json=review_payload)
+        sent_review = await interaction.client.http.request(route, json=review_payload)
+
+    # 웹 스토어의 후기 영역에서도 같은 후기를 사용할 수 있도록 함께 저장합니다.
+    try:
+        message_id = int((sent_review or {}).get("id") or interaction.id)
+        sent_attachments = (sent_review or {}).get("attachments") or []
+        image_url = str(sent_attachments[0].get("url", "")) if sent_attachments else ""
+        async with bot.db_pool.acquire() as conn:
+            await save_web_review(
+                conn, interaction.guild.id, message_id, interaction.user.id,
+                별점.value, real_review_content, image_url,
+            )
+    except Exception:
+        logging.exception("웹 구매후기 저장 실패: interaction=%s", interaction.id)
     
     reward_text = ""
     try:
