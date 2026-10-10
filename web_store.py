@@ -85,8 +85,13 @@ async def initialize_web_store_schema(conn):
             product_option TEXT NOT NULL DEFAULT '',
             PRIMARY KEY (order_id, product_id)
         );
+        ALTER TABLE web_categories ADD COLUMN IF NOT EXISTS guild_id BIGINT NOT NULL DEFAULT 0;
+        ALTER TABLE web_categories ADD COLUMN IF NOT EXISTS name TEXT NOT NULL DEFAULT '';
         ALTER TABLE web_categories ADD COLUMN IF NOT EXISTS sort_order INTEGER NOT NULL DEFAULT 0;
         ALTER TABLE web_categories ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP;
+        ALTER TABLE web_products ADD COLUMN IF NOT EXISTS guild_id BIGINT NOT NULL DEFAULT 0;
+        ALTER TABLE web_products ADD COLUMN IF NOT EXISTS category_id BIGINT;
+        ALTER TABLE web_products ADD COLUMN IF NOT EXISTS name TEXT NOT NULL DEFAULT '';
         ALTER TABLE web_products ADD COLUMN IF NOT EXISTS description TEXT NOT NULL DEFAULT '';
         ALTER TABLE web_products ADD COLUMN IF NOT EXISTS price BIGINT NOT NULL DEFAULT 0;
         ALTER TABLE web_products ADD COLUMN IF NOT EXISTS stock INTEGER NOT NULL DEFAULT 0;
@@ -238,6 +243,16 @@ class StoreServer:
         self.app.router.add_get(r"/{tail:.*}", self.index)
 
     async def start(self):
+        if self.guild_id:
+            async with self.bot.db_pool.acquire() as conn:
+                await conn.execute(
+                    "UPDATE web_categories SET guild_id=$1 WHERE guild_id=0",
+                    self.guild_id,
+                )
+                await conn.execute(
+                    "UPDATE web_products SET guild_id=$1 WHERE guild_id=0",
+                    self.guild_id,
+                )
         self.runner = web.AppRunner(self.app, access_log=None)
         await self.runner.setup()
         host = os.getenv("WEB_HOST", "0.0.0.0")
