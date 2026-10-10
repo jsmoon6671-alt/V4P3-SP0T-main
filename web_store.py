@@ -142,7 +142,7 @@ async def save_web_review(
     await conn.execute(
         """
         INSERT INTO web_reviews
-            (guild_id, discord_message_id, user_id, rating, content, image_url)
+            (guild_id, discord_message_id, user_id, rating, content, image_url, created_at)
         VALUES ($1, $2, $3, $4, $5, $6, COALESCE($7::timestamptz, CURRENT_TIMESTAMP))
         ON CONFLICT (guild_id, discord_message_id) DO UPDATE SET
             user_id=EXCLUDED.user_id, rating=EXCLUDED.rating,
@@ -369,7 +369,6 @@ class StoreServer:
             channel = self.bot.get_channel(channel_id) if channel_id else None
             if channel is None or not hasattr(channel, "history"):
                 return
-            self._last_review_sync = time.monotonic()
             rows = []
             async for message in channel.history(limit=None):
                 parsed = self._review_from_message(message)
@@ -382,6 +381,7 @@ class StoreServer:
                             conn, guild_id, message.id, None,
                             rating, content, image_url, message.created_at,
                         )
+            self._last_review_sync = time.monotonic()
         except Exception:
             LOGGER.exception("Discord 구매후기 동기화 실패: guild=%s", self.guild_id)
 
