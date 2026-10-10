@@ -105,6 +105,9 @@ h3,strong { font-weight: 800; }
 .shipping-notice strong { color: var(--accent-hover); }
 .order-summary .panel-head>span { color: var(--muted); font-size: 12px; }
 .summary-lines { margin: 14px 0 18px; border-top: 1px solid var(--line); }
+.summary-lines .discount { color: #8edfb4; }
+.summary-lines .discount strong { color: var(--accent-hover); }
+.summary-lines .total-row[hidden] { display: none; }
 .summary-lines .grand { margin-top: 3px; border-bottom: 0; color: var(--accent-hover); }
 
 .point-card { background: #0f2a1b; border: 1px solid #24583d; border-left: 4px solid var(--accent); border-radius: 5px; padding: 24px; display: grid; margin-bottom: 20px; }

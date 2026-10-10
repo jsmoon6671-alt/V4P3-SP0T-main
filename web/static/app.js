@@ -307,11 +307,17 @@ async function saveCartRow(productId, quantity, selectedOption = null) {
 function cartTotal() {
   const selectedRows = state.cart.filter(item => state.selected.has(Number(item.product_id)));
   const subtotal = selectedRows.reduce((sum, item) => sum + Number(item.price) * Number(item.quantity), 0);
-  const total = selectedRows.length ? subtotal + 3000 : 0;
+  const shipping = selectedRows.length ? 3000 : 0;
+  const beforeDiscount = subtotal + shipping;
+  const discount = checkoutPointDiscount(beforeDiscount);
+  const total = Math.max(0, beforeDiscount - discount);
   $("#cart-subtotal").textContent = money(subtotal);
+  $("#cart-shipping").textContent = money(shipping);
+  $("#cart-discount").textContent = `-${money(discount)}`;
+  $("#cart-discount-row").hidden = discount === 0;
   $("#cart-total").textContent = money(total);
   $("#selected-count").textContent = `${selectedRows.length}개 선택`;
-  updatePointUseHint(total);
+  updatePointUseHint(beforeDiscount);
 }
 
 async function loadCheckoutCustomer() {
@@ -325,6 +331,7 @@ async function loadCheckoutCustomer() {
     state.pointBalance = Number(data.points || 0);
     $("#checkout-point-balance").textContent = `보유 ${state.pointBalance.toLocaleString()}P`;
     updatePointUseHint();
+    cartTotal();
   } catch (error) {
     toast(error.message);
   }
@@ -344,6 +351,13 @@ function maximumCheckoutPoints(total = selectedCartTotal()) {
   const balance = Number.isFinite(state.pointBalance) ? Math.max(0, state.pointBalance) : 0;
   const maximum = Math.min(balance, 2000, Math.max(0, Number(total) || 0));
   return maximum >= 500 ? maximum : 0;
+}
+
+function checkoutPointDiscount(total = selectedCartTotal()) {
+  const input = $("#checkout-form [name=\"points\"]");
+  const points = Number(input?.value || 0);
+  const maximum = maximumCheckoutPoints(total);
+  return Number.isInteger(points) && points >= 500 && points <= maximum ? points : 0;
 }
 
 function updatePointUseHint(total = selectedCartTotal()) {
@@ -378,6 +392,7 @@ function useAllPoints() {
     return;
   }
   $("#checkout-form [name=\"points\"]").value = maximum;
+  cartTotal();
   toast(`${maximum.toLocaleString()}P를 적용했습니다.`);
 }
 
@@ -493,6 +508,7 @@ async function loadAccount() {
     state.pointBalance = Number(customer.points || 0);
     $("#point-balance").textContent = `${state.pointBalance.toLocaleString()}P`;
     $("#checkout-point-balance").textContent = `보유 ${state.pointBalance.toLocaleString()}P`;
+    cartTotal();
     $("#orders").innerHTML = orders.orders.length ? orders.orders.map(order => {
       const progress = orderProgress(order);
       return `<article class="order">
@@ -566,6 +582,7 @@ function bindForms() {
   $("#account-logout").onclick = logout;
   $("#checkout-form").onsubmit = checkout;
   $("#use-all-points").onclick = useAllPoints;
+  $("#checkout-form [name=\"points\"]").oninput = cartTotal;
   $("#tracking-form").onsubmit = trackDelivery;
   $("#channel-form").onsubmit = saveChannels;
   $("#shipping-method").onchange = updateShippingMode;
