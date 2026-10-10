@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#101412">
+  <title>V4P3 SP0T</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Gowun+Dodum&family=Manrope:wght@500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <div class="grain"></div>
+  <header class="site-header">
+    <a class="brand" href="#home"><span>V4P3</span> SP0T</a>
+    <nav id="nav">
+      <a href="#home">스토어</a><a href="#account">내 정보</a><a href="#cart">장바구니 <b id="cart-count">0</b></a>
+      <a href="#admin" id="admin-link" hidden>관리자</a>
+    </nav>
+    <button class="button small" id="login-button">Discord 로그인</button>
+  </header>
+
+  <main>
+    <section id="home" class="page active">
+      <div class="hero">
+        <div>
+          <p class="eyebrow">V4P3 SP0T SELECT</p>
+          <h1>필요한 제품을<br>한눈에 고르세요.</h1>
+          <p>Discord 계정으로 로그인하고 상품 선택부터 입금 확인까지 한곳에서 진행할 수 있습니다.</p>
+        </div>
+        <div class="hero-card"><span>자동 입금 확인</span><strong>5:00</strong><small>주문 신청 뒤 입금 가능 시간</small></div>
+      </div>
+      <div class="toolbar"><h2>전체 상품</h2><div id="category-tabs" class="tabs"></div></div>
+      <div id="products" class="product-grid"></div>
+    </section>
+
+    <section id="account" class="page">
+      <div class="page-title"><p class="eyebrow">MY ACCOUNT</p><h1>고객정보와 주문내역</h1></div>
+      <div class="two-column">
+        <form id="customer-form" class="panel form-panel">
+          <h2>배송 정보</h2><p>주문에 사용할 정보를 입력해 주세요.</p>
+          <label>이름<input name="name" required></label>
+          <label>연락처<input name="contact" required></label>
+          <label>주소<textarea name="address" required></textarea></label>
+          <label>편의점명 또는 배송 메모<input name="cvs"></label>
+          <button class="button" type="submit">정보 저장</button>
+        </form>
+        <div><div class="point-card"><small>사용 가능 포인트</small><strong id="point-balance">0P</strong><span>1P = 1원 할인</span></div><div id="orders" class="order-list"></div></div>
+      </div>
+    </section>
+
+    <section id="cart" class="page">
+      <div class="page-title"><p class="eyebrow">YOUR CART</p><h1>장바구니</h1></div>
+      <div class="checkout-grid">
+        <div id="cart-items" class="panel"></div>
+        <form id="checkout-form" class="panel form-panel sticky">
+          <h2>주문 신청</h2>
+          <div class="total-row"><span>상품 합계</span><strong id="cart-total">0원</strong></div>
+          <label>입금자명<input name="depositor_name" required maxlength="30"></label>
+          <label>사용 포인트<input name="points" type="number" min="0" max="2000" value="0"></label>
+          <label class="check"><input name="adult_confirmed" type="checkbox" required><span>본인은 성인이며 구매 내용을 확인했습니다.</span></label>
+          <button class="button wide" type="submit">주문하고 5분 타이머 시작</button>
+          <small class="hint">입금자명과 결제금액이 알림과 정확히 일치하면 자동 승인됩니다.</small>
+        </form>
+      </div>
+    </section>
+
+    <section id="complete" class="page">
+      <div class="completion panel"><div class="pulse"></div><p class="eyebrow">PAYMENT WAITING</p><h1>입금을 기다리고 있습니다.</h1><p>주문번호 <b id="complete-order"></b></p><strong id="countdown">05:00</strong><div id="bank-info"></div><p id="payment-status">푸시불렛 입금 알림을 기다리는 중입니다.</p><a class="button" href="#account">주문내역 보기</a></div>
+    </section>
+
+    <section id="admin" class="page">
+      <div class="page-title"><p class="eyebrow">STORE CONTROL</p><h1>관리자 대시보드</h1></div>
+      <div id="metrics" class="metrics"></div>
+      <div class="admin-grid"><div class="panel"><div class="panel-head"><h2 id="trend-title">최근 7일 매출</h2><div class="tabs period-tabs"><button class="active" data-period="week">주간</button><button data-period="month">월간</button><button data-period="year">연간</button></div></div><div id="trend" class="bars"></div></div><div class="panel"><h2>카테고리별 인기 상품 TOP 5</h2><div id="top-products"></div></div></div>
+      <div class="admin-grid">
+        <div class="panel"><div class="panel-head"><h2>카테고리</h2><button class="text-button" data-modal="category">+ 추가</button></div><div id="category-admin"></div></div>
+        <div class="panel"><div class="panel-head"><h2>상품 관리</h2><button class="text-button" data-modal="product">+ 상품 추가</button></div><div id="product-admin"></div></div>
+      </div>
+      <form id="channel-form" class="panel form-panel channels"><h2>Discord 채널 설정</h2><label>결제 승인 채널 ID<input name="approval_channel_id"></label><label>구매로그 채널 ID<input name="log_channel_id"></label><label>구매자정보 채널 ID<input name="buyer_info_channel_id"></label><label>구매후기 채널 ID<input name="review_channel_id"></label><button class="button" type="submit">채널 저장</button></form>
+    </section>
+  </main>
+
+  <dialog id="editor"><form method="dialog" id="editor-form" class="form-panel"><button class="dialog-close" value="cancel">×</button><h2 id="editor-title">추가</h2><div id="editor-fields"></div><button class="button wide" value="default">저장</button></form></dialog>
+  <div id="toast"></div>
+  <script src="/static/app.js"></script>
+</body>
+</html>

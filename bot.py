@@ -43,6 +43,7 @@ from chat_ranking import (
 )
 from database import initialize_database
 from order_editing import build_purchase_log_payload, register_order_edit_command
+from web_store import start_web_store
 
 # 한국 표준시(KST) 설정
 KST = datetime.timezone(datetime.timedelta(hours=9))
@@ -174,6 +175,8 @@ class MyBot(commands.Bot):
     def __init__(self):
         super().__init__(command_prefix='!', intents=intents, tree_cls=AdminCommandTree)
         self.db_pool = None
+        self.web_store = None
+        self.refresh_purchase_leaderboard = None
 
     async def setup_hook(self):
         # Railway의 DATABASE_URL 환경 변수를 가져와서 PostgreSQL 연결
@@ -191,8 +194,20 @@ class MyBot(commands.Bot):
         if self.db_pool is not None:
             await self.add_cog(ChatPointsCog(self))
             await self.add_cog(ChatRankingCog(self))
+            self.refresh_purchase_leaderboard = update_leaderboard
+            if os.getenv("WEB_STORE_ENABLED", "true").lower() not in {"0", "false", "off", "no"}:
+                self.web_store = await start_web_store(self)
         leaderboard_updater.start()  # 실시간 랭킹 및 인기 품목 루프 시작
         print('✅ 슬래시 명령어 동기화 및 랭킹/인기 시스템이 시작되었습니다!')
+
+    async def close(self):
+        if self.web_store is not None:
+            await self.web_store.close()
+            self.web_store = None
+        if self.db_pool is not None:
+            await self.db_pool.close()
+            self.db_pool = None
+        await super().close()
 
 bot = MyBot()
 register_event_command(bot)
