@@ -573,6 +573,7 @@ function bindForms() {
   $("#store-results").onchange = chooseStore;
   $("#add-category").onclick = () => openEditor("category");
   $("#add-product").onclick = () => openEditor("product");
+  $("#sync-products").onclick = syncProducts;
   $("#editor-close").onclick = closeEditor;
   $("#editor").onclick = event => { if (event.target === $("#editor")) closeEditor(); };
   $("#admin-password-form").onsubmit = unlockAdmin;
@@ -870,6 +871,25 @@ async function saveChannels(event) {
     toast("Discord 채널을 저장했습니다.");
   } catch (error) {
     toast(error.message);
+  }
+}
+
+async function syncProducts() {
+  if (!confirm("비비빈스와 일렉샵의 기기 상품을 가져올까요?\n판매 가격에는 3,000원이 더해집니다.")) return;
+  const button = $("#sync-products");
+  const label = button.textContent;
+  button.disabled = true;
+  button.textContent = "상품 확인 중...";
+  try {
+    const result = await api("/api/admin/products/sync", { method: "POST", body: "{}" });
+    await Promise.all([loadAdmin(), loadCatalog()]);
+    const warningCount = Object.keys(result.warnings || {}).length;
+    toast(`상품 ${result.total}개 확인 · 신규 ${result.inserted}개 · 갱신 ${result.updated}개${result.unknown_options ? ` · 색상 확인 필요 ${result.unknown_options}개` : ""}${warningCount ? ` · 일부 쇼핑몰 확인 실패 ${warningCount}곳` : ""}`);
+  } catch (error) {
+    toast(error.message);
+  } finally {
+    button.disabled = false;
+    button.textContent = label;
   }
 }
 

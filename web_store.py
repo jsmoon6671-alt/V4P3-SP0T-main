@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import asyncio
 import hashlib
 import hmac
 import json
@@ -32,6 +33,7 @@ from payment_automation import (
     arm_web_payment,
     initialize_payment_automation_schema,
 )
+from product_scraper import scrape_device_stores, sync_scraped_products
 from store_lookup import StoreLookupError, search_stores
 
 
@@ -104,6 +106,17 @@ async def initialize_web_store_schema(conn):
             created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
             PRIMARY KEY (guild_id, discord_message_id)
         );
+        CREATE TABLE IF NOT EXISTS web_product_sources (
+            guild_id BIGINT NOT NULL,
+            source_site TEXT NOT NULL,
+            source_key TEXT NOT NULL,
+            product_id BIGINT NOT NULL REFERENCES web_products(id) ON DELETE CASCADE,
+            source_url TEXT NOT NULL DEFAULT '',
+            source_price BIGINT NOT NULL DEFAULT 0,
+            disabled_by_admin BOOLEAN NOT NULL DEFAULT FALSE,
+            synced_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (guild_id, source_site, source_key)
+        );
         ALTER TABLE web_categories ADD COLUMN IF NOT EXISTS guild_id BIGINT NOT NULL DEFAULT 0;
         ALTER TABLE web_categories ADD COLUMN IF NOT EXISTS name TEXT NOT NULL DEFAULT '';
         ALTER TABLE web_categories ADD COLUMN IF NOT EXISTS sort_order INTEGER NOT NULL DEFAULT 0;
@@ -122,6 +135,7 @@ async def initialize_web_store_schema(conn):
         ALTER TABLE web_products ADD COLUMN IF NOT EXISTS options TEXT[] NOT NULL DEFAULT '{}';
         ALTER TABLE web_cart_items ADD COLUMN IF NOT EXISTS selected_option TEXT NOT NULL DEFAULT '';
         ALTER TABLE web_order_items ADD COLUMN IF NOT EXISTS product_option TEXT NOT NULL DEFAULT '';
+        ALTER TABLE web_product_sources ADD COLUMN IF NOT EXISTS disabled_by_admin BOOLEAN NOT NULL DEFAULT FALSE;
         ALTER TABLE orders ADD COLUMN IF NOT EXISTS shipping_name TEXT;
         ALTER TABLE orders ADD COLUMN IF NOT EXISTS shipping_contact TEXT;
         ALTER TABLE orders ADD COLUMN IF NOT EXISTS shipping_address TEXT;
@@ -178,6 +192,7 @@ class StoreServer:
         self.public_url = os.getenv("WEB_PUBLIC_URL", "").rstrip("/")
         self.admin_password = os.getenv("WEB_ADMIN_PASSWORD", "").strip() or "tb9988230.."
         self._last_review_sync = 0.0
+        self._product_sync_lock = asyncio.Lock()
         self.runner: web.AppRunner | None = None
         self.payment_service = PushbulletPaymentService(
             bot,
@@ -284,6 +299,7 @@ class StoreServer:
             web.delete(r"/api/admin/categories/{category_id:\d+}", self.admin_delete_category),
             web.get("/api/admin/products", self.admin_products),
             web.post("/api/admin/products", self.admin_save_product),
+            web.post("/api/admin/products/sync", self.admin_sync_products),
             web.delete(r"/api/admin/products/{product_id:\d+}", self.admin_delete_product),
             web.get("/api/admin/channels", self.admin_channels),
             web.put("/api/admin/channels", self.admin_save_channels),
@@ -1125,6 +1141,26 @@ class StoreServer:
                 await conn.execute("INSERT INTO web_products (guild_id,category_id,name,description,price,stock,image_url,option_label,options,is_active) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)", *args)
         return web.json_response({"ok": True})
 
+    async def admin_sync_products(self, request):
+        await self._admin(request)
+        if self._product_sync_lock.locked():
+            raise StoreError("상품 동기화가 이미 진행 중입니다. 잠시 후 다시 확인해 주세요.", 409)
+        async with self._product_sync_lock:
+            try:
+                grouped, errors = await scrape_device_stores()
+            except RuntimeError as exc:
+                raise StoreError(str(exc), 502) from exc
+            async with self.bot.db_pool.acquire() as conn:
+                summary = await sync_scraped_products(conn, self.guild_id, grouped)
+        summary["total"] = sum(len(products) for products in grouped.values())
+        summary["unknown_options"] = sum(
+            product.options == ["색상은 구매티켓에서 확인"]
+            for products in grouped.values() for product in products
+        )
+        summary["sources"] = {site: len(products) for site, products in grouped.items()}
+        summary["warnings"] = errors
+        return web.json_response(summary, dumps=lambda value: json.dumps(value, ensure_ascii=False))
+
     async def admin_delete_product(self, request):
         await self._admin(request)
         product_id = int(request.match_info["product_id"])
@@ -1137,6 +1173,10 @@ class StoreServer:
                 if deleted:
                     await conn.execute(
                         "DELETE FROM web_cart_items WHERE product_id=$1 AND guild_id=$2",
+                        product_id, self.guild_id,
+                    )
+                    await conn.execute(
+                        "UPDATE web_product_sources SET disabled_by_admin=TRUE WHERE product_id=$1 AND guild_id=$2",
                         product_id, self.guild_id,
                     )
         if not deleted:
