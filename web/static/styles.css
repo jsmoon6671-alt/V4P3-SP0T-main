@@ -18,6 +18,30 @@ button,a { -webkit-tap-highlight-color: transparent; }
 .shipping-banner strong { color: var(--accent-hover); }
 .shipping-banner button { position: absolute; right: clamp(16px,3vw,46px); top: 50%; width: 28px; height: 28px; padding: 0; transform: translateY(-50%); border: 0; border-radius: 8px; background: transparent; color: #a8c5b4; font-size: 23px; line-height: 1; cursor: pointer; }
 .shipping-banner button:hover { background: rgba(255,255,255,.07); color: #fff; }
+.tier-page-title { padding-bottom: 22px; }
+.tier-page-title h1 { margin-bottom: 12px; }
+.tier-page-title>p:last-child { max-width: 620px; margin: 0; color: var(--muted); line-height: 1.7; }
+.tier-guide { display: grid; grid-template-columns: repeat(3,1fr); gap: 1px; padding: 0; overflow: hidden; margin-bottom: 22px; background: var(--line); }
+.tier-guide>div { display: grid; gap: 7px; padding: 20px; background: var(--surface); }
+.tier-guide strong { color: var(--accent-hover); font-size: 13px; }
+.tier-guide span { color: var(--muted); font-size: 12px; line-height: 1.5; }
+.tier-grid { display: grid; grid-template-columns: repeat(3,1fr); gap: 16px; }
+.tier-card { min-height: 235px; display: flex; flex-direction: column; padding: 24px; border: 1px solid var(--line-strong); border-radius: 10px; background: linear-gradient(145deg,#132219,#0d1511 70%); position: relative; overflow: hidden; }
+.tier-card::after { content: ""; width: 150px; height: 150px; position: absolute; right: -48px; bottom: -65px; border-radius: 50%; background: currentColor; opacity: .06; }
+.tier-card-top { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.tier-icon { display: grid; place-items: center; width: 34px; height: 34px; border-radius: 10px; background: rgba(40,207,124,.14); color: var(--accent-hover); font-size: 18px; }
+.tier-rank { color: var(--muted); font-size: 10px; font-weight: 800; letter-spacing: .14em; }
+.tier-card h2 { margin: 27px 0 8px; font-size: 23px; letter-spacing: -.04em; }
+.tier-condition { margin: 0 0 4px; color: var(--muted); font-size: 12px; }
+.tier-card>strong { color: var(--text); font-size: 21px; letter-spacing: -.03em; }
+.tier-benefit { display: flex; justify-content: space-between; gap: 10px; margin-top: auto; padding-top: 17px; border-top: 1px solid rgba(255,255,255,.08); color: var(--muted); font-size: 11px; }
+.tier-benefit b { color: #b5c4bb; font-weight: 700; }
+.tier-god { border-color: #b9964d; color: #e5bc6b; background: linear-gradient(145deg,#272118,#101510 72%); }
+.tier-master { border-color: #567d9f; color: #8bbce5; }
+.tier-royal { border-color: #755c9d; color: #b69be9; }
+.tier-svip { border-color: #398a6d; color: #6edcaf; }
+.tier-vvip { border-color: #2b6d5c; color: #54c59a; }
+.tier-vip { border-color: #2b5947; color: #3da678; }
 
 .site-header { width: 100%; min-height: 72px; display: flex; flex-direction: row; align-items: center; gap: 22px; padding: 12px clamp(18px,3vw,48px); border-bottom: 1px solid var(--line); position: sticky; left: 0; top: 0; background: rgba(8,13,10,.97); backdrop-filter: blur(14px); z-index: 50; }
 .brand { flex: 0 0 auto; color: var(--text); font-size: 23px; font-weight: 800; letter-spacing: -1px; text-decoration: none; margin: 0 8px 0 0; padding: 0; border: 0; white-space: nowrap; }
@@ -277,6 +301,8 @@ h3,strong { font-weight: 800; }
   .shipping-banner { align-items: flex-start; padding: 10px 48px 10px 15px; }
   .shipping-banner p { display: grid; justify-items: start; gap: 2px; text-align: left; font-size: 11px; line-height: 1.45; }
   .shipping-banner button { right: 12px; }
+  .tier-guide { grid-template-columns: 1fr; }
+  .tier-grid { grid-template-columns: 1fr; }
   .product-grid { grid-template-columns: 1fr; }
   .hero h1 { font-size: 44px; }
   .toolbar { align-items: flex-start; flex-direction: column; }

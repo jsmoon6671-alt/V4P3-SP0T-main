@@ -68,6 +68,7 @@ function route() {
     loadCheckoutCustomer();
   }
   if (id === "tracking" && state.me) loadCarriers().then(applyTrackingPreset);
+  if (id === "tiers") renderTiers();
   if (id === "admin") openAdminGate();
   scrollTo(0, 0);
 }
@@ -111,6 +112,29 @@ async function loadCatalog() {
   state.products = data.products;
   renderTabs();
   renderProducts();
+}
+
+const MEMBERSHIP_TIERS = [
+  { name: "VAPE GOD", required: 1000000, tone: "god", icon: "♛" },
+  { name: "VAPE MASTER", required: 800000, tone: "master", icon: "✦" },
+  { name: "ROYAL", required: 500000, tone: "royal", icon: "◆" },
+  { name: "SVIP", required: 300000, tone: "svip", icon: "★" },
+  { name: "VVIP", required: 100000, tone: "vvip", icon: "✧" },
+  { name: "VIP", required: 50000, tone: "vip", icon: "●" },
+];
+
+function renderTiers() {
+  const grid = $("#tier-grid");
+  if (!grid) return;
+  grid.innerHTML = MEMBERSHIP_TIERS.map((tier, index) => `
+    <article class="tier-card tier-${tier.tone}">
+      <div class="tier-card-top"><span class="tier-icon">${tier.icon}</span><span class="tier-rank">LEVEL ${String(MEMBERSHIP_TIERS.length - index).padStart(2, "0")}</span></div>
+      <h2>${tier.name}</h2>
+      <p class="tier-condition">누적 구매 금액</p>
+      <strong>${money(tier.required)} 이상</strong>
+      <div class="tier-benefit"><span>기본 혜택</span><b>등급 할인 없음</b></div>
+    </article>
+  `).join("");
 }
 
 async function loadReviews() {

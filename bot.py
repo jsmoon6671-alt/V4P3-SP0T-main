@@ -2374,32 +2374,21 @@ class TierSetupGroup(app_commands.Group):
     def __init__(self): 
         super().__init__(name="등급설정", description="VIP 등급을 설정하고 관리합니다.")
 
-    @app_commands.command(name="제작", description="새로운 등급과 누적 구매 조건, 할인율을 추가하거나 수정합니다.")
-    async def create_tier(
-        self,
-        interaction: discord.Interaction,
-        역할: discord.Role,
-        누적구매액수: int,
-        할인율: app_commands.Range[int, 0, 100] = 0,
-    ):
+    @app_commands.command(name="제작", description="새로운 등급을 추가하거나 수정합니다.")
+    async def create_tier(self, interaction: discord.Interaction, 역할: discord.Role, 누적구매액수: int):
         if not bot.db_pool: 
             await interaction.response.send_message("❌ DB 오류가 발생했습니다.", ephemeral=True)
             return
             
         async with bot.db_pool.acquire() as conn:
             await conn.execute('''
-                INSERT INTO vip_tiers (guild_id, role_id, required_amount, discount_percent)
-                VALUES ($1, $2, $3, $4)
+                INSERT INTO vip_tiers (guild_id, role_id, required_amount)
+                VALUES ($1, $2, $3)
                 ON CONFLICT (guild_id, role_id) DO UPDATE SET
-                    required_amount = EXCLUDED.required_amount,
-                    discount_percent = EXCLUDED.discount_percent;
-            ''', interaction.guild.id, 역할.id, 누적구매액수, 할인율)
+                    required_amount = EXCLUDED.required_amount;
+            ''', interaction.guild.id, 역할.id, 누적구매액수)
             
-        await interaction.response.send_message(
-            f"✅ {역할.mention} 등급이 누적 구매 `{누적구매액수:,}원` 이상, "
-            f"상품 할인 `{할인율}%`로 설정되었습니다.",
-            ephemeral=True,
-        )
+        await interaction.response.send_message(f"✅ {역할.mention} 등급이 `{누적구매액수:,}원` 조건으로 설정되었습니다.", ephemeral=True)
 
     @app_commands.command(name="삭제", description="기존 등급을 삭제합니다.")
     async def delete_tier(self, interaction: discord.Interaction, 역할: discord.Role):
@@ -2422,7 +2411,7 @@ class TierSetupGroup(app_commands.Group):
             return
             
         async with bot.db_pool.acquire() as conn:
-            tiers = await conn.fetch('SELECT role_id, required_amount, discount_percent FROM vip_tiers WHERE guild_id = $1 ORDER BY required_amount DESC', interaction.guild.id)
+            tiers = await conn.fetch('SELECT role_id, required_amount FROM vip_tiers WHERE guild_id = $1 ORDER BY required_amount DESC', interaction.guild.id)
             
         if not tiers: 
             await interaction.response.send_message("❌ 설정된 등급이 없습니다.", ephemeral=True)
@@ -2430,10 +2419,7 @@ class TierSetupGroup(app_commands.Group):
         
         content = "## 🏆 VIP 등급 설정 목록\n\n"
         for idx, t in enumerate(tiers, 1): 
-            content += (
-                f"`{idx}.` <@&{t['role_id']}> : 누적 `{t['required_amount']:,}원` 이상 · "
-                f"상품 할인 `{t['discount_percent']}%`\n\n"
-            )
+            content += f"`{idx}.` <@&{t['role_id']}> : `{t['required_amount']:,}원` 이상\n\n"
             
         payload = {
             "flags": (1 << 15) | (1 << 6), 

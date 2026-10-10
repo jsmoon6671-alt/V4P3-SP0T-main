@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@500;600;700;800&family=Noto+Sans+KR:wght@500;600;700;800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/static/styles.css?v=20261010-18">
+  <link rel="stylesheet" href="/static/styles.css?v=20261010-19">
 </head>
 <body>
   <div class="grain"></div>
@@ -61,13 +61,12 @@
       <div class="page-title tier-page-title">
         <p class="eyebrow">MEMBERSHIP BENEFITS</p>
         <h1>등급표</h1>
-        <p>누적 구매 금액에 따라 등급이 올라가며, 해당 등급의 상품 할인이 웹 결제에 자동 적용됩니다.</p>
+        <p>누적 구매 금액에 따라 등급이 올라갑니다. 등급별 할인은 제공되지 않습니다.</p>
       </div>
-      <div id="tier-current" class="tier-current panel" hidden></div>
       <div class="tier-guide panel">
         <div><strong>등급 산정 기준</strong><span>결제가 승인된 주문의 누적 구매 금액</span></div>
-        <div><strong>할인 적용 범위</strong><span>배송비를 제외한 상품 금액</span></div>
-        <div><strong>적용 방법</strong><span>Discord 로그인 후 결제 시 자동 적용</span></div>
+        <div><strong>등급 혜택</strong><span>등급별 할인 없음</span></div>
+        <div><strong>등급 확인</strong><span>Discord 서버에서 지급된 역할로 확인</span></div>
       </div>
       <div id="tier-grid" class="tier-grid"><div class="empty">등급 정보를 불러오는 중입니다.</div></div>
     </section>
@@ -125,7 +124,6 @@
           <div class="summary-lines">
             <div class="total-row"><span>상품 금액</span><strong id="cart-subtotal">0원</strong></div>
             <div class="total-row"><span>배송비</span><strong id="cart-shipping">0원</strong></div>
-            <div class="total-row discount" id="cart-tier-discount-row" hidden><span>등급 할인 <small id="cart-tier-rate"></small></span><strong id="cart-tier-discount">-0원</strong></div>
             <div class="total-row discount" id="cart-discount-row" hidden><span>포인트 할인</span><strong id="cart-discount">-0원</strong></div>
             <div class="total-row grand"><span>총 결제금액</span><strong id="cart-total">0원</strong></div>
           </div>
@@ -195,6 +193,6 @@
     </div>
   </div>
   <div id="toast"></div>
-  <script src="/static/app.js?v=20261010-22"></script>
+  <script src="/static/app.js?v=20261010-23"></script>
 </body>
 </html>

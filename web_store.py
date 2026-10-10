@@ -64,13 +64,6 @@ def calculate_shipping_fee(subtotal: int) -> int:
     return BASE_SHIPPING_FEE
 
 
-def calculate_tier_discount(subtotal: int, discount_percent: int) -> int:
-    """등급 할인은 배송비를 제외한 상품 금액에 적용한다."""
-    subtotal = max(0, int(subtotal or 0))
-    discount_percent = min(100, max(0, int(discount_percent or 0)))
-    return subtotal * discount_percent // 100
-
-
 class StoreError(Exception):
     def __init__(self, message: str, status: int = 400):
         super().__init__(message)
@@ -177,8 +170,6 @@ async def initialize_web_store_schema(conn):
         ALTER TABLE orders ADD COLUMN IF NOT EXISTS shipping_cvs TEXT;
         ALTER TABLE orders ADD COLUMN IF NOT EXISTS shipping_method TEXT;
         ALTER TABLE orders ADD COLUMN IF NOT EXISTS shipping_fee BIGINT NOT NULL DEFAULT 0;
-        ALTER TABLE orders ADD COLUMN IF NOT EXISTS tier_discount_percent SMALLINT NOT NULL DEFAULT 0;
-        ALTER TABLE orders ADD COLUMN IF NOT EXISTS tier_discount_amount BIGINT NOT NULL DEFAULT 0;
         ALTER TABLE orders ADD COLUMN IF NOT EXISTS waybill_number TEXT;
         ALTER TABLE orders ADD COLUMN IF NOT EXISTS carrier_id TEXT;
         ALTER TABLE orders ADD COLUMN IF NOT EXISTS fulfillment_status TEXT NOT NULL DEFAULT 'PAYMENT_APPROVED';
@@ -317,7 +308,6 @@ class StoreServer:
             web.get("/api/me", self.me),
             web.get(r"/api/products/{product_id:\d+}/image", self.product_image),
             web.get("/api/catalog", self.catalog),
-            web.get("/api/tiers", self.tiers),
             web.get("/api/reviews", self.reviews),
             web.get("/api/stores", self.stores),
             web.get("/api/tracking/carriers", self.tracking_carriers),
@@ -705,54 +695,6 @@ class StoreServer:
             dumps=lambda value: json.dumps(value, ensure_ascii=False, default=str),
         )
 
-    async def tiers(self, request):
-        guild = self._guild()
-        guild_id = guild.id if guild else self.guild_id
-        session = request["session"]
-        total_spent = 0
-        async with self.bot.db_pool.acquire() as conn:
-            rows = await conn.fetch(
-                """
-                SELECT role_id, required_amount, discount_percent
-                FROM vip_tiers
-                WHERE guild_id=$1
-                ORDER BY required_amount ASC, role_id ASC
-                """,
-                guild_id,
-            )
-            if session:
-                total_spent = int(await conn.fetchval(
-                    "SELECT COALESCE(total_spent, 0) FROM user_info WHERE user_id=$1",
-                    int(session["id"]),
-                ) or 0)
-
-        payload = []
-        current = None
-        for row in rows:
-            role = guild.get_role(int(row["role_id"])) if guild else None
-            tier = {
-                "role_id": str(row["role_id"]),
-                "name": role.name if role else f"등급 {row['role_id']}",
-                "color": f"#{role.color.value:06x}" if role and role.color.value else "#28cf7c",
-                "required_amount": int(row["required_amount"] or 0),
-                "discount_percent": min(100, max(0, int(row["discount_percent"] or 0))),
-            }
-            payload.append(tier)
-            if session and total_spent >= tier["required_amount"]:
-                current = tier
-
-        next_tier = next(
-            (tier for tier in payload if tier["required_amount"] > total_spent),
-            None,
-        ) if session else None
-        return web.json_response({
-            "tiers": payload,
-            "logged_in": bool(session),
-            "total_spent": total_spent,
-            "current_tier": current,
-            "next_tier": next_tier,
-        }, dumps=lambda value: json.dumps(value, ensure_ascii=False, default=str))
-
     async def reviews(self, request):
         await self._sync_reviews_from_discord()
         guild = self._guild()
@@ -976,24 +918,8 @@ class StoreServer:
                     if options and row["selected_option"] not in options:
                         raise StoreError(f"{row['name']} 상품의 색상 또는 맛을 다시 선택해 주세요.")
                 subtotal = sum(int(row["price"]) * int(row["quantity"]) for row in rows)
-                total_spent = int(await conn.fetchval(
-                    "SELECT COALESCE(total_spent, 0) FROM user_info WHERE user_id=$1",
-                    user_id,
-                ) or 0)
-                tier = await conn.fetchrow(
-                    """
-                    SELECT discount_percent
-                    FROM vip_tiers
-                    WHERE guild_id=$1 AND required_amount <= $2
-                    ORDER BY required_amount DESC, role_id ASC
-                    LIMIT 1
-                    """,
-                    self.guild_id, total_spent,
-                )
-                tier_discount_percent = min(100, max(0, int(tier["discount_percent"] or 0))) if tier else 0
-                tier_discount_amount = calculate_tier_discount(subtotal, tier_discount_percent)
                 shipping_fee = calculate_shipping_fee(subtotal)
-                total = subtotal - tier_discount_amount + shipping_fee
+                total = subtotal + shipping_fee
                 if not self.payment_service.enabled and total - points > 0:
                     raise StoreError("Pushbullet 자동결제가 아직 설정되지 않았습니다. 관리자에게 문의해 주세요.", 503)
                 product_text = ", ".join(
@@ -1007,14 +933,12 @@ class StoreServer:
                         order_id, guild_id, original_channel_id, buyer_id, product,
                         quantity, amount, status, points_allowed, source,
                         shipping_name, shipping_contact, shipping_address, shipping_cvs,
-                        shipping_method, shipping_fee,
-                        tier_discount_percent, tier_discount_amount
+                        shipping_method, shipping_fee
                     ) VALUES ($1, $2, NULL, $3, $4, $5, $6, 'PENDING', TRUE, 'WEB',
-                              $7, $8, $9, $10, $11, $12, $13, $14)
+                              $7, $8, $9, $10, $11, $12)
                     """, order_id, self.guild_id, user_id, product_text, quantity_text, f"{total:,}원",
                     shipping_name, shipping_contact, shipping_address, shipping_cvs,
                     shipping_labels[shipping_method], shipping_fee,
-                    tier_discount_percent, tier_discount_amount,
                 )
                 for row in rows:
                     await conn.execute(
@@ -1057,8 +981,6 @@ class StoreServer:
             "status": status,
             "cash_amount": cash_amount,
             "shipping_fee": shipping_fee,
-            "tier_discount_percent": tier_discount_percent,
-            "tier_discount_amount": tier_discount_amount,
             "deadline_seconds": 300,
             "bank": dict(settings) if settings else {},
         })
