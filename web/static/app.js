@@ -764,7 +764,7 @@ function renderAdminLists() {
   $("#category-admin").innerHTML = state.adminCategories.map(category => `<div class="admin-row"><span>${escapeHtml(category.name)}</span><span><button class="text-button" data-edit-cat="${category.id}">수정</button> <button class="remove" data-del-cat="${category.id}">삭제</button></span></div>`).join("");
   $("#product-admin").innerHTML = state.adminProducts.map(product => {
     const options = productOptions(product);
-    return `<div class="admin-row"><span><b>${escapeHtml(product.name)}</b><br>${escapeHtml(product.category_name || "미분류")} · ${money(product.price)} · ${product.stock}개${options.length ? `<br><small>${escapeHtml(product.option_label)}: ${options.map(escapeHtml).join(", ")}</small>` : ""}</span><button class="text-button" data-edit-product="${product.id}">수정</button></div>`;
+    return `<div class="admin-row"><span><b>${escapeHtml(product.name)}</b><br>${escapeHtml(product.category_name || "미분류")} · ${money(product.price)} · ${product.stock}개${options.length ? `<br><small>${escapeHtml(product.option_label)}: ${options.map(escapeHtml).join(", ")}</small>` : ""}</span><span class="admin-actions"><button class="text-button" data-edit-product="${product.id}">수정</button><button class="remove" data-del-product="${product.id}">삭제</button></span></div>`;
   }).join("");
   $$("[data-edit-cat]").forEach(button => { button.onclick = () => openEditor("category", state.adminCategories.find(item => item.id == button.dataset.editCat)); });
   $$("[data-del-cat]").forEach(button => {
@@ -781,6 +781,19 @@ function renderAdminLists() {
     };
   });
   $$("[data-edit-product]").forEach(button => { button.onclick = () => openEditor("product", state.adminProducts.find(item => item.id == button.dataset.editProduct)); });
+  $$("[data-del-product]").forEach(button => {
+    button.onclick = async () => {
+      const product = state.adminProducts.find(item => item.id == button.dataset.delProduct);
+      if (!product || !confirm(`"${product.name}" 상품을 삭제할까요?\n장바구니에서는 제거되며 기존 주문내역은 유지됩니다.`)) return;
+      try {
+        await api(`/api/admin/products/${button.dataset.delProduct}`, { method: "DELETE", body: "{}" });
+        await Promise.all([loadAdmin(), loadCatalog(), loadCart()]);
+        toast(`"${product.name}" 상품을 삭제했습니다.`);
+      } catch (error) {
+        toast(error.message);
+      }
+    };
+  });
 }
 
 function closeEditor() {

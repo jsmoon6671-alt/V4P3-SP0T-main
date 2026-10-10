@@ -213,6 +213,7 @@ h3,strong { font-weight: 800; }
 .bar span { position: absolute; bottom: -24px; width: 100%; text-align: center; color: var(--muted); font-size: 10px; }
 .admin-row { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 13px 0; border-bottom: 1px solid var(--line); font-size: 13px; font-weight: 600; }
 .admin-row:last-child { border-bottom: 0; }
+.admin-actions { display: flex; flex: 0 0 auto; align-items: center; gap: 5px; }
 .channels { display: grid; grid-template-columns: repeat(2,1fr); margin-top: 20px; }
 .channels h2,.channels button { grid-column: 1/-1; }
 

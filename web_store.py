@@ -1127,8 +1127,13 @@ class StoreServer:
     async def admin_delete_product(self, request):
         await self._admin(request)
         async with self.bot.db_pool.acquire() as conn:
-            await conn.execute("UPDATE web_products SET is_active=FALSE, updated_at=CURRENT_TIMESTAMP WHERE id=$1 AND guild_id=$2", int(request.match_info["product_id"]), self.guild_id)
-        return web.json_response({"ok": True})
+            deleted = await conn.fetchrow(
+                "DELETE FROM web_products WHERE id=$1 AND guild_id=$2 RETURNING name",
+                int(request.match_info["product_id"]), self.guild_id,
+            )
+        if not deleted:
+            raise StoreError("삭제할 상품을 찾을 수 없습니다.", 404)
+        return web.json_response({"ok": True, "name": deleted["name"]})
 
     async def admin_channels(self, request):
         await self._admin(request)
