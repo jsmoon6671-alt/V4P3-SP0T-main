@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@500;600;700;800&family=Noto+Sans+KR:wght@500;600;700;800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/static/styles.css?v=20261011-35">
+  <link rel="stylesheet" href="/static/styles.css?v=20261011-36">
 </head>
 <body>
   <div class="grain"></div>
@@ -289,7 +289,7 @@
           <form class="panel form-panel notice-admin-form" data-notice-type="NOTICE"><h2>공지</h2><label>내용<textarea name="content" maxlength="2000"></textarea></label><label class="check"><input name="is_active" type="checkbox"><span>사이트 접속 시 표시</span></label><button class="button" type="submit">공지 저장</button></form>
           <form class="panel form-panel notice-admin-form" data-notice-type="EVENT"><h2>이벤트</h2><label>내용<textarea name="content" maxlength="2000"></textarea></label><label class="check"><input name="is_active" type="checkbox"><span>공지 다음에 표시</span></label><button class="button" type="submit">이벤트 저장</button></form>
         </div>
-        <form id="coupon-admin-form" class="panel form-panel admin-subpanel"><h2>구매 쿠폰 지급</h2><label>사용자 ID<input name="user_id" inputmode="numeric" required></label><label>할인 금액<input name="discount_amount" type="number" min="1" required></label><label>사용 기한(일)<input name="days" type="number" min="1" max="365" value="30" required></label><button class="button" type="submit">쿠폰 지급</button></form>
+        <form id="coupon-admin-form" class="panel form-panel admin-subpanel"><h2>구매 쿠폰 지급</h2><label>사용자 ID<input name="user_id" inputmode="numeric" placeholder="전체 지급이면 비워두세요"></label><label>할인 금액<input name="discount_amount" type="number" min="1" required></label><label>사용 기한(일)<input name="days" type="number" min="1" max="365" value="30" required></label><label class="check"><input name="all_users" type="checkbox"><span>등록된 모든 유저에게 지급</span></label><button class="button" type="submit">쿠폰 지급</button></form>
       </div>
     </section>
   </main>
@@ -341,6 +341,6 @@
   <div id="toast"></div>
   <div id="site-message" class="modal-backdrop" hidden><div class="modal-card notice-card"><div class="notice-content"><p id="site-message-type" class="eyebrow">NOTICE</p><h2 id="site-message-title">안내</h2><p id="site-message-content"></p><div class="notice-actions"><button type="button" id="site-message-close" class="button secondary">닫기</button><button type="button" id="site-message-day" class="button">24시간 동안 안 보기</button></div></div></div></div>
   <div id="blocked-screen" class="blocked-screen" hidden><div class="panel"><p class="eyebrow">ACCESS BLOCKED</p><h1>블랙리스트에 등록되었습니다.</h1><p id="blocked-reason"></p><p>오류라고 생각되면 Discord 서버에서 문의 티켓을 열어 주세요.</p><a class="button" href="https://discord.gg/v4p3sp0t" target="_blank" rel="noopener">Discord에서 티켓 열기</a></div></div>
-  <script src="/static/app.js?v=20261011-35"></script>
+  <script src="/static/app.js?v=20261011-36"></script>
 </body>
 </html>

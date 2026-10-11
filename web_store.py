@@ -1264,18 +1264,39 @@ class StoreServer:
 
     async def admin_issue_coupon(self, request):
         await self._admin(request); data = await self._body(request)
-        user_id = self._parse_discord_user_id(data.get("user_id"))
         try:
             amount = int(data.get("discount_amount") or 0)
         except (TypeError, ValueError) as exc:
             raise StoreError("쿠폰 금액을 숫자로 입력해 주세요.") from exc
         if amount <= 0:
             raise StoreError("쿠폰 금액은 1원 이상이어야 합니다.")
-        code = f"V4P3-{secrets.token_hex(4).upper()}"
-        expires_at = datetime.now().astimezone() + timedelta(days=max(1, min(int(data.get("days") or 30), 365)))
+        try:
+            days = max(1, min(int(data.get("days") or 30), 365))
+        except (TypeError, ValueError) as exc:
+            raise StoreError("쿠폰 사용 기한을 1~365일로 입력해 주세요.") from exc
+        expires_at = datetime.now().astimezone() + timedelta(days=days)
         async with self.bot.db_pool.acquire() as conn:
-            await conn.execute("INSERT INTO web_coupons (guild_id,code,user_id,discount_amount,expires_at) VALUES ($1,$2,$3,$4,$5)", self.guild_id, code, user_id, amount, expires_at)
-        return web.json_response({"ok": True, "code": code})
+            if data.get("all_users"):
+                users = await conn.fetch("SELECT DISTINCT user_id FROM user_info ORDER BY user_id")
+                if not users:
+                    raise StoreError("쿠폰을 지급할 등록 유저가 없습니다.")
+                codes = []
+                async with conn.transaction():
+                    for row in users:
+                        code = f"V4P3-{secrets.token_hex(4).upper()}"
+                        await conn.execute(
+                            "INSERT INTO web_coupons (guild_id,code,user_id,discount_amount,expires_at) VALUES ($1,$2,$3,$4,$5)",
+                            self.guild_id, code, int(row["user_id"]), amount, expires_at,
+                        )
+                        codes.append(code)
+                return web.json_response({"ok": True, "count": len(codes)})
+            user_id = self._parse_discord_user_id(data.get("user_id"))
+            code = f"V4P3-{secrets.token_hex(4).upper()}"
+            await conn.execute(
+                "INSERT INTO web_coupons (guild_id,code,user_id,discount_amount,expires_at) VALUES ($1,$2,$3,$4,$5)",
+                self.guild_id, code, user_id, amount, expires_at,
+            )
+        return web.json_response({"ok": True, "code": code, "count": 1})
 
     async def cart(self, request):
         user = await self._user(request)

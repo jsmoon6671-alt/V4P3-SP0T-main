@@ -922,6 +922,7 @@ function bindForms() {
   $("#refresh-admin-users").onclick = loadAdminUsers;
   $("#point-admin-form").onsubmit = saveAdminPoints;
   $("#coupon-admin-form").onsubmit = issueCoupon;
+  $('#coupon-admin-form [name="all_users"]').onchange = updateCouponRecipient;
   $$("[data-support-type]").forEach(button => {
     button.onclick = () => {
       state.supportType = button.dataset.supportType;
@@ -944,6 +945,16 @@ function bindForms() {
   });
   updateShippingMode();
   renderSupportForm();
+  updateCouponRecipient();
+}
+
+function updateCouponRecipient() {
+  const form = $("#coupon-admin-form");
+  if (!form) return;
+  const allUsers = form.elements.all_users.checked;
+  form.elements.user_id.disabled = allUsers;
+  form.elements.user_id.required = !allUsers;
+  if (allUsers) form.elements.user_id.value = "";
 }
 
 const SUPPORT_TYPES = {
@@ -1298,10 +1309,14 @@ async function saveNotice(event) {
 
 async function issueCoupon(event) {
   event.preventDefault();
+  const data = Object.fromEntries(new FormData(event.target));
+  data.all_users = Boolean(data.all_users);
+  if (data.all_users && !confirm("등록된 모든 유저에게 쿠폰을 한 장씩 지급할까요?")) return;
   try {
-    const result = await api("/api/admin/coupons", { method: "POST", body: JSON.stringify(Object.fromEntries(new FormData(event.target))) });
-    toast(`쿠폰을 지급했습니다. 코드: ${result.code}`);
+    const result = await api("/api/admin/coupons", { method: "POST", body: JSON.stringify(data) });
+    toast(data.all_users ? `${result.count}명에게 쿠폰을 지급했습니다.` : `쿠폰을 지급했습니다. 코드: ${result.code}`);
     event.target.reset(); event.target.elements.days.value = 30;
+    updateCouponRecipient();
   } catch (error) { toast(error.message); }
 }
 
