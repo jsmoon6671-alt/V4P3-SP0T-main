@@ -270,6 +270,20 @@ async def initialize_web_store_schema(conn):
             expires_at TIMESTAMPTZ, used_order_id TEXT, created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
             UNIQUE (guild_id, code)
         );
+        CREATE TABLE IF NOT EXISTS web_coupon_events (
+            guild_id BIGINT NOT NULL, event_key TEXT NOT NULL, title TEXT NOT NULL,
+            description TEXT NOT NULL DEFAULT '', discount_amount BIGINT NOT NULL CHECK (discount_amount > 0),
+            valid_days INTEGER NOT NULL DEFAULT 30 CHECK (valid_days BETWEEN 1 AND 365),
+            image_mime TEXT NOT NULL, image_data BYTEA NOT NULL,
+            is_active BOOLEAN NOT NULL DEFAULT TRUE, created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (guild_id, event_key)
+        );
+        CREATE TABLE IF NOT EXISTS web_coupon_claims (
+            guild_id BIGINT NOT NULL, event_key TEXT NOT NULL, user_id BIGINT NOT NULL,
+            coupon_id BIGINT NOT NULL REFERENCES web_coupons(id) ON DELETE CASCADE,
+            claimed_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (guild_id, event_key, user_id)
+        );
         ALTER TABLE orders ADD COLUMN IF NOT EXISTS coupon_code TEXT;
         ALTER TABLE orders ADD COLUMN IF NOT EXISTS coupon_discount BIGINT NOT NULL DEFAULT 0;
         ALTER TABLE web_categories ADD COLUMN IF NOT EXISTS guild_id BIGINT NOT NULL DEFAULT 0;
@@ -505,6 +519,10 @@ class StoreServer:
             web.put("/api/admin/notices", self.admin_save_notice),
             web.get("/api/coupons", self.coupons),
             web.post("/api/admin/coupons", self.admin_issue_coupon),
+            web.get("/api/coupon-events", self.coupon_events),
+            web.post(r"/api/coupon-events/{event_key}/claim", self.claim_coupon_event),
+            web.get(r"/api/coupon-events/{event_key}/image", self.coupon_event_image),
+            web.post("/api/admin/coupon-events", self.admin_create_coupon_event),
         ]
         self.app.add_routes(routes)
         self.app.router.add_static("/static", STATIC, show_index=False)
@@ -1297,6 +1315,136 @@ class StoreServer:
                 self.guild_id, code, user_id, amount, expires_at,
             )
         return web.json_response({"ok": True, "code": code, "count": 1})
+
+    async def coupon_events(self, request):
+        user = await self._user(request)
+        user_id = int(user["id"])
+        async with self.bot.db_pool.acquire() as conn:
+            purchased = bool(await conn.fetchval(
+                """SELECT EXISTS(SELECT 1 FROM orders WHERE guild_id=$1 AND buyer_id=$2 AND status='APPROVED')
+                          OR COALESCE((SELECT total_spent > 0 FROM user_info WHERE user_id=$2),FALSE)""",
+                self.guild_id, user_id,
+            ))
+            rows = await conn.fetch(
+                """SELECT e.event_key,e.title,e.description,e.discount_amount,e.valid_days,
+                          (c.user_id IS NOT NULL) claimed
+                   FROM web_coupon_events e
+                   LEFT JOIN web_coupon_claims c ON c.guild_id=e.guild_id AND c.event_key=e.event_key AND c.user_id=$2
+                   WHERE e.guild_id=$1 AND e.is_active=TRUE ORDER BY e.created_at DESC""",
+                self.guild_id, user_id,
+            )
+            welcome_claimed = bool(await conn.fetchval(
+                "SELECT EXISTS(SELECT 1 FROM web_coupon_claims WHERE guild_id=$1 AND event_key='WELCOME' AND user_id=$2)",
+                self.guild_id, user_id,
+            ))
+        events = [{
+            **dict(row),
+            "discount_amount": int(row["discount_amount"]),
+            "image_url": f"/api/coupon-events/{row['event_key']}/image",
+        } for row in rows]
+        if not purchased:
+            events.insert(0, {
+                "event_key": "WELCOME", "title": "웰컴 2,000원 할인쿠폰",
+                "description": "V4P3 SP0T 첫 구매에 사용할 수 있는 신규 회원 전용 쿠폰입니다.",
+                "discount_amount": 2_000, "valid_days": 30,
+                "claimed": welcome_claimed, "image_url": "/static/welcome-coupon.png",
+            })
+        return web.json_response({
+            "events": events,
+            "welcome_pending": not purchased and not welcome_claimed,
+        })
+
+    async def claim_coupon_event(self, request):
+        user = await self._user(request)
+        user_id = int(user["id"])
+        event_key = str(request.match_info["event_key"] or "").strip()
+        async with self.bot.db_pool.acquire() as conn:
+            async with conn.transaction():
+                await conn.execute(
+                    "SELECT pg_advisory_xact_lock(hashtextextended($1,0))",
+                    f"coupon:{self.guild_id}:{event_key}:{user_id}",
+                )
+                already = await conn.fetchval(
+                    "SELECT 1 FROM web_coupon_claims WHERE guild_id=$1 AND event_key=$2 AND user_id=$3 FOR UPDATE",
+                    self.guild_id, event_key, user_id,
+                )
+                if already:
+                    raise StoreError("이미 받은 쿠폰입니다.", 409)
+                if event_key == "WELCOME":
+                    purchased = await conn.fetchval(
+                        """SELECT EXISTS(SELECT 1 FROM orders WHERE guild_id=$1 AND buyer_id=$2 AND status='APPROVED')
+                                  OR COALESCE((SELECT total_spent > 0 FROM user_info WHERE user_id=$2),FALSE)""",
+                        self.guild_id, user_id,
+                    )
+                    if purchased:
+                        raise StoreError("첫 구매 이력이 없는 사용자만 받을 수 있는 쿠폰입니다.", 403)
+                    amount, days = 2_000, 30
+                else:
+                    event = await conn.fetchrow(
+                        """SELECT discount_amount,valid_days FROM web_coupon_events
+                           WHERE guild_id=$1 AND event_key=$2 AND is_active=TRUE FOR UPDATE""",
+                        self.guild_id, event_key,
+                    )
+                    if not event:
+                        raise StoreError("종료되었거나 존재하지 않는 쿠폰 이벤트입니다.", 404)
+                    amount, days = int(event["discount_amount"]), int(event["valid_days"])
+                code = f"V4P3-{secrets.token_hex(4).upper()}"
+                coupon_id = await conn.fetchval(
+                    """INSERT INTO web_coupons (guild_id,code,user_id,discount_amount,expires_at)
+                       VALUES ($1,$2,$3,$4,$5) RETURNING id""",
+                    self.guild_id, code, user_id, amount,
+                    datetime.now().astimezone() + timedelta(days=days),
+                )
+                await conn.execute(
+                    "INSERT INTO web_coupon_claims (guild_id,event_key,user_id,coupon_id) VALUES ($1,$2,$3,$4)",
+                    self.guild_id, event_key, user_id, coupon_id,
+                )
+        return web.json_response({"ok": True, "code": code, "discount_amount": amount})
+
+    async def coupon_event_image(self, request):
+        event_key = str(request.match_info["event_key"] or "")
+        async with self.bot.db_pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT image_mime,image_data FROM web_coupon_events WHERE guild_id=$1 AND event_key=$2 AND is_active=TRUE",
+                self.guild_id, event_key,
+            )
+        if not row:
+            raise web.HTTPNotFound(text="쿠폰 이미지를 찾을 수 없습니다.")
+        return web.Response(
+            body=bytes(row["image_data"]), content_type=row["image_mime"],
+            headers={"Cache-Control": "public, max-age=3600", "X-Content-Type-Options": "nosniff"},
+        )
+
+    async def admin_create_coupon_event(self, request):
+        await self._admin(request); data = await self._body(request)
+        title = str(data.get("title") or "").strip()
+        description = str(data.get("description") or "").strip()
+        try:
+            amount = int(data.get("discount_amount") or 0)
+            days = int(data.get("valid_days") or 30)
+        except (TypeError, ValueError) as exc:
+            raise StoreError("쿠폰 금액과 사용 기한을 숫자로 입력해 주세요.") from exc
+        if len(title) < 2 or amount <= 0 or not 1 <= days <= 365:
+            raise StoreError("쿠폰명, 1원 이상의 금액, 1~365일의 사용 기한을 입력해 주세요.")
+        image_value = str(data.get("image_data_url") or "")
+        match = re.fullmatch(r"data:(image/(?:png|jpeg|webp));base64,(.+)", image_value, re.DOTALL)
+        if not match:
+            raise StoreError("PNG, JPG 또는 WEBP 쿠폰 이미지를 업로드해 주세요.")
+        try:
+            image_data = base64.b64decode(match.group(2), validate=True)
+        except (ValueError, TypeError) as exc:
+            raise StoreError("쿠폰 이미지 데이터를 읽을 수 없습니다.") from exc
+        if not image_data or len(image_data) > 5 * 1024 * 1024:
+            raise StoreError("쿠폰 이미지는 5MB 이하로 업로드해 주세요.")
+        event_key = secrets.token_hex(8).upper()
+        async with self.bot.db_pool.acquire() as conn:
+            await conn.execute(
+                """INSERT INTO web_coupon_events
+                   (guild_id,event_key,title,description,discount_amount,valid_days,image_mime,image_data)
+                   VALUES ($1,$2,$3,$4,$5,$6,$7,$8)""",
+                self.guild_id, event_key, title, description, amount, days, match.group(1), image_data,
+            )
+        return web.json_response({"ok": True, "event_key": event_key})
 
     async def cart(self, request):
         user = await self._user(request)

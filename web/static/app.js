@@ -24,6 +24,8 @@ const state = {
   siteMessages: [],
   coupons: [],
   supportType: "general",
+  couponEvents: [],
+  welcomePending: false,
 };
 
 const $ = (selector, parent = document) => parent.querySelector(selector);
@@ -112,7 +114,7 @@ async function api(path, options = {}) {
 
 function route() {
   const id = location.hash.slice(1) || "home";
-  if (["account", "review-write", "support"].includes(id) && !state.me) {
+  if (["account", "review-write", "support", "events"].includes(id) && !state.me) {
     try { sessionStorage.setItem("v4p3PostLoginHash", `#${id}`); } catch {}
     location.href = "/auth/login";
     return;
@@ -128,6 +130,7 @@ function route() {
   if (id === "tiers") renderTiers();
   if (id === "ranking") loadPurchaseRanking();
   if (id === "support") renderSupportForm();
+  if (id === "events" && state.me) loadCouponEvents(false);
   if (id === "admin") openAdminGate();
   scrollTo(0, 0);
 }
@@ -150,6 +153,7 @@ async function boot() {
     $("#login-button").onclick = () => { location.hash = "account"; };
     await loadCart();
     await refreshRegistrationPrompt();
+    try { await loadCouponEvents(true); } catch (error) { toast(error.message); }
     try {
       const postLoginHash = sessionStorage.getItem("v4p3PostLoginHash");
       if (postLoginHash) {
@@ -167,7 +171,7 @@ async function boot() {
     toast(error.message);
   }
   route();
-  loadSiteMessages().catch(() => showDiscordNotice());
+  if (!state.welcomePending) loadSiteMessages().catch(() => showDiscordNotice());
   loadReviews().catch(error => {
     const track = $("#review-track");
     if (track) track.innerHTML = '<p class="review-empty">구매 후기를 불러오지 못했습니다. 잠시 후 새로고침해 주세요.</p>';
@@ -923,6 +927,9 @@ function bindForms() {
   $("#point-admin-form").onsubmit = saveAdminPoints;
   $("#coupon-admin-form").onsubmit = issueCoupon;
   $('#coupon-admin-form [name="all_users"]').onchange = updateCouponRecipient;
+  $("#coupon-event-admin-form").onsubmit = createCouponEvent;
+  $('#coupon-event-admin-form [name="image"]').onchange = previewCouponEventImage;
+  $("#claim-welcome-coupon").onclick = () => claimCouponEvent("WELCOME", true);
   $$("[data-support-type]").forEach(button => {
     button.onclick = () => {
       state.supportType = button.dataset.supportType;
@@ -1318,6 +1325,85 @@ async function issueCoupon(event) {
     event.target.reset(); event.target.elements.days.value = 30;
     updateCouponRecipient();
   } catch (error) { toast(error.message); }
+}
+
+function previewCouponEventImage(event) {
+  const file = event.target.files?.[0];
+  const preview = $("#coupon-event-image-preview");
+  if (!file) { preview.hidden = true; preview.removeAttribute("src"); return; }
+  if (file.size > 5 * 1024 * 1024) {
+    toast("쿠폰 이미지는 5MB 이하로 업로드해 주세요.");
+    event.target.value = ""; preview.hidden = true; return;
+  }
+  const reader = new FileReader();
+  reader.onload = () => { preview.src = reader.result; preview.hidden = false; };
+  reader.readAsDataURL(file);
+}
+
+async function createCouponEvent(event) {
+  event.preventDefault();
+  const file = event.target.elements.image.files?.[0];
+  if (!file) return toast("쿠폰 이미지를 업로드해 주세요.");
+  const submit = event.submitter || event.target.querySelector('button[type="submit"]');
+  submit.disabled = true;
+  try {
+    const imageDataUrl = await new Promise((resolve, reject) => {
+      const reader = new FileReader(); reader.onload = () => resolve(reader.result); reader.onerror = reject; reader.readAsDataURL(file);
+    });
+    const data = Object.fromEntries(new FormData(event.target));
+    delete data.image;
+    data.image_data_url = imageDataUrl;
+    await api("/api/admin/coupon-events", { method: "POST", body: JSON.stringify(data) });
+    event.target.reset();
+    $("#coupon-event-image-preview").hidden = true;
+    toast("이벤트 페이지에 쿠폰을 등록했습니다.");
+  } catch (error) { toast(error.message); }
+  finally { submit.disabled = false; }
+}
+
+async function loadCouponEvents(showWelcome = false) {
+  if (!state.me) return;
+  const data = await api("/api/coupon-events");
+  state.couponEvents = data.events || [];
+  state.welcomePending = Boolean(data.welcome_pending);
+  renderCouponEvents();
+  if (showWelcome && state.welcomePending) {
+    $("#welcome-coupon-modal").hidden = false;
+    document.body.classList.add("modal-open");
+  }
+}
+
+function renderCouponEvents() {
+  const target = $("#coupon-event-list");
+  if (!target) return;
+  target.innerHTML = state.couponEvents.length ? state.couponEvents.map(event => `
+    <article class="coupon-event-card">
+      <img src="${escapeHtml(event.image_url)}" alt="${escapeHtml(event.title)} 쿠폰 이미지" loading="lazy">
+      <div><p class="eyebrow">COUPON EVENT</p><h2>${escapeHtml(event.title)}</h2><p>${escapeHtml(event.description || "이벤트 쿠폰을 받아 결제할 때 사용해 주세요.")}</p><strong>${money(event.discount_amount)} 할인</strong><small>수령일부터 ${Number(event.valid_days)}일 동안 사용 가능</small></div>
+      <button type="button" class="button ${event.claimed ? "secondary" : ""}" data-claim-coupon="${escapeHtml(event.event_key)}" ${event.claimed ? "disabled" : ""}>${event.claimed ? "받은 쿠폰" : "쿠폰 받기"}</button>
+    </article>`).join("") : '<div class="empty">현재 받을 수 있는 이벤트 쿠폰이 없습니다.</div>';
+  $$('[data-claim-coupon]', target).forEach(button => {
+    button.onclick = () => claimCouponEvent(button.dataset.claimCoupon, false);
+  });
+}
+
+async function claimCouponEvent(eventKey, welcome) {
+  const button = welcome ? $("#claim-welcome-coupon") : $(`[data-claim-coupon="${eventKey}"]`);
+  if (button) button.disabled = true;
+  try {
+    const result = await api(`/api/coupon-events/${encodeURIComponent(eventKey)}/claim`, { method: "POST", body: "{}" });
+    toast(`${money(result.discount_amount)} 할인쿠폰을 받았습니다.`);
+    if (welcome) {
+      $("#welcome-coupon-modal").hidden = true;
+      document.body.classList.remove("modal-open");
+      state.welcomePending = false;
+      loadSiteMessages().catch(() => showDiscordNotice());
+    }
+    await loadCouponEvents(false);
+  } catch (error) {
+    toast(error.message);
+    if (button) button.disabled = false;
+  }
 }
 
 async function loadSiteMessages() {
