@@ -2000,7 +2000,7 @@ class StoreServer:
             raise StoreError("실시간 상담 Discord 채널이 아직 설정되지 않았습니다.", 503)
         safe_name = re.sub(r"[^0-9A-Za-z가-힣_-]+", "-", str(user.get("username") or user["id"])).strip("-")
         try:
-            thread = await channel.create_thread(name=f"{safe_name or user['id']}-{user['id']}"[:100], type=discord.ChannelType.private_thread, invitable=False, reason="웹 실시간 상담")
+            thread = await channel.create_thread(name=f"{safe_name or user['id']}-{user['id']}"[:100], type=discord.ChannelType.public_thread, reason="웹 실시간 상담")
         except (discord.Forbidden, discord.HTTPException) as exc:
             raise StoreError("상담 스레드를 만들지 못했습니다. 봇 권한을 확인해 주세요.", 503) from exc
         async with self.bot.db_pool.acquire() as conn:
@@ -2097,7 +2097,15 @@ class StoreServer:
                 return False
             content = str(message.content or "").strip()
             if content == "!상담종료":
-                prompt = f"{session['user_id']}님! 문의를 종료해도 될까요?"
+                guild = self._guild()
+                member = guild.get_member(int(session["user_id"])) if guild else None
+                if member is None and guild:
+                    try:
+                        member = await guild.fetch_member(int(session["user_id"]))
+                    except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                        member = None
+                display_name = member.display_name if member else "고객"
+                prompt = f"{display_name}님! 문의를 종료해도 될까요?"
                 await conn.execute("UPDATE web_chat_sessions SET status='CLOSING',updated_at=CURRENT_TIMESTAMP WHERE id=$1", session["id"])
                 await conn.execute("INSERT INTO web_chat_messages (session_id,sender_type,sender_name,content) VALUES ($1,'CLOSE_PROMPT','V4P3 SP0T',$2)", session["id"], prompt)
                 await message.add_reaction("✅")

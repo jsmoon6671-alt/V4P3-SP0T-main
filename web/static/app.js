@@ -1054,12 +1054,21 @@ async function sendChatMessage(event) {
   const form = event.currentTarget; const data = new FormData(form);
   const file = form.elements.image.files?.[0];
   if (file && file.size > 5 * 1024 * 1024) return toast("이미지는 5MB 이하로 보내 주세요.");
+  const submit = form.querySelector('[type="submit"]');
+  if (submit.disabled) return;
+  submit.disabled = true;
   try {
     const response = await fetch(`/api/chat/${state.activeChatId}/messages`, { method: "POST", headers: {"X-CSRF-Token": state.csrf}, body: data });
     const result = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(result.error || "메시지를 보내지 못했습니다.");
-    form.reset(); await loadChatRoom();
+    form.reset();
+    form.querySelector("textarea").style.height = "44px";
+    form.querySelector(".chat-file").classList.remove("selected");
+    $("#chat-upload-preview").hidden = true;
+    $("#chat-upload-preview img").removeAttribute("src");
+    await loadChatRoom();
   } catch (error) { toast(error.message); }
+  finally { submit.disabled = false; }
 }
 
 async function chatCloseChoice(choice) {
@@ -1153,6 +1162,28 @@ function bindForms() {
   $("#chat-initial-content").oninput = event => { $("#chat-initial-count").textContent = String(event.target.value.length); };
   $("#chat-back").onclick = backToChatHistory;
   $("#chat-message-form").onsubmit = sendChatMessage;
+  const chatMessageInput = $('#chat-message-form textarea[name="content"]');
+  chatMessageInput.onkeydown = event => {
+    if (event.key !== "Enter" || event.shiftKey || event.isComposing || event.keyCode === 229) return;
+    event.preventDefault();
+    if (chatMessageInput.value.trim() || $('#chat-message-form input[name="image"]').files?.length) {
+      $("#chat-message-form").requestSubmit();
+    }
+  };
+  chatMessageInput.oninput = () => {
+    chatMessageInput.style.height = "44px";
+    chatMessageInput.style.height = `${Math.min(chatMessageInput.scrollHeight, 112)}px`;
+  };
+  $('#chat-message-form input[name="image"]').onchange = event => {
+    const file = event.target.files?.[0];
+    event.target.closest(".chat-file").classList.toggle("selected", Boolean(file));
+    if (!file) return;
+    if (file.size > 5 * 1024 * 1024) { toast("이미지는 5MB 이하로 보내 주세요."); event.target.value = ""; return; }
+    const preview = $("#chat-upload-preview");
+    $("#chat-upload-preview img").src = URL.createObjectURL(file);
+    preview.hidden = false;
+    $("#chat-message-form").requestSubmit();
+  };
   $$(".notice-admin-form").forEach(form => { form.onsubmit = saveNotice; });
   $$('.notice-admin-form input[name="image"]').forEach(input => { input.onchange = previewNoticeImage; });
   $$('.notice-admin-form input[name="remove_image"]').forEach(input => {
