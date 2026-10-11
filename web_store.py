@@ -13,7 +13,7 @@ import re
 import secrets
 import time
 from io import BytesIO
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from urllib.parse import urlencode
 
@@ -27,7 +27,7 @@ from delivery_tracking import (
     normalize_waybill,
     track_shipment,
 )
-from loyalty_points import PointsError, award_review_points, get_balance, maximum_points, parse_amount, request_payment, resolve_payment
+from loyalty_points import PointsError, adjust_points, award_review_points, get_balance, maximum_points, parse_amount, request_payment, resolve_payment
 from order_editing import sync_buyer_roles
 from order_fulfillment import finalize_approved_order, notify_expired_order
 from payment_automation import (
@@ -244,6 +244,34 @@ async def initialize_web_store_schema(conn):
             image_data BYTEA NOT NULL,
             updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
+        CREATE TABLE IF NOT EXISTS web_blacklist (
+            guild_id BIGINT NOT NULL,
+            user_id BIGINT NOT NULL,
+            reason TEXT NOT NULL,
+            added_by BIGINT,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (guild_id, user_id)
+        );
+        ALTER TABLE web_blacklist ADD COLUMN IF NOT EXISTS blacklist_type TEXT NOT NULL DEFAULT 'PERMANENT';
+        ALTER TABLE web_blacklist ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ;
+        CREATE TABLE IF NOT EXISTS web_settings (
+            guild_id BIGINT NOT NULL, setting_key TEXT NOT NULL, setting_value TEXT NOT NULL,
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (guild_id, setting_key)
+        );
+        CREATE TABLE IF NOT EXISTS web_notices (
+            guild_id BIGINT NOT NULL, notice_type TEXT NOT NULL, content TEXT NOT NULL DEFAULT '',
+            is_active BOOLEAN NOT NULL DEFAULT FALSE, updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (guild_id, notice_type)
+        );
+        CREATE TABLE IF NOT EXISTS web_coupons (
+            id BIGSERIAL PRIMARY KEY, guild_id BIGINT NOT NULL, code TEXT NOT NULL,
+            user_id BIGINT, discount_amount BIGINT NOT NULL CHECK (discount_amount > 0),
+            expires_at TIMESTAMPTZ, used_order_id TEXT, created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE (guild_id, code)
+        );
+        ALTER TABLE orders ADD COLUMN IF NOT EXISTS coupon_code TEXT;
+        ALTER TABLE orders ADD COLUMN IF NOT EXISTS coupon_discount BIGINT NOT NULL DEFAULT 0;
         ALTER TABLE web_categories ADD COLUMN IF NOT EXISTS guild_id BIGINT NOT NULL DEFAULT 0;
         ALTER TABLE web_categories ADD COLUMN IF NOT EXISTS name TEXT NOT NULL DEFAULT '';
         ALTER TABLE web_categories ADD COLUMN IF NOT EXISTS parent_id BIGINT REFERENCES web_categories(id) ON DELETE SET NULL;
@@ -446,6 +474,7 @@ class StoreServer:
             web.post("/api/cart", self.save_cart),
             web.delete(r"/api/cart/{product_id:\d+}", self.delete_cart),
             web.post("/api/checkout", self.checkout),
+            web.post("/api/tickets", self.create_web_ticket),
             web.get("/api/orders", self.orders),
             web.get(r"/api/orders/{order_id}/tracking", self.order_tracking),
             web.get(r"/api/orders/{order_id}", self.order),
@@ -466,6 +495,16 @@ class StoreServer:
             web.post(r"/api/admin/orders/{order_id}/cancel", self.admin_cancel_order),
             web.post(r"/api/admin/orders/{order_id}/waybill", self.admin_set_waybill),
             web.delete(r"/api/admin/orders/{order_id}", self.admin_delete_order),
+            web.get("/api/admin/blacklist", self.admin_blacklist),
+            web.post("/api/admin/blacklist", self.admin_add_blacklist),
+            web.delete(r"/api/admin/blacklist/{user_id:\d+}", self.admin_remove_blacklist),
+            web.get("/api/admin/users", self.admin_users),
+            web.post("/api/admin/points", self.admin_points),
+            web.get("/api/notices", self.notices),
+            web.get("/api/admin/notices", self.admin_notices),
+            web.put("/api/admin/notices", self.admin_save_notice),
+            web.get("/api/coupons", self.coupons),
+            web.post("/api/admin/coupons", self.admin_issue_coupon),
         ]
         self.app.add_routes(routes)
         self.app.router.add_static("/static", STATIC, show_index=False)
@@ -478,6 +517,7 @@ class StoreServer:
                     "UPDATE web_categories SET guild_id=$1 WHERE guild_id=0",
                     self.guild_id,
                 )
+                await self._ensure_admin_password(conn)
                 await conn.execute(
                     "UPDATE web_products SET guild_id=$1 WHERE guild_id=0",
                     self.guild_id,
@@ -501,6 +541,34 @@ class StoreServer:
             guild = self.bot.guilds[0]
             self.guild_id = guild.id
         return guild
+
+    @staticmethod
+    def _password_hash(password: str, salt: bytes | None = None) -> str:
+        salt = salt or secrets.token_bytes(16)
+        digest = hashlib.pbkdf2_hmac("sha256", password.encode(), salt, 240_000)
+        return f"pbkdf2_sha256${_b64(salt)}${_b64(digest)}"
+
+    async def _ensure_admin_password(self, conn):
+        exists = await conn.fetchval(
+            "SELECT setting_value FROM web_settings WHERE guild_id=$1 AND setting_key='admin_password_hash'",
+            self.guild_id,
+        )
+        if not exists:
+            await conn.execute(
+                "INSERT INTO web_settings (guild_id,setting_key,setting_value) VALUES ($1,'admin_password_hash',$2)",
+                self.guild_id, self._password_hash(self.admin_password),
+            )
+
+    @staticmethod
+    def _verify_password(password: str, encoded: str) -> bool:
+        try:
+            algorithm, salt, expected = encoded.split("$", 2)
+            if algorithm != "pbkdf2_sha256":
+                return False
+            actual = hashlib.pbkdf2_hmac("sha256", password.encode(), _unb64(salt), 240_000)
+            return hmac.compare_digest(actual, _unb64(expected))
+        except (ValueError, TypeError):
+            return False
 
     @staticmethod
     def _review_from_payload(components, attachments):
@@ -621,10 +689,19 @@ class StoreServer:
         except Exception:
             LOGGER.exception("Discord 구매후기 동기화 실패: guild=%s", self.guild_id)
 
-    async def _user(self, request) -> dict:
+    async def _user(self, request, allow_blocked: bool = False) -> dict:
         session = request["session"]
         if not session:
             raise StoreError("Discord 로그인이 필요합니다.", 401)
+        if not allow_blocked:
+            async with self.bot.db_pool.acquire() as conn:
+                reason = await conn.fetchval(
+                    """SELECT reason FROM web_blacklist WHERE guild_id=$1 AND user_id=$2
+                       AND blacklist_type='PERMANENT' AND (expires_at IS NULL OR expires_at>CURRENT_TIMESTAMP)""",
+                    self.guild_id, int(session["id"]),
+                )
+            if reason:
+                raise StoreError(f"블랙리스트에 등록되어 사이트를 이용할 수 없습니다. 사유: {reason}", 403)
         return session
 
     async def _admin_member(self, request) -> dict:
@@ -761,19 +838,31 @@ class StoreServer:
         return response
 
     async def me(self, request):
-        user = await self._user(request)
+        user = await self._user(request, allow_blocked=True)
         is_admin = True
         try:
             await self._admin_member(request)
         except StoreError:
             is_admin = False
-        return web.json_response({"user": {"id": user["id"], "username": user["username"], "avatar": user.get("avatar")}, "csrf": user["csrf"], "is_admin": is_admin})
+        async with self.bot.db_pool.acquire() as conn:
+            blocked = await conn.fetchrow(
+                """SELECT reason FROM web_blacklist WHERE guild_id=$1 AND user_id=$2
+                   AND blacklist_type='PERMANENT' AND (expires_at IS NULL OR expires_at>CURRENT_TIMESTAMP)""",
+                self.guild_id, int(user["id"]),
+            )
+        return web.json_response({"user": {"id": user["id"], "username": user["username"], "avatar": user.get("avatar")}, "csrf": user["csrf"], "is_admin": is_admin, "blocked": dict(blocked) if blocked else None})
 
     async def admin_unlock(self, request):
         user = await self._admin_member(request)
         data = await self._body(request)
         password = str(data.get("password", ""))
-        if not hmac.compare_digest(password, self.admin_password):
+        async with self.bot.db_pool.acquire() as conn:
+            await self._ensure_admin_password(conn)
+            encoded = await conn.fetchval(
+                "SELECT setting_value FROM web_settings WHERE guild_id=$1 AND setting_key='admin_password_hash'",
+                self.guild_id,
+            )
+        if not encoded or not self._verify_password(password, encoded):
             raise StoreError("관리자 비밀번호가 올바르지 않습니다.", 403)
         payload = {"admin_for": str(user["id"]), "exp": int(time.time()) + 60 * 60 * 8}
         response = web.json_response({"ok": True})
@@ -1085,6 +1174,8 @@ class StoreServer:
             raise StoreError("실명과 010-1234-5678 형식의 전화번호를 입력해 주세요.")
         if not values[2] and not (values[3] and values[4] in {"GS25", "CU"} and values[5]):
             raise StoreError("집주소 또는 조회한 편의점 정보를 입력해 주세요.")
+        if not values[6]:
+            raise StoreError("환불계좌를 입력해 주세요.")
         async with self.bot.db_pool.acquire() as conn:
             await conn.execute(
                 """
@@ -1098,6 +1189,93 @@ class StoreServer:
                 """, int(user["id"]), *values,
             )
         return web.json_response({"ok": True})
+
+    async def admin_users(self, request):
+        await self._admin(request)
+        async with self.bot.db_pool.acquire() as conn:
+            rows = await conn.fetch(
+                """SELECT u.user_id,u.name,u.contact,u.address,u.cvs,u.cvs_brand,u.cvs_address,
+                          u.refund_account,COALESCE(u.total_spent,0) total_spent,COALESCE(p.balance,0) points
+                   FROM user_info u LEFT JOIN point_balances p ON p.guild_id=$1 AND p.user_id=u.user_id
+                   ORDER BY u.user_id DESC""",
+                self.guild_id,
+            )
+        profiles = await asyncio.gather(*(self._blacklist_profile(int(row["user_id"])) for row in rows))
+        users = [{**dict(row), **profile, "user_id": str(row["user_id"])} for row, profile in zip(rows, profiles)]
+        return web.json_response({"users": users}, dumps=lambda v: json.dumps(v, ensure_ascii=False, default=str))
+
+    async def admin_points(self, request):
+        admin = await self._admin(request); data = await self._body(request)
+        try:
+            amount = int(data.get("amount") or 0)
+        except (TypeError, ValueError) as exc:
+            raise StoreError("포인트를 숫자로 입력해 주세요.") from exc
+        if amount == 0:
+            raise StoreError("0이 아닌 포인트를 입력해 주세요.")
+        async with self.bot.db_pool.acquire() as conn:
+            if data.get("all_users"):
+                ids = await conn.fetch("SELECT DISTINCT user_id FROM user_info")
+                for index, row in enumerate(ids):
+                    await adjust_points(conn, self.guild_id, int(row["user_id"]), int(admin["id"]), time.time_ns() + index, amount)
+                return web.json_response({"ok": True, "count": len(ids)})
+            user_id = self._parse_discord_user_id(data.get("user_id"))
+            balance = await adjust_points(conn, self.guild_id, user_id, int(admin["id"]), time.time_ns(), amount)
+        return web.json_response({"ok": True, "balance": balance})
+
+    async def notices(self, request):
+        async with self.bot.db_pool.acquire() as conn:
+            rows = await conn.fetch("SELECT notice_type,content,updated_at FROM web_notices WHERE guild_id=$1 AND is_active=TRUE", self.guild_id)
+        return web.json_response({"notices": [dict(row) for row in rows]}, dumps=lambda v: json.dumps(v, ensure_ascii=False, default=str))
+
+    async def admin_notices(self, request):
+        await self._admin(request)
+        async with self.bot.db_pool.acquire() as conn:
+            rows = await conn.fetch("SELECT notice_type,content,is_active,updated_at FROM web_notices WHERE guild_id=$1", self.guild_id)
+        return web.json_response({"notices": [dict(row) for row in rows]}, dumps=lambda v: json.dumps(v, ensure_ascii=False, default=str))
+
+    async def admin_save_notice(self, request):
+        await self._admin(request); data = await self._body(request)
+        notice_type = str(data.get("notice_type") or "NOTICE").upper()
+        if notice_type not in {"NOTICE", "EVENT"}:
+            raise StoreError("공지 종류가 올바르지 않습니다.")
+        content = str(data.get("content") or "").strip()
+        active = bool(data.get("is_active"))
+        if active and len(content) < 2:
+            raise StoreError("내용을 2자 이상 입력해 주세요.")
+        async with self.bot.db_pool.acquire() as conn:
+            await conn.execute(
+                """INSERT INTO web_notices (guild_id,notice_type,content,is_active) VALUES ($1,$2,$3,$4)
+                   ON CONFLICT (guild_id,notice_type) DO UPDATE SET content=EXCLUDED.content,is_active=EXCLUDED.is_active,updated_at=CURRENT_TIMESTAMP""",
+                self.guild_id, notice_type, content, active,
+            )
+        return web.json_response({"ok": True})
+
+    async def coupons(self, request):
+        user = await self._user(request)
+        async with self.bot.db_pool.acquire() as conn:
+            rows = await conn.fetch(
+                """SELECT code,discount_amount,expires_at FROM web_coupons
+                   WHERE guild_id=$1 AND user_id=$2 AND used_order_id IS NULL
+                     AND (expires_at IS NULL OR expires_at>CURRENT_TIMESTAMP)
+                   ORDER BY expires_at NULLS LAST,created_at""",
+                self.guild_id, int(user["id"]),
+            )
+        return web.json_response({"coupons": [dict(row) for row in rows]}, dumps=lambda v: json.dumps(v, ensure_ascii=False, default=str))
+
+    async def admin_issue_coupon(self, request):
+        await self._admin(request); data = await self._body(request)
+        user_id = self._parse_discord_user_id(data.get("user_id"))
+        try:
+            amount = int(data.get("discount_amount") or 0)
+        except (TypeError, ValueError) as exc:
+            raise StoreError("쿠폰 금액을 숫자로 입력해 주세요.") from exc
+        if amount <= 0:
+            raise StoreError("쿠폰 금액은 1원 이상이어야 합니다.")
+        code = f"V4P3-{secrets.token_hex(4).upper()}"
+        expires_at = datetime.now().astimezone() + timedelta(days=max(1, min(int(data.get("days") or 30), 365)))
+        async with self.bot.db_pool.acquire() as conn:
+            await conn.execute("INSERT INTO web_coupons (guild_id,code,user_id,discount_amount,expires_at) VALUES ($1,$2,$3,$4,$5)", self.guild_id, code, user_id, amount, expires_at)
+        return web.json_response({"ok": True, "code": code})
 
     async def cart(self, request):
         user = await self._user(request)
@@ -1151,8 +1329,118 @@ class StoreServer:
             await conn.execute("DELETE FROM web_cart_items WHERE guild_id = $1 AND user_id = $2 AND product_id = $3", self.guild_id, int(user["id"]), int(request.match_info["product_id"]))
         return web.json_response({"ok": True})
 
+    async def create_web_ticket(self, request):
+        user, data = await self._user(request), await self._body(request)
+        ticket_types = {
+            "general": ("일반문의", ("문의내용",)),
+            "payment": ("입금문의", ("주문번호", "문의내용")),
+            "shipping": ("배송문의", ("주문번호", "문의내용")),
+            "partner": ("제휴문의", ("서버링크", "배너명")),
+        }
+        ticket_type = str(data.get("ticket_type") or "").strip().lower()
+        if ticket_type not in ticket_types:
+            raise StoreError("문의 유형을 선택해 주세요.")
+        type_kr, required_fields = ticket_types[ticket_type]
+        answers = {}
+        for field in required_fields:
+            value = str(data.get(field) or "").strip()
+            if not value:
+                raise StoreError(f"{field}을(를) 입력해 주세요.")
+            if len(value) > 1500:
+                raise StoreError(f"{field}은(는) 1,500자 이하로 입력해 주세요.")
+            answers[field] = value
+
+        guild = self._guild()
+        if guild is None:
+            raise StoreError("Discord 서버를 찾을 수 없습니다.", 503)
+        member = guild.get_member(int(user["id"]))
+        if member is None:
+            try:
+                member = await guild.fetch_member(int(user["id"]))
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException) as exc:
+                raise StoreError("Discord 서버에 가입한 사용자만 문의 티켓을 열 수 있습니다.", 403) from exc
+
+        async with self.bot.db_pool.acquire() as conn:
+            settings = await conn.fetchrow("SELECT * FROM guild_settings WHERE guild_id=$1", guild.id)
+            category_id = settings[f"ticket_cat_{ticket_type}"] if settings else None
+            if not category_id:
+                raise StoreError(f"{type_kr} 티켓 카테고리가 아직 설정되지 않았습니다.", 503)
+            category = guild.get_channel(int(category_id))
+            if not isinstance(category, discord.CategoryChannel):
+                raise StoreError(f"{type_kr} 티켓 카테고리를 찾을 수 없습니다.", 503)
+            ticket_count = await conn.fetchval("SELECT COUNT(*) FROM tickets") or 0
+
+        safe_username = re.sub(r"[^0-9A-Za-z가-힣_-]+", "-", member.name).strip("-") or str(member.id)
+        channel_name = f"{type_kr}-{safe_username}-{int(ticket_count) + 1:04d}"[:100]
+        overwrites = dict(category.overwrites)
+        overwrites[member] = discord.PermissionOverwrite(
+            view_channel=True, read_messages=True, send_messages=True,
+        )
+        try:
+            ticket_channel = await guild.create_text_channel(
+                name=channel_name, category=category, overwrites=overwrites,
+                reason=f"웹사이트 {type_kr} 티켓 · {member} ({member.id})",
+            )
+        except (discord.Forbidden, discord.HTTPException) as exc:
+            raise StoreError("티켓 채널을 만들지 못했습니다. 봇의 채널 관리 권한을 확인해 주세요.", 503) from exc
+
+        try:
+            async with self.bot.db_pool.acquire() as conn:
+                await conn.execute(
+                    "INSERT INTO tickets (channel_id,user_id,ticket_type) VALUES ($1,$2,$3)",
+                    ticket_channel.id, member.id, ticket_type,
+                )
+            answers_text = "\n\n".join(
+                f"`◾` **{key}**\n`{discord.utils.escape_markdown(value)}`"
+                for key, value in answers.items()
+            )
+            content = (
+                f"## 🎫 {type_kr} 티켓이 생성되었습니다\n\n"
+                f"<@{member.id}>님, 문의하실 내용을 남겨주시면 관리자가 확인 후 답변해 드립니다.\n\n"
+                f"### 📝 작성된 내용\n\n{answers_text}"
+            )
+            payload = {
+                "flags": 32768,
+                "components": [{"type": 17, "accent_color": 0x32CD32, "components": [
+                    {"type": 10, "content": content},
+                    {"type": 1, "components": [{"type": 2, "style": 4, "label": "티켓 닫기", "custom_id": "ticket_close"}]},
+                ]}],
+                "allowed_mentions": {"parse": [], "users": [str(member.id)]},
+            }
+            await self.bot.http.request(
+                discord.http.Route("POST", f"/channels/{ticket_channel.id}/messages"), json=payload,
+            )
+        except Exception:
+            try:
+                await ticket_channel.delete(reason="웹 티켓 초기화 실패")
+            except discord.HTTPException:
+                pass
+            raise
+        return web.json_response({
+            "ok": True,
+            "channel_id": str(ticket_channel.id),
+            "channel_name": ticket_channel.name,
+            "channel_url": f"https://discord.com/channels/{guild.id}/{ticket_channel.id}",
+        })
+
     async def checkout(self, request):
         user, data = await self._user(request), await self._body(request)
+        async with self.bot.db_pool.acquire() as conn:
+            blacklist_reason = await conn.fetchval(
+                """SELECT reason FROM web_blacklist WHERE guild_id=$1 AND user_id=$2
+                   AND (expires_at IS NULL OR expires_at>CURRENT_TIMESTAMP)""",
+                self.guild_id, int(user["id"]),
+            )
+            registered = await conn.fetchrow(
+                "SELECT name,contact,address,cvs,cvs_brand,cvs_address,refund_account FROM user_info WHERE user_id=$1",
+                int(user["id"]),
+            )
+        if blacklist_reason:
+            raise StoreError(f"블랙리스트에 등록되어 주문할 수 없습니다. 사유: {blacklist_reason}", 403)
+        if not registered or not registered["name"] or not registered["contact"] or not registered["refund_account"]:
+            raise StoreError("정보등록에서 배송 정보와 환불계좌를 먼저 등록해 주세요.", 409)
+        if not registered["address"] and not (registered["cvs"] and registered["cvs_brand"] and registered["cvs_address"]):
+            raise StoreError("정보등록에서 집주소 또는 편의점 수령 정보를 먼저 등록해 주세요.", 409)
         if not data.get("order_confirmed"):
             raise StoreError("주문 내용이 정확한지 확인해 주세요.")
         depositor = str(data.get("depositor_name", "")).strip()
@@ -1230,6 +1518,18 @@ class StoreServer:
                 )
                 shipping_fee = calculate_shipping_fee(subtotal)
                 total = subtotal + shipping_fee
+                coupon_code = str(data.get("coupon_code") or "").strip()
+                coupon_discount = 0
+                if coupon_code:
+                    coupon = await conn.fetchrow(
+                        """SELECT id,discount_amount FROM web_coupons WHERE guild_id=$1 AND user_id=$2 AND code=$3
+                           AND used_order_id IS NULL AND (expires_at IS NULL OR expires_at>CURRENT_TIMESTAMP) FOR UPDATE""",
+                        self.guild_id, user_id, coupon_code,
+                    )
+                    if not coupon:
+                        raise StoreError("사용할 수 없는 쿠폰입니다.")
+                    coupon_discount = min(int(coupon["discount_amount"]), total)
+                    total -= coupon_discount
                 if not self.payment_service.enabled and total - points > 0:
                     raise StoreError("Pushbullet 자동결제가 아직 설정되지 않았습니다. 관리자에게 문의해 주세요.", 503)
                 product_text = ", ".join(
@@ -1244,13 +1544,15 @@ class StoreServer:
                         order_id, guild_id, original_channel_id, buyer_id, product,
                         quantity, amount, status, points_allowed, source,
                         shipping_name, shipping_contact, shipping_address, shipping_cvs,
-                        shipping_method, shipping_fee
+                        shipping_method, shipping_fee, coupon_code, coupon_discount
                     ) VALUES ($1, $2, NULL, $3, $4, $5, $6, 'PENDING', TRUE, 'WEB',
-                              $7, $8, $9, $10, $11, $12)
+                              $7, $8, $9, $10, $11, $12, $13, $14)
                     """, order_id, self.guild_id, user_id, product_text, quantity_text, f"{total:,}원",
                     shipping_name, shipping_contact, shipping_address, shipping_cvs,
-                    shipping_labels[shipping_method], shipping_fee,
+                    shipping_labels[shipping_method], shipping_fee, coupon_code or None, coupon_discount,
                 )
+                if coupon_code:
+                    await conn.execute("UPDATE web_coupons SET used_order_id=$2 WHERE guild_id=$1 AND code=$3", self.guild_id, order_id, coupon_code)
                 for row in rows:
                     await conn.execute(
                         """
@@ -1280,6 +1582,8 @@ class StoreServer:
                         raise StoreError("같은 입금자명과 금액의 대기 주문이 있습니다. 기존 주문이 끝난 뒤 다시 신청해 주세요.")
                 await conn.execute("DELETE FROM web_cart_items WHERE guild_id = $1 AND user_id = $2 AND product_id = ANY($3::bigint[])", self.guild_id, user_id, selected)
 
+        await self._send_manual_payment_request(order)
+
         if cash_amount == 0:
             async with self.bot.db_pool.acquire() as conn:
                 await conn.execute("UPDATE orders SET auto_payment_event_id = $2 WHERE order_id = $1", order_id, f"POINTS:{order_id}")
@@ -1298,6 +1602,35 @@ class StoreServer:
             "deadline_seconds": 300,
             "bank": dict(settings) if settings else {},
         })
+
+    async def _send_manual_payment_request(self, order):
+        async with self.bot.db_pool.acquire() as conn:
+            channel_id = await conn.fetchval("SELECT approval_channel_id FROM guild_settings WHERE guild_id=$1", self.guild_id)
+        if not channel_id:
+            return
+        content = (
+            "## 🔔 새로운 웹 결제 확인 요청\n\n"
+            f"`👤` **구매자**\n<@{order['buyer_id']}>\n\n"
+            f"`✍️` **입금자명**\n`{order.get('depositor_name') or '미입력'}`\n\n"
+            f"`◾` **주문번호**\n`{order['order_id']}`\n\n"
+            f"`📦` **상품**\n`{order['product']}`\n\n"
+            f"`💰` **입금해야 할 금액**\n**{int(order.get('cash_amount') or 0):,}원**"
+        )
+        payload = {
+            "flags": 32768,
+            "components": [{"type": 17, "accent_color": 0x28CF7C, "components": [
+                {"type": 10, "content": content},
+                {"type": 1, "components": [
+                    {"type": 2, "style": 3, "label": "승인", "custom_id": f"approve_{order['order_id']}"},
+                    {"type": 2, "style": 4, "label": "거절", "custom_id": f"reject_{order['order_id']}"},
+                ]},
+            ]}],
+            "allowed_mentions": {"parse": []},
+        }
+        try:
+            await self.bot.http.request(discord.http.Route("POST", f"/channels/{int(channel_id)}/messages"), json=payload)
+        except discord.HTTPException:
+            LOGGER.exception("웹 결제 확인 요청 전송 실패: order=%s", order["order_id"])
 
     async def orders(self, request):
         user = await self._user(request)
@@ -1344,6 +1677,132 @@ class StoreServer:
         if not row:
             raise StoreError("주문을 찾을 수 없습니다.", 404)
         return web.json_response(dict(row), dumps=lambda value: json.dumps(value, ensure_ascii=False, default=str))
+
+    @staticmethod
+    def _parse_discord_user_id(value) -> int:
+        text = str(value or "").strip()
+        if not re.fullmatch(r"\d{15,20}", text):
+            raise StoreError("Discord 개발자 모드에서 복사한 사용자 ID를 입력해 주세요.")
+        return int(text)
+
+    async def _blacklist_profile(self, user_id: int) -> dict:
+        member = None
+        guild = self._guild()
+        if guild is not None:
+            member = guild.get_member(user_id)
+            if member is None:
+                try:
+                    member = await guild.fetch_member(user_id)
+                except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                    member = None
+        user = member or self.bot.get_user(user_id)
+        if user is None:
+            try:
+                user = await self.bot.fetch_user(user_id)
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                user = None
+        if user is None:
+            return {
+                "nickname": "확인할 수 없는 사용자",
+                "username": "알 수 없음",
+                "avatar_url": "",
+            }
+        nickname = getattr(member, "display_name", None) or getattr(user, "global_name", None) or user.name
+        username = user.name
+        discriminator = getattr(user, "discriminator", "0")
+        if discriminator and discriminator != "0":
+            username = f"{username}#{discriminator}"
+        return {
+            "nickname": nickname,
+            "username": username,
+            "avatar_url": str(user.display_avatar.url),
+        }
+
+    async def admin_blacklist(self, request):
+        await self._admin(request)
+        async with self.bot.db_pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT user_id, reason, added_by, blacklist_type, expires_at, created_at
+                FROM web_blacklist
+                WHERE guild_id=$1 AND (expires_at IS NULL OR expires_at>CURRENT_TIMESTAMP)
+                ORDER BY created_at DESC
+                """,
+                self.guild_id,
+            )
+        profiles = await asyncio.gather(*(
+            self._blacklist_profile(int(row["user_id"])) for row in rows
+        ))
+        entries = []
+        for row, profile in zip(rows, profiles):
+            entries.append({
+                **profile,
+                "user_id": str(row["user_id"]),
+                "reason": row["reason"],
+                "added_by": str(row["added_by"]) if row["added_by"] else "",
+                "blacklist_type": row["blacklist_type"],
+                "expires_at": row["expires_at"],
+                "created_at": row["created_at"],
+            })
+        return web.json_response(
+            {"blacklist": entries},
+            dumps=lambda value: json.dumps(value, ensure_ascii=False, default=str),
+        )
+
+    async def admin_add_blacklist(self, request):
+        admin = await self._admin(request)
+        data = await self._body(request)
+        user_id = self._parse_discord_user_id(data.get("user_id"))
+        reason = str(data.get("reason") or "").strip()
+        blacklist_type = str(data.get("blacklist_type") or "PERMANENT").upper()
+        if blacklist_type not in {"PERMANENT", "TEMPORARY"}:
+            raise StoreError("블랙리스트 종류를 올바르게 선택해 주세요.")
+        expires_at = None
+        if blacklist_type == "TEMPORARY":
+            duration = str(data.get("duration") or "7")
+            if duration in {"7", "30"}:
+                expires_at = datetime.now().astimezone() + timedelta(days=int(duration))
+            else:
+                try:
+                    expires_at = datetime.fromisoformat(str(data.get("expires_at") or "")).astimezone()
+                except (ValueError, TypeError) as exc:
+                    raise StoreError("임시 블랙리스트 종료일을 입력해 주세요.") from exc
+                if expires_at <= datetime.now().astimezone():
+                    raise StoreError("종료일은 현재 시간보다 뒤여야 합니다.")
+        if len(reason) < 2:
+            raise StoreError("블랙리스트 등록 사유를 2자 이상 입력해 주세요.")
+        if len(reason) > 500:
+            raise StoreError("블랙리스트 등록 사유는 500자 이하로 입력해 주세요.")
+        profile = await self._blacklist_profile(user_id)
+        if profile["username"] == "알 수 없음":
+            raise StoreError("해당 사용자 ID의 Discord 사용자를 찾을 수 없습니다.", 404)
+        async with self.bot.db_pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO web_blacklist (guild_id, user_id, reason, added_by, blacklist_type, expires_at)
+                VALUES ($1, $2, $3, $4, $5, $6)
+                ON CONFLICT (guild_id, user_id) DO UPDATE SET
+                    reason=EXCLUDED.reason,
+                    added_by=EXCLUDED.added_by,
+                    blacklist_type=EXCLUDED.blacklist_type,
+                    expires_at=EXCLUDED.expires_at,
+                    created_at=CURRENT_TIMESTAMP
+                """,
+                self.guild_id, user_id, reason, int(admin["id"]), blacklist_type, expires_at,
+            )
+        return web.json_response({"ok": True, "user_id": str(user_id)})
+
+    async def admin_remove_blacklist(self, request):
+        await self._admin(request)
+        user_id = self._parse_discord_user_id(request.match_info["user_id"])
+        async with self.bot.db_pool.acquire() as conn:
+            result = await conn.execute(
+                "DELETE FROM web_blacklist WHERE guild_id=$1 AND user_id=$2",
+                self.guild_id, user_id,
+            )
+        if result == "DELETE 0":
+            raise StoreError("블랙리스트에서 해당 사용자를 찾을 수 없습니다.", 404)
+        return web.json_response({"ok": True})
 
     async def admin_dashboard(self, request):
         await self._admin(request)
@@ -1806,6 +2265,7 @@ class StoreServer:
                     "UPDATE orders SET status='CANCELLED',cancel_reason=$2,points_refunded=CASE WHEN points_used>0 THEN TRUE ELSE points_refunded END,processed_at=CURRENT_TIMESTAMP WHERE order_id=$1",
                     order_id, reason,
                 )
+                await conn.execute("UPDATE web_coupons SET used_order_id=NULL WHERE guild_id=$1 AND used_order_id=$2", self.guild_id, order_id)
                 if order["status"] == "APPROVED":
                     await conn.execute(
                         "UPDATE user_info SET total_spent=GREATEST(COALESCE(total_spent,0)-$2,0) WHERE user_id=$1",
@@ -1909,6 +2369,8 @@ class StoreServer:
         await finalize_approved_order(self.bot, order, processor=f"Pushbullet · {notice.application_name or notice.package_name}")
 
     async def _payment_expired(self, order: dict):
+        async with self.bot.db_pool.acquire() as conn:
+            await conn.execute("UPDATE web_coupons SET used_order_id=NULL WHERE guild_id=$1 AND used_order_id=$2", int(order["guild_id"]), order["order_id"])
         await notify_expired_order(self.bot, order)
 
 

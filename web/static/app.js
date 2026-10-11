@@ -18,6 +18,11 @@ const state = {
   profileStoreResults: [],
   adminOrders: [],
   adminOrderFilter: "all",
+  blacklist: [],
+  adminUsers: [],
+  productSearch: "",
+  siteMessages: [],
+  coupons: [],
 };
 
 const $ = (selector, parent = document) => parent.querySelector(selector);
@@ -128,11 +133,16 @@ function route() {
 async function boot() {
   addEventListener("hashchange", route);
   bindForms();
-  showDiscordNotice();
   try {
     const data = await api("/api/me");
     state.me = data.user;
     state.csrf = data.csrf;
+    if (data.blocked) {
+      $("#blocked-reason").textContent = `등록 사유: ${data.blocked.reason}`;
+      $("#blocked-screen").hidden = false;
+      document.body.classList.add("modal-open");
+      return;
+    }
     $("#login-button").textContent = "내 정보";
     $("#admin-link").hidden = !data.is_admin;
     $("#login-button").onclick = () => { location.hash = "account"; };
@@ -155,6 +165,7 @@ async function boot() {
     toast(error.message);
   }
   route();
+  loadSiteMessages().catch(() => showDiscordNotice());
   loadReviews().catch(error => {
     const track = $("#review-track");
     if (track) track.innerHTML = '<p class="review-empty">구매 후기를 불러오지 못했습니다. 잠시 후 새로고침해 주세요.</p>';
@@ -281,6 +292,8 @@ function renderTabs() {
 
 function renderProducts() {
   const rows = state.products.filter(product => {
+    const query = state.productSearch.trim().toLocaleLowerCase("ko");
+    if (query && !`${product.name} ${product.description || ""} ${product.category_name || ""}`.toLocaleLowerCase("ko").includes(query)) return false;
     if (state.activeParentCategory === "all") return true;
     const inParent = Number(product.category_id) === Number(state.activeParentCategory)
       || Number(product.parent_id) === Number(state.activeParentCategory);
@@ -454,11 +467,15 @@ function cartTotal() {
   const shipping = selectedRows.length ? shippingFee(subtotal) : 0;
   const beforeDiscount = subtotal + shipping;
   const discount = checkoutPointDiscount(beforeDiscount);
-  const total = Math.max(0, beforeDiscount - discount);
+  const coupon = state.coupons.find(item => item.code === $("#checkout-coupon")?.value);
+  const couponDiscount = Math.min(Number(coupon?.discount_amount || 0), Math.max(0, beforeDiscount - discount));
+  const total = Math.max(0, beforeDiscount - discount - couponDiscount);
   $("#cart-subtotal").textContent = money(subtotal);
   $("#cart-shipping").textContent = money(shipping);
   $("#cart-discount").textContent = `-${money(discount)}`;
   $("#cart-discount-row").hidden = discount === 0;
+  $("#cart-coupon-discount").textContent = `-${money(couponDiscount)}`;
+  $("#cart-coupon-row").hidden = couponDiscount === 0;
   $("#cart-total").textContent = money(total);
   $("#selected-count").textContent = `${selectedRows.length}개 선택`;
   updateShippingBenefit(subtotal, selectedRows.length > 0);
@@ -489,12 +506,14 @@ function updateShippingBenefit(subtotal, hasItems) {
 async function loadCheckoutCustomer() {
   if (!state.me) return;
   try {
-    const data = await api("/api/customer");
+    const [data, couponData] = await Promise.all([api("/api/customer"), api("/api/coupons")]);
     for (const key of ["name", "contact", "address", "cvs"]) {
       const input = $(`#checkout-form [name="${key}"]`);
       if (input && !input.value) input.value = data.customer[key] || "";
     }
     state.pointBalance = Number(data.points || 0);
+    state.coupons = couponData.coupons || [];
+    $("#checkout-coupon").innerHTML = '<option value="">사용 안 함</option>' + state.coupons.map(coupon => `<option value="${escapeHtml(coupon.code)}">${escapeHtml(coupon.code)} · ${money(coupon.discount_amount)} 할인</option>`).join("");
     $("#checkout-point-balance").textContent = `보유 ${state.pointBalance.toLocaleString()}P`;
     updatePointUseHint();
     cartTotal();
@@ -510,7 +529,9 @@ function selectedCartRows() {
 function selectedCartTotal() {
   const rows = selectedCartRows();
   const subtotal = rows.reduce((sum, item) => sum + itemUnitPrice(item) * Number(item.quantity), 0);
-  return rows.length ? subtotal + shippingFee(subtotal) : 0;
+  const beforeCoupon = rows.length ? subtotal + shippingFee(subtotal) : 0;
+  const coupon = state.coupons.find(item => item.code === $("#checkout-coupon")?.value);
+  return Math.max(0, beforeCoupon - Number(coupon?.discount_amount || 0));
 }
 
 function maximumCheckoutPoints(total = selectedCartTotal()) {
@@ -702,7 +723,7 @@ async function refreshRegistrationPrompt() {
     const hasDestination = Boolean(String(customer.address || "").trim()) || Boolean(
       String(customer.cvs || "").trim() && String(customer.cvs_address || "").trim()
     );
-    prompt.hidden = Boolean(String(customer.name || "").trim() && String(customer.contact || "").trim() && hasDestination);
+    prompt.hidden = Boolean(String(customer.name || "").trim() && String(customer.contact || "").trim() && String(customer.refund_account || "").trim() && hasDestination);
   } catch {
     prompt.hidden = false;
   }
@@ -863,6 +884,7 @@ function bindForms() {
   $("#checkout-form").onsubmit = checkout;
   $("#use-all-points").onclick = useAllPoints;
   $("#checkout-form [name=\"points\"]").oninput = cartTotal;
+  $("#checkout-coupon").onchange = cartTotal;
   $("#tracking-form").onsubmit = trackDelivery;
   $("#channel-form").onsubmit = saveChannels;
   $("#shipping-method").onchange = updateShippingMode;
@@ -890,6 +912,21 @@ function bindForms() {
   $("#notice-day").onclick = dismissDiscordNoticeForDay;
   $("#action-banner-close").onclick = () => { $("#action-banner").hidden = true; };
   $("#refresh-admin-orders").onclick = loadAdminOrders;
+  $("#refresh-blacklist").onclick = loadBlacklist;
+  $("#blacklist-add-form").onsubmit = addBlacklist;
+  $("#blacklist-remove-form").onsubmit = removeBlacklist;
+  $("#blacklist-type").onchange = updateBlacklistDuration;
+  $("#blacklist-duration").onchange = updateBlacklistDuration;
+  $("#refresh-admin-users").onclick = loadAdminUsers;
+  $("#point-admin-form").onsubmit = saveAdminPoints;
+  $("#coupon-admin-form").onsubmit = issueCoupon;
+  $$(".notice-admin-form").forEach(form => { form.onsubmit = saveNotice; });
+  $("#product-search").oninput = event => { state.productSearch = event.target.value; renderProducts(); };
+  $("#site-message-close").onclick = showNextSiteMessage;
+  $("#site-message-day").onclick = dismissSiteMessageDay;
+  document.addEventListener("keydown", event => {
+    if (event.key === "F12" || (event.ctrlKey && event.shiftKey && ["I", "J", "C"].includes(event.key.toUpperCase())) || (event.ctrlKey && event.key.toUpperCase() === "U")) event.preventDefault();
+  });
   $$('[data-admin-section-target]').forEach(button => {
     button.onclick = () => setAdminSection(button.dataset.adminSectionTarget);
   });
@@ -902,6 +939,14 @@ function bindForms() {
 function setAdminSection(section) {
   $$('[data-admin-section]').forEach(panel => panel.classList.toggle("active", panel.dataset.adminSection === section));
   $$('[data-admin-section-target]').forEach(button => button.classList.toggle("active", button.dataset.adminSectionTarget === section));
+  if (section === "blacklist") loadBlacklist();
+  if (section === "users") loadAdminUsers();
+}
+
+function updateBlacklistDuration() {
+  const temporary = $("#blacklist-type").value === "TEMPORARY";
+  $("#blacklist-duration-fields").hidden = !temporary;
+  $("#blacklist-custom-date").hidden = !temporary || $("#blacklist-duration").value !== "custom";
 }
 
 function bindShippingBanner() {
@@ -945,12 +990,13 @@ async function checkout(event) {
     $("#bank-info").hidden = false;
     $("#complete-order").textContent = data.order_id;
     $("#bank-info").innerHTML = data.cash_amount
-      ? `<strong>${escapeHtml(data.bank.bank_name || "은행 미설정")} ${escapeHtml(data.bank.account_number || "")}</strong><br>${escapeHtml(data.bank.account_holder || "")} · ${money(data.cash_amount)}`
+      ? `<small>입금해야 할 금액</small><b class="payment-amount">${money(data.cash_amount)}</b><strong>${escapeHtml(data.bank.bank_name || "은행 미설정")} ${escapeHtml(data.bank.account_number || "")}</strong><span>예금주 ${escapeHtml(data.bank.account_holder || "미설정")}</span>`
       : "포인트 전액결제로 승인되었습니다.";
     location.hash = "complete";
     startCountdown(data);
   } catch (error) {
     toast(error.message);
+    if (error.message.includes("정보등록")) location.hash = "account";
   }
 }
 
@@ -1029,6 +1075,7 @@ async function loadAdmin(period = "week") {
     api("/api/admin/products"),
     api("/api/admin/channels"),
     api("/api/admin/orders"),
+    api("/api/admin/notices"),
   ]);
   const failures = results.filter(result => result.status === "rejected");
   const passwordFailure = failures.find(result => result.reason?.message?.includes("비밀번호"));
@@ -1037,7 +1084,7 @@ async function loadAdmin(period = "week") {
     return;
   }
 
-  const [dashboardResult, categoriesResult, productsResult, channelsResult, ordersResult] = results;
+  const [dashboardResult, categoriesResult, productsResult, channelsResult, ordersResult, noticesResult] = results;
   if (categoriesResult.status === "fulfilled") {
     state.adminCategories = categoriesResult.value.categories;
   }
@@ -1071,7 +1118,179 @@ async function loadAdmin(period = "week") {
     state.adminOrders = ordersResult.value.orders || [];
     renderAdminOrders();
   }
+  if (noticesResult.status === "fulfilled") {
+    $$(".notice-admin-form").forEach(form => {
+      const item = (noticesResult.value.notices || []).find(row => row.notice_type === form.dataset.noticeType);
+      form.elements.content.value = item?.content || "";
+      form.elements.is_active.checked = Boolean(item?.is_active);
+    });
+  }
   if (failures.length) toast(failures[0].reason?.message || "관리자 정보를 일부 불러오지 못했습니다.");
+}
+
+async function loadBlacklist() {
+  const button = $("#refresh-blacklist");
+  if (button) button.disabled = true;
+  try {
+    const data = await api("/api/admin/blacklist");
+    state.blacklist = data.blacklist || [];
+    renderBlacklist();
+  } catch (error) {
+    toast(error.message);
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
+function renderBlacklist() {
+  const target = $("#blacklist-list");
+  if (!target) return;
+  if (!state.blacklist.length) {
+    target.innerHTML = '<p class="admin-empty">등록된 블랙리스트 사용자가 없습니다.</p>';
+    return;
+  }
+  target.innerHTML = state.blacklist.map(entry => {
+    const created = new Date(entry.created_at);
+    const createdText = Number.isNaN(created.getTime()) ? "" : created.toLocaleString("ko-KR");
+    const avatar = entry.avatar_url
+      ? `<img class="blacklist-avatar" src="${escapeHtml(entry.avatar_url)}" alt="${escapeHtml(entry.nickname)} 프로필 사진" loading="lazy">`
+      : `<span class="blacklist-avatar fallback" aria-hidden="true">?</span>`;
+    return `
+      <article class="blacklist-row">
+        ${avatar}
+        <div class="blacklist-user">
+          <div><strong>${escapeHtml(entry.nickname)}</strong><span>@${escapeHtml(entry.username)}</span></div>
+          <code>사용자 ID · ${escapeHtml(entry.user_id)}</code>
+          <p><b>${entry.blacklist_type === "TEMPORARY" ? "임시" : "영구"}</b>${escapeHtml(entry.reason)}${entry.expires_at ? ` · ${escapeHtml(new Date(entry.expires_at).toLocaleString("ko-KR"))}까지` : ""}</p>
+        </div>
+        <div class="blacklist-meta">
+          ${createdText ? `<time>${escapeHtml(createdText)}</time>` : ""}
+          <button type="button" class="button danger compact" data-blacklist-remove="${escapeHtml(entry.user_id)}">해제</button>
+        </div>
+      </article>`;
+  }).join("");
+  $$('[data-blacklist-remove]', target).forEach(button => {
+    button.onclick = async () => {
+      if (!confirm("이 사용자를 블랙리스트에서 해제할까요?")) return;
+      button.disabled = true;
+      try {
+        await api(`/api/admin/blacklist/${encodeURIComponent(button.dataset.blacklistRemove)}`, { method: "DELETE", body: "{}" });
+        await loadBlacklist();
+        toast("블랙리스트에서 해제했습니다.");
+      } catch (error) {
+        button.disabled = false;
+        toast(error.message);
+      }
+    };
+  });
+}
+
+async function loadAdminUsers() {
+  try {
+    const data = await api("/api/admin/users");
+    state.adminUsers = data.users || [];
+    renderAdminUsers();
+  } catch (error) { toast(error.message); }
+}
+
+function renderAdminUsers() {
+  const target = $("#admin-users");
+  if (!target) return;
+  target.innerHTML = state.adminUsers.length ? state.adminUsers.map(user => `
+    <details class="admin-user-row">
+      <summary>${user.avatar_url ? `<img src="${escapeHtml(user.avatar_url)}" alt="">` : '<span class="blacklist-avatar fallback">?</span>'}<span><strong>${escapeHtml(user.nickname)}</strong><small>@${escapeHtml(user.username)} · ${escapeHtml(user.user_id)}</small></span><b>${Number(user.points || 0).toLocaleString()}P</b></summary>
+      <div class="admin-user-details"><p><b>실명</b>${escapeHtml(user.name || "미등록")}</p><p><b>전화번호</b>${escapeHtml(user.contact || "미등록")}</p><p><b>집주소</b>${escapeHtml(user.address || "미등록")}</p><p><b>편의점</b>${escapeHtml([user.cvs_brand, user.cvs, user.cvs_address].filter(Boolean).join(" · ") || "미등록")}</p><p><b>환불계좌</b>${escapeHtml(user.refund_account || "미등록")}</p><p><b>누적 구매</b>${money(user.total_spent)}</p></div>
+    </details>`).join("") : '<p class="admin-empty">등록된 유저 정보가 없습니다.</p>';
+}
+
+async function saveAdminPoints(event) {
+  event.preventDefault();
+  const data = Object.fromEntries(new FormData(event.target));
+  data.all_users = Boolean(data.all_users);
+  if (data.all_users && !confirm("등록된 모든 유저에게 이 포인트를 적용할까요?")) return;
+  try {
+    const result = await api("/api/admin/points", { method: "POST", body: JSON.stringify(data) });
+    await loadAdminUsers();
+    toast(data.all_users ? `${result.count}명에게 포인트를 적용했습니다.` : `포인트를 적용했습니다. 현재 ${Number(result.balance).toLocaleString()}P`);
+  } catch (error) { toast(error.message); }
+}
+
+async function saveNotice(event) {
+  event.preventDefault();
+  const data = Object.fromEntries(new FormData(event.target));
+  data.notice_type = event.target.dataset.noticeType;
+  data.is_active = Boolean(data.is_active);
+  try {
+    await api("/api/admin/notices", { method: "PUT", body: JSON.stringify(data) });
+    toast(`${data.notice_type === "NOTICE" ? "공지" : "이벤트"}를 저장했습니다.`);
+  } catch (error) { toast(error.message); }
+}
+
+async function issueCoupon(event) {
+  event.preventDefault();
+  try {
+    const result = await api("/api/admin/coupons", { method: "POST", body: JSON.stringify(Object.fromEntries(new FormData(event.target))) });
+    toast(`쿠폰을 지급했습니다. 코드: ${result.code}`);
+    event.target.reset(); event.target.elements.days.value = 30;
+  } catch (error) { toast(error.message); }
+}
+
+async function loadSiteMessages() {
+  const data = await api("/api/notices");
+  state.siteMessages = (data.notices || []).sort((a, b) => (a.notice_type === "NOTICE" ? -1 : 1)).filter(item => Number(localStorage.getItem(`siteMessage:${item.notice_type}:${item.updated_at}`) || 0) < Date.now());
+  showNextSiteMessage();
+}
+
+function showNextSiteMessage() {
+  const item = state.siteMessages.shift();
+  const modal = $("#site-message");
+  if (!item) { modal.hidden = true; document.body.classList.remove("modal-open"); showDiscordNotice(); return; }
+  modal.dataset.key = `siteMessage:${item.notice_type}:${item.updated_at}`;
+  $("#site-message-type").textContent = item.notice_type;
+  $("#site-message-title").textContent = item.notice_type === "NOTICE" ? "공지사항" : "진행 중인 이벤트";
+  $("#site-message-content").textContent = item.content;
+  modal.hidden = false; document.body.classList.add("modal-open");
+}
+
+function dismissSiteMessageDay() {
+  const key = $("#site-message").dataset.key;
+  if (key) localStorage.setItem(key, String(Date.now() + 86400000));
+  showNextSiteMessage();
+}
+
+async function addBlacklist(event) {
+  event.preventDefault();
+  const submit = event.submitter || event.currentTarget.querySelector('button[type="submit"]');
+  submit.disabled = true;
+  try {
+    await api("/api/admin/blacklist", { method: "POST", body: JSON.stringify(Object.fromEntries(new FormData(event.target))) });
+    event.target.reset();
+    updateBlacklistDuration();
+    await loadBlacklist();
+    toast("블랙리스트에 등록했습니다.");
+  } catch (error) {
+    toast(error.message);
+  } finally {
+    submit.disabled = false;
+  }
+}
+
+async function removeBlacklist(event) {
+  event.preventDefault();
+  const userId = String(new FormData(event.target).get("user_id") || "").trim();
+  if (!confirm("입력한 사용자를 블랙리스트에서 해제할까요?")) return;
+  const submit = event.submitter || event.currentTarget.querySelector('button[type="submit"]');
+  submit.disabled = true;
+  try {
+    await api(`/api/admin/blacklist/${encodeURIComponent(userId)}`, { method: "DELETE", body: "{}" });
+    event.target.reset();
+    await loadBlacklist();
+    toast("블랙리스트에서 해제했습니다.");
+  } catch (error) {
+    toast(error.message);
+  } finally {
+    submit.disabled = false;
+  }
 }
 
 async function loadAdminOrders() {

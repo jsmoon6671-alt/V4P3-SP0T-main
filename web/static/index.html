@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@500;600;700;800&family=Noto+Sans+KR:wght@500;600;700;800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/static/styles.css?v=20261011-32">
+  <link rel="stylesheet" href="/static/styles.css?v=20261011-34">
 </head>
 <body>
   <div class="grain"></div>
@@ -24,10 +24,10 @@
   <header class="site-header">
     <a class="brand" href="#home"><span>V4P3</span> SP0T</a>
     <nav id="nav">
-      <a href="#home">스토어</a><a href="#account">정보등록</a><a href="#review-write">후기작성</a><a href="#ranking">구매랭킹</a><a href="#tiers">등급표</a><a href="#terms">이용약관</a><a href="#tracking">배송조회</a><a href="#cart">장바구니 <b id="cart-count">0</b></a>
+      <a href="#home">스토어</a><a href="#account">정보등록</a><a href="#review-write">후기작성</a><a href="#ranking">구매랭킹</a><a href="#tiers">등급표</a><a href="#terms">이용약관</a><a href="#tracking">배송조회</a>
       <a href="#admin" id="admin-link" hidden>관리자</a>
     </nav>
-    <button class="button small" id="login-button">Discord 로그인</button>
+    <div class="header-actions"><a class="button secondary small" href="#cart">장바구니 <b id="cart-count">0</b></a><button class="button small" id="login-button">Discord 로그인</button></div>
   </header>
 
   <main>
@@ -47,6 +47,7 @@
           <div id="category-tabs" class="tabs subcategory-tabs" aria-label="하위 카테고리" hidden></div>
         </div>
       </div>
+      <label class="product-search"><span>상품 검색</span><input id="product-search" type="search" placeholder="상품명 또는 설명을 검색해 주세요."></label>
       <div id="products" class="product-grid"></div>
     </section>
 
@@ -65,7 +66,7 @@
           <label>편의점명<span class="input-action"><input id="profile-store-query" name="cvs" placeholder="지점명"><button type="button" id="profile-store-search" class="button secondary compact">주소 조회</button></span></label>
           <label>편의점 검색결과<select id="profile-store-results"><option value="">편의점을 조회해 주세요</option></select></label>
           <label>편의점 주소<textarea name="cvs_address" readonly></textarea></label>
-          <label>환불계좌 <small>선택사항</small><input name="refund_account" placeholder="은행명 / 계좌번호 / 예금주"></label>
+          <label>환불계좌 <small>필수</small><input name="refund_account" placeholder="은행명 / 계좌번호 / 예금주" required></label>
           <button class="button" type="submit">정보 저장</button>
         </form>
         <div><div class="point-card"><small>사용 가능 포인트</small><strong id="point-balance">0P</strong><span>1P = 1원 할인</span></div><div id="orders" class="order-list"></div></div>
@@ -183,6 +184,7 @@
             <span class="point-input-row"><input name="points" type="number" min="0" max="2000" value="0"><button type="button" id="use-all-points" class="button secondary compact">전체 포인트 사용</button></span>
           </label>
           <small id="point-use-hint" class="hint">사용하지 않으면 0P, 사용할 때는 500P~2,000P까지 입력해 주세요.</small>
+          <label>쿠폰<select name="coupon_code" id="checkout-coupon"><option value="">사용 안 함</option></select></label>
           <label class="check"><input name="order_confirmed" type="checkbox" required><span>주문 상품, 수량, 배송지와 결제금액이 정확한지 확인했습니다.</span></label>
           <small class="hint">입금자명과 결제금액이 알림과 정확히 일치하면 자동 승인됩니다.</small>
         </form>
@@ -193,6 +195,7 @@
             <div class="total-row"><span>상품 금액</span><strong id="cart-subtotal">0원</strong></div>
             <div class="total-row"><span>배송비</span><strong id="cart-shipping">0원</strong></div>
             <div class="total-row discount" id="cart-discount-row" hidden><span>포인트 할인</span><strong id="cart-discount">-0원</strong></div>
+            <div class="total-row discount" id="cart-coupon-row" hidden><span>쿠폰 할인</span><strong id="cart-coupon-discount">-0원</strong></div>
             <div class="total-row grand"><span>총 결제금액</span><strong id="cart-total">0원</strong></div>
           </div>
           <button class="button wide" type="submit" form="checkout-form">결제하기</button>
@@ -212,6 +215,9 @@
         <button type="button" data-admin-section-target="products">상품관리</button>
         <button type="button" data-admin-section-target="orders">주문관리</button>
         <button type="button" data-admin-section-target="channels">채널설정</button>
+        <button type="button" data-admin-section-target="blacklist">블랙리스트</button>
+        <button type="button" data-admin-section-target="users">유저정보</button>
+        <button type="button" data-admin-section-target="notices">공지·이벤트</button>
       </nav>
       <div class="admin-section active" data-admin-section="dashboard">
         <div id="metrics" class="metrics"></div>
@@ -228,6 +234,42 @@
       </div>
       <div class="admin-section" data-admin-section="channels">
         <form id="channel-form" class="panel form-panel channels"><h2>Discord 채널 설정</h2><label>결제 승인 채널 ID<input name="approval_channel_id" inputmode="numeric" autocomplete="off"></label><label>구매로그 채널 ID<input name="log_channel_id" inputmode="numeric" autocomplete="off"></label><label>구매자정보 채널 ID<input name="buyer_info_channel_id" inputmode="numeric" autocomplete="off"></label><label>구매후기 채널 ID<input name="review_channel_id" inputmode="numeric" autocomplete="off"></label><button class="button" type="submit">채널 저장</button></form>
+      </div>
+      <div class="admin-section" data-admin-section="blacklist">
+        <div class="blacklist-tools">
+          <form id="blacklist-add-form" class="panel form-panel">
+            <p class="eyebrow">BLOCK USER</p>
+            <h2>블랙리스트 등록</h2>
+            <p>Discord 개발자 모드에서 복사한 사용자 ID로 등록합니다.</p>
+            <label>사용자 ID<input name="user_id" inputmode="numeric" pattern="[0-9]{15,20}" maxlength="20" autocomplete="off" placeholder="예: 123456789012345678" required></label>
+            <label>종류<select name="blacklist_type" id="blacklist-type"><option value="PERMANENT">블랙리스트 · 사이트 접속 차단</option><option value="TEMPORARY">임시 블랙리스트 · 구매만 차단</option></select></label>
+            <div id="blacklist-duration-fields" hidden><label>기간<select name="duration" id="blacklist-duration"><option value="7">7일</option><option value="30">30일</option><option value="custom">직접 입력</option></select></label><label id="blacklist-custom-date" hidden>종료 일시<input name="expires_at" type="datetime-local"></label></div>
+            <label>등록 사유<textarea name="reason" minlength="2" maxlength="500" placeholder="블랙리스트 등록 사유를 입력해 주세요." required></textarea></label>
+            <button class="button" type="submit">블랙리스트 등록</button>
+          </form>
+          <form id="blacklist-remove-form" class="panel form-panel">
+            <p class="eyebrow">UNBLOCK USER</p>
+            <h2>블랙리스트 해제</h2>
+            <p>등록되어 있는 사용자의 Discord 사용자 ID를 입력합니다.</p>
+            <label>사용자 ID<input name="user_id" inputmode="numeric" pattern="[0-9]{15,20}" maxlength="20" autocomplete="off" placeholder="예: 123456789012345678" required></label>
+            <button class="button danger" type="submit">블랙리스트 해제</button>
+          </form>
+        </div>
+        <div class="panel">
+          <div class="panel-head"><div><p class="eyebrow">BLOCKED MEMBERS</p><h2>블랙리스트 목록</h2></div><button type="button" id="refresh-blacklist" class="button secondary compact">새로고침</button></div>
+          <div id="blacklist-list" class="blacklist-list"><p class="admin-empty">목록을 불러오는 중입니다.</p></div>
+        </div>
+      </div>
+      <div class="admin-section" data-admin-section="users">
+        <div class="panel"><div class="panel-head"><h2>유저 정보</h2><button type="button" id="refresh-admin-users" class="button secondary compact">새로고침</button></div><div id="admin-users"><p class="admin-empty">유저 정보를 불러오는 중입니다.</p></div></div>
+        <form id="point-admin-form" class="panel form-panel admin-subpanel"><h2>유저 포인트 관리</h2><label>사용자 ID<input name="user_id" inputmode="numeric" placeholder="전체 지급이면 비워두세요"></label><label>변경 포인트<input name="amount" type="number" placeholder="지급 1000 / 차감 -1000" required></label><label class="check"><input name="all_users" type="checkbox"><span>등록된 모든 유저에게 지급</span></label><button class="button" type="submit">포인트 적용</button></form>
+      </div>
+      <div class="admin-section" data-admin-section="notices">
+        <div class="blacklist-tools">
+          <form class="panel form-panel notice-admin-form" data-notice-type="NOTICE"><h2>공지</h2><label>내용<textarea name="content" maxlength="2000"></textarea></label><label class="check"><input name="is_active" type="checkbox"><span>사이트 접속 시 표시</span></label><button class="button" type="submit">공지 저장</button></form>
+          <form class="panel form-panel notice-admin-form" data-notice-type="EVENT"><h2>이벤트</h2><label>내용<textarea name="content" maxlength="2000"></textarea></label><label class="check"><input name="is_active" type="checkbox"><span>공지 다음에 표시</span></label><button class="button" type="submit">이벤트 저장</button></form>
+        </div>
+        <form id="coupon-admin-form" class="panel form-panel admin-subpanel"><h2>구매 쿠폰 지급</h2><label>사용자 ID<input name="user_id" inputmode="numeric" required></label><label>할인 금액<input name="discount_amount" type="number" min="1" required></label><label>사용 기한(일)<input name="days" type="number" min="1" max="365" value="30" required></label><button class="button" type="submit">쿠폰 지급</button></form>
       </div>
     </section>
   </main>
@@ -277,6 +319,8 @@
     </div>
   </div>
   <div id="toast"></div>
-  <script src="/static/app.js?v=20261011-32"></script>
+  <div id="site-message" class="modal-backdrop" hidden><div class="modal-card notice-card"><div class="notice-content"><p id="site-message-type" class="eyebrow">NOTICE</p><h2 id="site-message-title">안내</h2><p id="site-message-content"></p><div class="notice-actions"><button type="button" id="site-message-close" class="button secondary">닫기</button><button type="button" id="site-message-day" class="button">24시간 동안 안 보기</button></div></div></div></div>
+  <div id="blocked-screen" class="blocked-screen" hidden><div class="panel"><p class="eyebrow">ACCESS BLOCKED</p><h1>블랙리스트에 등록되었습니다.</h1><p id="blocked-reason"></p><p>오류라고 생각되면 Discord 서버에서 문의 티켓을 열어 주세요.</p><a class="button" href="https://discord.gg/v4p3sp0t" target="_blank" rel="noopener">Discord에서 티켓 열기</a></div></div>
+  <script src="/static/app.js?v=20261011-34"></script>
 </body>
 </html>

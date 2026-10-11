@@ -2,6 +2,7 @@ import unittest
 
 from web_store import (
     StoreError,
+    StoreServer,
     calculate_shipping_fee,
     normalize_option_groups,
     option_surcharge,
@@ -58,6 +59,12 @@ class WebStoreShippingTests(unittest.TestCase):
                 {"label": "없음", "options": []},
                 {"label": "색상", "options": ["블랙"]},
             ])
+
+    def test_admin_password_is_stored_as_a_salted_hash(self):
+        encoded = StoreServer._password_hash("test-password")
+        self.assertNotIn("test-password", encoded)
+        self.assertTrue(StoreServer._verify_password("test-password", encoded))
+        self.assertFalse(StoreServer._verify_password("wrong-password", encoded))
 
 
 if __name__ == "__main__":
