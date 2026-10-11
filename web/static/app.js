@@ -25,6 +25,8 @@ const state = {
   coupons: [],
   supportType: "general",
   couponEvents: [],
+  eventNotices: [],
+  notices: [],
   welcomePending: false,
 };
 
@@ -82,6 +84,8 @@ const optionGroupEditors = product => {
 };
 const CHANNEL_CACHE_KEY = "v4p3DiscordChannelIds";
 const SHIPPING_BANNER_KEY = "v4p3ShippingBannerClosed";
+const NOTICE_SEEN_KEY = "v4p3NoticeSeenAt";
+const EVENT_SEEN_KEY = "v4p3EventSeenAt";
 
 function toast(message) {
   const element = $("#toast");
@@ -131,6 +135,7 @@ function route() {
   if (id === "ranking") loadPurchaseRanking();
   if (id === "support") renderSupportForm();
   if (id === "events" && state.me) loadCouponEvents(false);
+  if (id === "notices") loadNoticesPage();
   if (id === "admin") openAdminGate();
   scrollTo(0, 0);
 }
@@ -171,6 +176,7 @@ async function boot() {
   } catch (error) {
     toast(error.message);
   }
+  try { await refreshNoticeIndicators(); } catch (error) { console.error("새 공지 표시를 확인하지 못했습니다.", error); }
   route();
   if (!state.welcomePending) loadSiteMessages().catch(() => showDiscordNotice());
   loadReviews().catch(error => {
@@ -1400,17 +1406,39 @@ async function createCouponEvent(event) {
 
 async function loadCouponEvents(showWelcome = false) {
   if (!state.me) return;
-  const data = await api("/api/coupon-events");
-  state.couponEvents = data.events || [];
-  state.welcomePending = Boolean(data.welcome_pending);
+  const [couponData, noticeData] = await Promise.all([
+    api("/api/coupon-events"),
+    api("/api/notices"),
+  ]);
+  state.couponEvents = couponData.events || [];
+  state.eventNotices = (noticeData.notices || []).filter(item => item.notice_type === "EVENT");
+  state.welcomePending = Boolean(couponData.welcome_pending);
   renderCouponEvents();
+  updateNoticeIndicators(noticeData.notices || [], state.couponEvents);
   if (showWelcome && state.welcomePending) {
     $("#welcome-coupon-modal").hidden = false;
     document.body.classList.add("modal-open");
   }
+  if (!showWelcome && (location.hash.slice(1) || "home") === "events") {
+    const latest = Math.max(
+      latestUpdate(state.eventNotices, "updated_at"),
+      latestUpdate(state.couponEvents.filter(item => item.event_key !== "WELCOME"), "created_at"),
+    );
+    if (latest) localStorage.setItem(EVENT_SEEN_KEY, String(latest));
+    updateNoticeIndicators();
+  }
 }
 
 function renderCouponEvents() {
+  const announcements = $("#event-announcement-list");
+  if (announcements) {
+    announcements.hidden = !state.eventNotices.length;
+    announcements.innerHTML = state.eventNotices.map(item => `
+      <article class="event-announcement-card">
+        <div class="event-announcement-mark" aria-hidden="true">EVENT</div>
+        <div><p class="eyebrow">NOW ON V4P3 SP0T</p><h2>진행 중인 이벤트</h2><p>${escapeHtml(item.content)}</p></div>
+      </article>`).join("");
+  }
   const target = $("#coupon-event-list");
   if (!target) return;
   target.innerHTML = state.couponEvents.length ? state.couponEvents.map(event => `
@@ -1422,6 +1450,47 @@ function renderCouponEvents() {
   $$('[data-claim-coupon]', target).forEach(button => {
     button.onclick = () => claimCouponEvent(button.dataset.claimCoupon, false);
   });
+}
+
+function latestUpdate(items, field) {
+  return items.reduce((latest, item) => Math.max(latest, Date.parse(item[field] || "") || 0), 0);
+}
+
+function updateNoticeIndicators(notices = state.notices, couponEvents = state.couponEvents) {
+  state.notices = notices;
+  const noticeUpdates = notices.filter(item => item.notice_type === "NOTICE");
+  const eventUpdates = notices.filter(item => item.notice_type === "EVENT");
+  const noticeLatest = latestUpdate(noticeUpdates, "updated_at");
+  const eventLatest = Math.max(
+    latestUpdate(eventUpdates, "updated_at"),
+    latestUpdate(couponEvents.filter(item => item.event_key !== "WELCOME"), "created_at"),
+  );
+  $("#notices-nav-dot").hidden = !noticeLatest || noticeLatest <= Number(localStorage.getItem(NOTICE_SEEN_KEY) || 0);
+  $("#events-nav-dot").hidden = !eventLatest || eventLatest <= Number(localStorage.getItem(EVENT_SEEN_KEY) || 0);
+}
+
+async function refreshNoticeIndicators() {
+  const data = await api("/api/notices");
+  updateNoticeIndicators(data.notices || [], state.couponEvents);
+}
+
+async function loadNoticesPage() {
+  const target = $("#notice-page-list");
+  try {
+    const data = await api("/api/notices");
+    state.notices = data.notices || [];
+    const notices = state.notices.filter(item => item.notice_type === "NOTICE");
+    target.innerHTML = notices.length ? notices.map(item => `
+      <article class="notice-page-card">
+        <div class="notice-page-mark" aria-hidden="true">NOTICE</div>
+        <div><p class="eyebrow">OFFICIAL NOTICE</p><h2>공지사항</h2><p>${escapeHtml(item.content)}</p><time>${new Date(item.updated_at).toLocaleString("ko-KR")}</time></div>
+      </article>`).join("") : '<div class="empty">현재 등록된 공지사항이 없습니다.</div>';
+    const latest = latestUpdate(notices, "updated_at");
+    if (latest) localStorage.setItem(NOTICE_SEEN_KEY, String(latest));
+    updateNoticeIndicators();
+  } catch (error) {
+    target.innerHTML = `<div class="empty">${escapeHtml(error.message)}</div>`;
+  }
 }
 
 async function claimCouponEvent(eventKey, welcome) {

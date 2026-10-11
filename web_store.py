@@ -1363,7 +1363,7 @@ class StoreServer:
                 self.guild_id, user_id,
             ))
             rows = await conn.fetch(
-                """SELECT e.event_key,e.title,e.description,e.discount_amount,e.valid_days,
+                """SELECT e.event_key,e.title,e.description,e.discount_amount,e.valid_days,e.created_at,
                           (c.user_id IS NOT NULL) claimed
                    FROM web_coupon_events e
                    LEFT JOIN web_coupon_claims c ON c.guild_id=e.guild_id AND c.event_key=e.event_key AND c.user_id=$2
@@ -1384,7 +1384,7 @@ class StoreServer:
                 "event_key": "WELCOME", "title": "웰컴 2,000원 할인쿠폰",
                 "description": "V4P3 SP0T 첫 구매에 사용할 수 있는 신규 회원 전용 쿠폰입니다.",
                 "discount_amount": 2_000, "valid_days": 30,
-                "claimed": welcome_claimed, "image_url": "/static/welcome-coupon.png",
+                "claimed": welcome_claimed, "image_url": "/static/welcome-coupon.png", "created_at": "",
             })
         return web.json_response({
             "events": events,
