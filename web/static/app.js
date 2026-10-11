@@ -136,6 +136,7 @@ function route() {
 }
 
 async function boot() {
+  await ensureAgeVerified();
   addEventListener("hashchange", route);
   bindForms();
   try {
@@ -176,6 +177,41 @@ async function boot() {
     const track = $("#review-track");
     if (track) track.innerHTML = '<p class="review-empty">구매 후기를 불러오지 못했습니다. 잠시 후 새로고침해 주세요.</p>';
     console.error("구매후기를 불러오지 못했습니다.", error);
+  });
+}
+
+async function ensureAgeVerified() {
+  const modal = $("#age-gate");
+  const button = $("#age-confirm");
+  let verified = false;
+  try {
+    const result = await api("/api/age-verification");
+    verified = Boolean(result.verified);
+  } catch (error) {
+    console.error("성인 확인 상태를 불러오지 못했습니다.", error);
+  }
+  if (verified) return;
+
+  modal.hidden = false;
+  document.body.classList.add("modal-open");
+  $$('header, main, #review-showcase').forEach(element => { element.inert = true; });
+  await new Promise(resolve => {
+    button.onclick = async () => {
+      const label = button.textContent;
+      button.disabled = true;
+      button.textContent = "확인 중...";
+      try {
+        await api("/api/age-verification", { method: "POST", body: "{}" });
+        modal.hidden = true;
+        document.body.classList.remove("modal-open");
+        $$('header, main, #review-showcase').forEach(element => { element.inert = false; });
+        resolve();
+      } catch (error) {
+        toast(error.message);
+        button.disabled = false;
+        button.textContent = label;
+      }
+    };
   });
 }
 
@@ -1131,6 +1167,7 @@ function openAdminGate() {
     return;
   }
   setAdminSection("dashboard");
+  document.body.classList.add("admin-locked");
   $("#admin-gate").hidden = false;
   document.body.classList.add("modal-open");
   setTimeout(() => $('#admin-password-form input[name="password"]').focus(), 0);
@@ -1138,7 +1175,7 @@ function openAdminGate() {
 
 function closeAdminGate() {
   $("#admin-gate").hidden = true;
-  document.body.classList.remove("modal-open");
+  document.body.classList.remove("modal-open", "admin-locked");
   $("#admin-password-form").reset();
 }
 

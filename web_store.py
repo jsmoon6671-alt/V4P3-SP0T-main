@@ -284,6 +284,12 @@ async def initialize_web_store_schema(conn):
             claimed_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
             PRIMARY KEY (guild_id, event_key, user_id)
         );
+        CREATE TABLE IF NOT EXISTS web_age_confirmations (
+            guild_id BIGINT NOT NULL,
+            ip_hash TEXT NOT NULL,
+            confirmed_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (guild_id, ip_hash)
+        );
         ALTER TABLE orders ADD COLUMN IF NOT EXISTS coupon_code TEXT;
         ALTER TABLE orders ADD COLUMN IF NOT EXISTS coupon_discount BIGINT NOT NULL DEFAULT 0;
         ALTER TABLE web_categories ADD COLUMN IF NOT EXISTS guild_id BIGINT NOT NULL DEFAULT 0;
@@ -439,6 +445,8 @@ class StoreServer:
     async def _session(self, request, handler):
         request["session"] = self._decode(request.cookies.get(COOKIE, ""))
         if request.method not in {"GET", "HEAD", "OPTIONS"} and request.path.startswith("/api/"):
+            if request.path == "/api/age-verification":
+                return await handler(request)
             session = request["session"]
             if not session:
                 raise StoreError("로그인이 필요합니다.", 401)
@@ -472,6 +480,8 @@ class StoreServer:
             web.get("/auth/login", self.login),
             web.get("/auth/callback", self.callback),
             web.post("/api/logout", self.logout),
+            web.get("/api/age-verification", self.age_verification),
+            web.post("/api/age-verification", self.age_verification),
             web.get("/api/me", self.me),
             web.get(r"/api/products/{product_id:\d+}/image", self.product_image),
             web.get("/api/catalog", self.catalog),
@@ -762,6 +772,33 @@ class StoreServer:
             "pushbullet": self.payment_service.enabled,
             "payment_timeout_seconds": 300,
         })
+
+    def _client_ip_hash(self, request) -> str:
+        forwarded = request.headers.get("X-Forwarded-For", "")
+        client_ip = forwarded.split(",", 1)[0].strip() if forwarded else ""
+        client_ip = request.headers.get("CF-Connecting-IP", "").strip() or client_ip
+        client_ip = client_ip or (request.remote or "unknown")
+        key = self.secret or b"v4p3-age-verification"
+        return hmac.new(key, client_ip.encode("utf-8", "ignore"), hashlib.sha256).hexdigest()
+
+    async def age_verification(self, request):
+        ip_hash = self._client_ip_hash(request)
+        async with self.bot.db_pool.acquire() as conn:
+            if request.method == "POST":
+                await conn.execute(
+                    """
+                    INSERT INTO web_age_confirmations (guild_id, ip_hash)
+                    VALUES ($1, $2)
+                    ON CONFLICT (guild_id, ip_hash) DO NOTHING
+                    """,
+                    self.guild_id, ip_hash,
+                )
+                return web.json_response({"verified": True})
+            verified = await conn.fetchval(
+                "SELECT EXISTS(SELECT 1 FROM web_age_confirmations WHERE guild_id=$1 AND ip_hash=$2)",
+                self.guild_id, ip_hash,
+            )
+        return web.json_response({"verified": bool(verified)})
 
     async def index(self, request):
         return web.FileResponse(STATIC / "index.html")

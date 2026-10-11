@@ -412,6 +412,14 @@ h3,strong { font-weight: 800; }
 
 .modal-backdrop { position: fixed; inset: 0; z-index: 100; display: grid; place-items: center; padding: 20px; background: rgba(5,7,6,.86); }
 .modal-backdrop[hidden] { display: none; }
+.age-gate { z-index: 1000; background: #050806; }
+.age-gate-card { width: min(480px,100%); text-align: center; }
+.age-gate-card .notice-content { display: grid; gap: 14px; }
+.age-gate-card h2 { margin: 0; font-size: clamp(27px,6vw,38px); }
+.age-gate-card p { margin: 0; }
+.age-gate-card small { color: var(--muted); font-size: 10px; }
+#admin-gate { z-index: 650; background: #070c09; }
+body.admin-locked #admin { visibility: hidden; }
 .modal-card { width: min(520px,100%); max-height: min(760px,calc(100vh - 40px)); overflow-y: auto; border: 1px solid var(--line-strong); border-top: 3px solid var(--accent); border-radius: 6px; background: var(--surface); box-shadow: var(--shadow); }
 .modal-card .form-panel { position: relative; padding: 28px; }
 .modal-card h2 { margin: 0 40px 6px 0; }
