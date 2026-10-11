@@ -5,8 +5,10 @@ from web_store import (
     StoreError,
     calculate_shipping_fee,
     normalize_option_groups,
+    normalize_selected_options,
     option_surcharge,
     parse_product_options,
+    product_selection_surcharge,
     selected_options_surcharge,
 )
 
@@ -59,6 +61,22 @@ class WebStoreShippingTests(unittest.TestCase):
                 {"label": "없음", "options": []},
                 {"label": "색상", "options": ["블랙"]},
             ])
+
+    def test_buyer_text_question_requires_an_answer(self):
+        groups = normalize_option_groups([
+            {"type": "text", "label": "각인할 문구를 입력해 주세요", "options": []},
+        ])
+        self.assertEqual(groups, [{"type": "text", "label": "각인할 문구를 입력해 주세요", "options": []}])
+        self.assertEqual(normalize_selected_options(groups, ["V4P3 SP0T"]), ["V4P3 SP0T"])
+        with self.assertRaisesRegex(StoreError, "답변"):
+            normalize_selected_options(groups, [""])
+
+    def test_buyer_text_answer_never_adds_a_surcharge(self):
+        groups = normalize_option_groups([
+            {"type": "text", "label": "요청사항", "options": []},
+            {"label": "패키지", "options": ["기본", "선물 (+2000)"]},
+        ])
+        self.assertEqual(product_selection_surcharge(groups, ["문구 (+9000)", "선물 (+2000)"]), 2_000)
 
     def test_admin_account_is_the_configured_discord_user(self):
         self.assertEqual(ADMIN_USER_ID, 259758966043574272)

@@ -14,6 +14,7 @@ from order_editing import build_purchase_log_payload, sync_buyer_roles
 
 LOGGER = logging.getLogger(__name__)
 KST = datetime.timezone(datetime.timedelta(hours=9))
+STORE_ADMIN_USER_ID = int(os.getenv("WEB_ADMIN_USER_ID", "259758966043574272"))
 
 
 def _v2(content: str, color: int = 0x32CD32, users: list[int] | None = None) -> dict:
@@ -54,8 +55,8 @@ async def notify_product_subadmins(bot, order: dict):
         )
         user_info = await conn.fetchrow("SELECT * FROM user_info WHERE user_id=$1", buyer_id)
     recipients = {int(row["user_id"]) for row in rows}
-    owner_id = int(os.getenv("BOT_OWNER_ID", "0") or 0)
-    if recipients and owner_id: recipients.add(owner_id)
+    owner_id = int(os.getenv("BOT_OWNER_ID", "0") or 0) or STORE_ADMIN_USER_ID
+    if recipients: recipients.add(owner_id)
     if not recipients: return
     info = dict(user_info) if user_info else {}
     detail = (

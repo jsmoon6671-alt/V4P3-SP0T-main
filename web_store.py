@@ -155,10 +155,15 @@ def normalize_option_groups(raw_groups, legacy_label="없음", legacy_options=No
             continue
         if unused_seen:
             raise StoreError("선택 항목은 1번부터 순서대로 만들어 주세요.")
+        group_type = "text" if str(group.get("type", "choice")).strip().lower() == "text" else "choice"
         if not label:
-            raise StoreError("직접 입력할 옵션명을 작성해 주세요.")
-        if len(label) > 30 or any(ord(character) < 32 for character in label):
-            raise StoreError("옵션명은 줄바꿈 없이 30자 이하로 입력해 주세요.")
+            raise StoreError("질문 또는 옵션명을 작성해 주세요.")
+        max_label_length = 100 if group_type == "text" else 30
+        if len(label) > max_label_length or any(ord(character) < 32 for character in label):
+            raise StoreError(f"{'질문' if group_type == 'text' else '옵션명'}은 줄바꿈 없이 {max_label_length}자 이하로 입력해 주세요.")
+        if group_type == "text":
+            normalized.append({"type": "text", "label": label, "options": []})
+            continue
         options = parse_product_options(group.get("options", []))
         if not options:
             raise StoreError(f"{label} 항목을 한 개 이상 입력해 주세요.")
@@ -173,13 +178,28 @@ def normalize_selected_options(option_groups: list[dict], raw_selected) -> list[
     if len(selected) != len(option_groups):
         raise StoreError("상품의 모든 선택 항목을 골라 주세요.")
     for index, group in enumerate(option_groups):
-        if selected[index] not in group["options"]:
+        if group.get("type") == "text":
+            if not selected[index]:
+                raise StoreError(f"{group['label']} 질문에 답변해 주세요.")
+            if len(selected[index]) > 500 or any(ord(character) < 32 and character not in "\t\n\r" for character in selected[index]):
+                raise StoreError(f"{group['label']} 답변은 500자 이하로 작성해 주세요.")
+        elif selected[index] not in group["options"]:
             raise StoreError(f"상품의 {group['label']} 항목을 다시 선택해 주세요.")
     return selected
 
 
 def selected_options_surcharge(selected_options) -> int:
     return sum(option_surcharge(value) for value in parse_json_list(selected_options))
+
+
+def product_selection_surcharge(option_groups: list[dict], selected_options) -> int:
+    """구매자 직접입력 답변은 추가금 문구로 해석하지 않는다."""
+    selected = parse_json_list(selected_options)
+    return sum(
+        option_surcharge(value)
+        for group, value in zip(option_groups, selected)
+        if group.get("type") != "text"
+    )
 
 
 class StoreError(Exception):
@@ -613,6 +633,12 @@ class StoreServer:
             web.get("/api/admin/subadmins", self.admin_subadmins),
             web.post("/api/admin/subadmins", self.admin_save_subadmin),
             web.delete(r"/api/admin/subadmins/{user_id:\d+}", self.admin_delete_subadmin),
+            web.get("/api/subadmin/panel", self.subadmin_panel),
+            web.post("/api/subadmin/products", self.admin_save_product),
+            web.delete(r"/api/subadmin/products/{product_id:\d+}", self.admin_delete_product),
+            web.post(r"/api/subadmin/orders/{order_id}/cancel", self.admin_cancel_order),
+            web.post(r"/api/subadmin/orders/{order_id}/waybill", self.admin_set_waybill),
+            web.delete(r"/api/subadmin/orders/{order_id}", self.admin_delete_order),
             web.post("/api/admin/points", self.admin_points),
             web.get("/api/notices", self.notices),
             web.get(r"/api/notices/{notice_type:[A-Za-z]+}/image", self.notice_image),
@@ -812,6 +838,50 @@ class StoreServer:
     async def _admin(self, request) -> dict:
         return await self._admin_member(request)
 
+    async def _subadmin_member(self, request) -> dict:
+        session = await self._user(request)
+        if int(session["id"]) == ADMIN_USER_ID:
+            return session
+        async with self.bot.db_pool.acquire() as conn:
+            exists = await conn.fetchval(
+                "SELECT EXISTS(SELECT 1 FROM web_subadmins WHERE guild_id=$1 AND user_id=$2)",
+                self.guild_id, int(session["id"]),
+            )
+        if not exists:
+            raise StoreError("부관리자 전용 메뉴입니다.", 403)
+        return session
+
+    async def _product_manager(self, request, product_id: int) -> dict:
+        session = await self._user(request)
+        if int(session["id"]) == ADMIN_USER_ID:
+            return session
+        async with self.bot.db_pool.acquire() as conn:
+            assigned = await conn.fetchval(
+                "SELECT EXISTS(SELECT 1 FROM web_subadmin_products WHERE guild_id=$1 AND user_id=$2 AND product_id=$3)",
+                self.guild_id, int(session["id"]), product_id,
+            )
+        if not assigned:
+            raise StoreError("담당 상품만 관리할 수 있습니다.", 403)
+        return session
+
+    async def _order_manager(self, request, order_id: str) -> dict:
+        session = await self._user(request)
+        if int(session["id"]) == ADMIN_USER_ID:
+            return session
+        async with self.bot.db_pool.acquire() as conn:
+            assigned = await conn.fetchval(
+                """SELECT EXISTS(
+                       SELECT 1 FROM web_order_items i
+                       JOIN web_subadmin_products s ON s.guild_id=$2 AND s.user_id=$3 AND s.product_id=i.product_id
+                       JOIN orders o ON o.order_id=i.order_id AND o.guild_id=$2 AND o.source='WEB'
+                       WHERE i.order_id=$1
+                   )""",
+                order_id, self.guild_id, int(session["id"]),
+            )
+        if not assigned:
+            raise StoreError("담당 상품이 포함된 주문만 관리할 수 있습니다.", 403)
+        return session
+
     async def _body(self, request) -> dict:
         try:
             data = await request.json()
@@ -959,7 +1029,11 @@ class StoreServer:
                    AND blacklist_type='PERMANENT' AND (expires_at IS NULL OR expires_at>CURRENT_TIMESTAMP)""",
                 self.guild_id, int(user["id"]),
             )
-        return web.json_response({"user": {"id": user["id"], "username": user["username"], "avatar": user.get("avatar")}, "csrf": user["csrf"], "is_admin": is_admin, "blocked": dict(blocked) if blocked else None})
+            is_subadmin = is_admin or bool(await conn.fetchval(
+                "SELECT EXISTS(SELECT 1 FROM web_subadmins WHERE guild_id=$1 AND user_id=$2)",
+                self.guild_id, int(user["id"]),
+            ))
+        return web.json_response({"user": {"id": user["id"], "username": user["username"], "avatar": user.get("avatar")}, "csrf": user["csrf"], "is_admin": is_admin, "is_subadmin": is_subadmin, "blocked": dict(blocked) if blocked else None})
 
     async def product_image(self, request):
         product_id = int(request.match_info["product_id"])
@@ -1331,6 +1405,65 @@ class StoreServer:
             profile = await self._blacklist_profile(int(row["user_id"]))
             entries.append({**dict(row), **profile, "user_id": str(row["user_id"]), "product_ids": [str(value) for value in row["product_ids"]]})
         return web.json_response({"subadmins": entries, "products": [dict(row) for row in products]}, dumps=lambda v: json.dumps(v, ensure_ascii=False, default=str))
+
+    async def subadmin_panel(self, request):
+        member = await self._subadmin_member(request)
+        is_admin = int(member["id"]) == ADMIN_USER_ID
+        async with self.bot.db_pool.acquire() as conn:
+            categories = await conn.fetch(
+                "SELECT id,name,parent_id,sort_order FROM web_categories WHERE guild_id=$1 ORDER BY sort_order,name",
+                self.guild_id,
+            )
+            if is_admin:
+                products = await conn.fetch(
+                    """SELECT p.*,c.name category_name,c.parent_id,parent.name parent_category_name
+                       FROM web_products p LEFT JOIN web_categories c ON c.id=p.category_id
+                       LEFT JOIN web_categories parent ON parent.id=c.parent_id
+                       WHERE p.guild_id=$1 ORDER BY p.updated_at DESC""",
+                    self.guild_id,
+                )
+                orders = await conn.fetch(
+                    """SELECT order_id,buyer_id,product,quantity,amount,status,created_at,processed_at,
+                              shipping_name,shipping_contact,shipping_address,shipping_cvs,shipping_method,shipping_memo,
+                              shipping_fee,points_used,cash_amount,waybill_number,carrier_id,
+                              fulfillment_status,fulfillment_updated_at,cancel_reason
+                       FROM orders WHERE guild_id=$1 AND source='WEB'
+                       ORDER BY created_at DESC LIMIT 200""",
+                    self.guild_id,
+                )
+            else:
+                products = await conn.fetch(
+                    """SELECT p.*,c.name category_name,c.parent_id,parent.name parent_category_name
+                       FROM web_subadmin_products s
+                       JOIN web_products p ON p.id=s.product_id AND p.guild_id=s.guild_id
+                       LEFT JOIN web_categories c ON c.id=p.category_id
+                       LEFT JOIN web_categories parent ON parent.id=c.parent_id
+                       WHERE s.guild_id=$1 AND s.user_id=$2
+                       ORDER BY p.updated_at DESC""",
+                    self.guild_id, int(member["id"]),
+                )
+                orders = await conn.fetch(
+                    """SELECT DISTINCT o.order_id,o.buyer_id,o.product,o.quantity,o.amount,o.status,o.created_at,o.processed_at,
+                              o.shipping_name,o.shipping_contact,o.shipping_address,o.shipping_cvs,o.shipping_method,o.shipping_memo,
+                              o.shipping_fee,o.points_used,o.cash_amount,o.waybill_number,o.carrier_id,
+                              o.fulfillment_status,o.fulfillment_updated_at,o.cancel_reason
+                       FROM orders o JOIN web_order_items i ON i.order_id=o.order_id
+                       JOIN web_subadmin_products s ON s.guild_id=o.guild_id AND s.user_id=$2 AND s.product_id=i.product_id
+                       WHERE o.guild_id=$1 AND o.source='WEB'
+                       ORDER BY o.created_at DESC LIMIT 200""",
+                    self.guild_id, int(member["id"]),
+                )
+        guild = self._guild()
+        serialized_orders = []
+        for row in orders:
+            item = dict(row)
+            buyer = guild.get_member(int(row["buyer_id"])) if guild else None
+            item["buyer_name"] = buyer.display_name if buyer else str(row["buyer_id"])
+            serialized_orders.append(item)
+        return web.json_response(
+            {"is_admin": is_admin, "categories": [dict(row) for row in categories], "products": [dict(row) for row in products], "orders": serialized_orders},
+            dumps=lambda value: json.dumps(value, ensure_ascii=False, default=str),
+        )
 
     async def admin_save_subadmin(self, request):
         admin, data = await self._admin(request), await self._body(request)
@@ -2218,10 +2351,12 @@ class StoreServer:
                 if any(not row["is_active"] for row in rows):
                     raise StoreError("판매가 종료된 상품이 있습니다.")
                 normalized_selections = {}
+                normalized_groups = {}
                 for row in rows:
                     groups = normalize_option_groups(
                         row["option_groups_json"], row["option_label"], list(row["options"] or []),
                     )
+                    normalized_groups[row["product_id"]] = groups
                     try:
                         normalized_selections[row["product_id"]] = normalize_selected_options(
                             groups, row["selected_options_json"],
@@ -2229,7 +2364,7 @@ class StoreServer:
                     except StoreError as error:
                         raise StoreError(f"{row['name']} 상품: {error}") from error
                 subtotal = sum(
-                    (int(row["price"]) + selected_options_surcharge(normalized_selections[row["product_id"]]))
+                    (int(row["price"]) + product_selection_surcharge(normalized_groups[row["product_id"]], normalized_selections[row["product_id"]]))
                     * int(row["quantity"])
                     for row in rows
                 )
@@ -2251,11 +2386,17 @@ class StoreServer:
                     total -= coupon_discount
                 if not self.payment_service.enabled and total - points > 0:
                     raise StoreError("Pushbullet 자동결제가 아직 설정되지 않았습니다. 관리자에게 문의해 주세요.", 503)
-                product_text = ", ".join(
-                    f"{row['name']} ({' / '.join(normalized_selections[row['product_id']])})"
-                    if normalized_selections[row["product_id"]] else row["name"]
-                    for row in rows
-                )
+                def describe_product(row):
+                    selections = normalized_selections[row["product_id"]]
+                    if not selections:
+                        return row["name"]
+                    details = " / ".join(
+                        f"{group['label']}: {answer}"
+                        for group, answer in zip(normalized_groups[row["product_id"]], selections)
+                    )
+                    return f"{row['name']} ({details})"
+
+                product_text = ", ".join(describe_product(row) for row in rows)
                 quantity_text = f"총 {sum(int(row['quantity']) for row in rows)}개"
                 await conn.execute(
                     """
@@ -2280,7 +2421,7 @@ class StoreServer:
                              product_option, product_options_json)
                         VALUES ($1, $2, $3, $4, $5, $6, $7)
                         """, order_id, row["product_id"], row["name"],
-                        int(row["price"]) + selected_options_surcharge(normalized_selections[row["product_id"]]),
+                        int(row["price"]) + product_selection_surcharge(normalized_groups[row["product_id"]], normalized_selections[row["product_id"]]),
                         row["quantity"],
                         normalized_selections[row["product_id"]][0] if normalized_selections[row["product_id"]] else "",
                         json.dumps(normalized_selections[row["product_id"]], ensure_ascii=False),
@@ -2699,7 +2840,11 @@ class StoreServer:
         return web.json_response({"products": [dict(row) for row in rows]}, dumps=lambda v: json.dumps(v, ensure_ascii=False, default=str))
 
     async def admin_save_product(self, request):
-        await self._admin(request); data = await self._body(request)
+        data = await self._body(request)
+        if data.get("id"):
+            await self._product_manager(request, int(data["id"]))
+        else:
+            await self._admin(request)
         name = str(data.get("name", "")).strip()
         price = int(data.get("price", -1))
         if not data.get("category_id"):
@@ -2846,8 +2991,8 @@ class StoreServer:
         )
 
     async def admin_delete_product(self, request):
-        await self._admin(request)
         product_id = int(request.match_info["product_id"])
+        await self._product_manager(request, product_id)
         async with self.bot.db_pool.acquire() as conn:
             async with conn.transaction():
                 deleted = await conn.fetchrow(
@@ -2964,12 +3109,12 @@ class StoreServer:
         return web.json_response({"orders": result}, dumps=lambda value: json.dumps(value, ensure_ascii=False, default=str))
 
     async def admin_cancel_order(self, request):
-        await self._admin(request)
+        order_id = request.match_info["order_id"]
+        await self._order_manager(request, order_id)
         data = await self._body(request)
         reason = str(data.get("reason", "")).strip()
         if len(reason) < 2:
             raise StoreError("주문취소 사유를 입력해 주세요.")
-        order_id = request.match_info["order_id"]
         async with self.bot.db_pool.acquire() as conn:
             async with conn.transaction():
                 order = await conn.fetchrow(
@@ -3041,13 +3186,13 @@ class StoreServer:
         return web.json_response({"ok": True})
 
     async def admin_set_waybill(self, request):
-        await self._admin(request)
+        order_id = request.match_info["order_id"]
+        await self._order_manager(request, order_id)
         data = await self._body(request)
         try:
             waybill = normalize_waybill(str(data.get("waybill", "")))
         except DeliveryTrackingError as exc:
             raise StoreError(str(exc)) from exc
-        order_id = request.match_info["order_id"]
         async with self.bot.db_pool.acquire() as conn:
             order = await conn.fetchrow("SELECT buyer_id,shipping_method,product FROM orders WHERE order_id=$1 AND guild_id=$2 AND source='WEB' AND status='APPROVED'", order_id, self.guild_id)
             if not order:
@@ -3071,8 +3216,8 @@ class StoreServer:
         return web.json_response({"ok": True, "waybill": waybill})
 
     async def admin_delete_order(self, request):
-        await self._admin(request)
         order_id = request.match_info["order_id"]
+        await self._order_manager(request, order_id)
         async with self.bot.db_pool.acquire() as conn:
             async with conn.transaction():
                 status = await conn.fetchval(
