@@ -389,7 +389,7 @@ function renderProducts() {
       <div class="product-body">
         <small>${escapeHtml(product.parent_category_name ? `${product.parent_category_name} · ${product.category_name}` : (product.category_name || "미분류"))}</small>
         <h3>${escapeHtml(product.name)}</h3>
-        <p>${escapeHtml(product.description)}</p>
+        <p class="product-description">${escapeHtml(product.description)}</p>
         ${Number(product.free_shipping_quantity || 0) > 0 ? `<p class="product-shipping-offer">이 상품만 ${Number(product.free_shipping_quantity)}개 이상 구매 시 무료배송</p>` : ""}
         ${optionSelect}
         <div class="product-foot">

@@ -274,6 +274,7 @@ h3,strong { font-weight: 800; }
 .product-option.locked { opacity: .48; }
 .product-option select,.product-option textarea,.admin-row select { width: 100%; border: 1px solid var(--line); border-radius: 4px; padding: 9px 10px; background: #0f1311; color: var(--text); }
 .product-option textarea { min-height: 64px; resize: vertical; line-height: 1.45; }
+.product-description { white-space: pre-wrap; overflow-wrap: break-word; word-break: keep-all; text-wrap: pretty; }
 .product-shipping-offer { margin: 2px 0 8px !important; padding: 7px 9px; border: 1px solid #2d7a50; border-radius: 7px; background: #10251a; color: #55e99a !important; font-size: 11px !important; font-weight: 800; }
 .product-foot { display: flex; align-items: center; justify-content: space-between; margin-top: auto; padding-top: 10px; }
 .product-foot button { width: 38px; height: 36px; border: 1px solid var(--line-strong); border-radius: 5px; background: var(--surface-3); color: var(--text); cursor: pointer; font-size: 20px; }
