@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@500;600;700;800&family=Noto+Sans+KR:wght@500;600;700;800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/static/styles.css?v=20261011-31">
+  <link rel="stylesheet" href="/static/styles.css?v=20261011-32">
 </head>
 <body>
   <div class="grain"></div>
@@ -24,7 +24,7 @@
   <header class="site-header">
     <a class="brand" href="#home"><span>V4P3</span> SP0T</a>
     <nav id="nav">
-      <a href="#home">스토어</a><a href="#account">정보등록</a><a href="#review-write">후기작성</a><a href="#ranking">구매랭킹</a><a href="#tiers">등급표</a><a href="#tracking">배송조회</a><a href="#cart">장바구니 <b id="cart-count">0</b></a>
+      <a href="#home">스토어</a><a href="#account">정보등록</a><a href="#review-write">후기작성</a><a href="#ranking">구매랭킹</a><a href="#tiers">등급표</a><a href="#terms">이용약관</a><a href="#tracking">배송조회</a><a href="#cart">장바구니 <b id="cart-count">0</b></a>
       <a href="#admin" id="admin-link" hidden>관리자</a>
     </nav>
     <button class="button small" id="login-button">Discord 로그인</button>
@@ -101,6 +101,42 @@
         <div><strong>등급 확인</strong><span>Discord 서버에서 지급된 역할로 확인</span></div>
       </div>
       <div id="tier-grid" class="tier-grid"><div class="empty">등급 정보를 불러오는 중입니다.</div></div>
+    </section>
+
+    <section id="terms" class="page">
+      <div class="page-title terms-page-title"><p class="eyebrow">TERMS OF USE</p><h1>이용약관</h1></div>
+      <article class="panel terms-card">
+        <section class="terms-intro">
+          <h2>📑 이용약관 안내</h2>
+          <p><strong>제1조 &gt;</strong> 본 이용약관은 VAPE SPOT 디스코드 서버를 이용하는 모든 회원에게 적용됩니다.</p>
+          <p><strong>제2조 &gt;</strong> 서버에 입장하거나 서비스를 이용하는 경우 아래 내용에 동의한 것으로 간주됩니다.</p>
+        </section>
+        <section>
+          <h2>💳 결제 관련</h2>
+          <div class="terms-clause"><p><strong>제1조 &gt;</strong> 모든 상품구매는 티켓에서 진행한다.</p><p class="terms-sub">↳ 티켓은 # 문의하기 에서 가능하다.</p></div>
+          <div class="terms-clause"><p><strong>제 2조 &gt;</strong> 상품구매시 배송을 위해서 일부 정보를 입력해야 한다.</p><p class="terms-sub">↳ 정보는 # 정보등록 에서 가능하며, 개인정보를 절대로 수집하지 않는다.</p><p class="terms-sub">↳ 수집 정보: 접수소 or 편의점 주소, 전화번호, 실명</p></div>
+          <div class="terms-clause"><p><strong>제 3조 &gt;</strong> 모든 상품은 선불이며, 입금이 확인될경우 구매를 시작합니다.</p><p class="terms-sub">↳ 입금 금액이 불일치 할경우 구매 X</p></div>
+          <div class="terms-clause"><p><strong>제 4조 &gt;</strong> 단순 변심으로 인한 환불은 불가능 합니다.</p><p class="terms-sub">↳ 품절로 인한 환불은 가능 하나.</p><p>단 이미 구매를 진행한 경우 환불은 불가능 하다.</p></div>
+        </section>
+        <section>
+          <h2>📦 배송관련</h2>
+          <div class="terms-clause"><p><strong>제1조 &gt;</strong> 모든 상품은 편의점택배(반값택배)와 일반택배로 배송이 이루어진다.</p></div>
+          <div class="terms-clause"><p><strong>제2조 &gt;</strong> 택배사 혹은 공급사의 실수는 환불은 불가능 합니다.</p><p class="terms-sub">↳ 단 상품 지급을 위해 도와드릴수 있습니다.</p></div>
+          <div class="terms-clause"><p><strong>제3조 &gt;</strong> 정보 오기입시 책임지지 않습니다.</p></div>
+        </section>
+        <section>
+          <h2>💬 커뮤니티 관련</h2>
+          <div class="terms-clause"><p><strong>제1조 &gt;</strong> 일반적인 질문은 # 자유채팅 이 아닌 # 문의하기, # 질문하기 에서 해야한다.</p></div>
+          <div class="terms-clause"><p><strong>제2조 &gt;</strong> 커뮤니티 채널에서 욕설, 비방, 도배, 무단홍보 시 경고 없이 바로 처벌 받습니다.</p></div>
+          <div class="terms-clause"><p><strong>제3조 &gt;</strong> 개인간의 거래로 인하여 발생하는 모든 일은 책임지지 않습니다.</p></div>
+        </section>
+        <section>
+          <h2>👤 유저 관련</h2>
+          <div class="terms-clause"><p><strong>제1조 &gt;</strong> 모든 유저는 관리자 지시를 꼭 따라야 합니다.</p></div>
+          <div class="terms-clause"><p><strong>제2조 &gt;</strong> 관리자 지시를 따르지 않아 발생하는 모든 문제는 책임지지 않습니다.</p></div>
+        </section>
+        <p class="terms-final">※ 정상적인 서버 운영과 공공의 이익을 위해 꼭 지켜주시기 바랍니다.</p>
+      </article>
     </section>
 
     <section id="tracking" class="page">
