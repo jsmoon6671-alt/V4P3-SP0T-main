@@ -35,6 +35,7 @@ const state = {
   chatPoll: null,
   adminInquiries: [],
   subadmins: [],
+  requestedAdminSection: null,
 };
 
 const $ = (selector, parent = document) => parent.querySelector(selector);
@@ -165,6 +166,7 @@ async function boot() {
     }
     $("#login-button").textContent = "내 정보";
     $("#admin-link").hidden = !data.is_admin;
+    $("#subadmin-admin-link").hidden = !data.is_admin;
     $("#login-button").onclick = () => { location.hash = "account"; };
     await loadCart();
     await refreshRegistrationPrompt();
@@ -1140,6 +1142,10 @@ function bindForms() {
   $("#refresh-admin-inquiries").onclick = loadAdminInquiries;
   $("#refresh-subadmins").onclick = loadSubadmins;
   $("#subadmin-form").onsubmit = saveSubadmin;
+  $("#subadmin-admin-link").onclick = () => {
+    state.requestedAdminSection = "subadmins";
+    if (location.hash === "#admin") setAdminSection("subadmins");
+  };
   $("#refresh-admin-coupon-events").onclick = loadAdminCouponEvents;
   $("#point-admin-form").onsubmit = saveAdminPoints;
   $("#coupon-admin-form").onsubmit = issueCoupon;
@@ -1326,9 +1332,10 @@ async function loadSubadmins() {
 
 async function saveSubadmin(event) {
   event.preventDefault();
-  const data = Object.fromEntries(new FormData(event.currentTarget));
-  data.product_ids = [...event.currentTarget.querySelectorAll('[name="product_ids"]:checked')].map(input => Number(input.value));
-  try { await api("/api/admin/subadmins", { method: "POST", body: JSON.stringify(data) }); event.currentTarget.reset(); await loadSubadmins(); toast("부관리자와 담당 상품을 저장했습니다."); }
+  const form = event.currentTarget;
+  const data = Object.fromEntries(new FormData(form));
+  data.product_ids = [...form.querySelectorAll('[name="product_ids"]:checked')].map(input => Number(input.value));
+  try { await api("/api/admin/subadmins", { method: "POST", body: JSON.stringify(data) }); form.reset(); await loadSubadmins(); toast("부관리자와 담당 상품을 저장했습니다."); }
   catch (error) { toast(error.message); }
 }
 
@@ -1455,7 +1462,8 @@ async function openAdminPanel() {
   }
   setAdminSection("dashboard");
   await loadAdmin();
-  const requested = new URLSearchParams(location.search).get("admin_section");
+  const requested = state.requestedAdminSection || new URLSearchParams(location.search).get("admin_section");
+  state.requestedAdminSection = null;
   if (requested) setAdminSection(requested);
 }
 
