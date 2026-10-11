@@ -43,7 +43,6 @@ from chat_ranking import (
 )
 from database import initialize_database
 from order_editing import build_purchase_log_payload, register_order_edit_command
-from purchase_tickets import ensure_approved_purchase_ticket
 from web_store import save_web_review, start_web_store
 from web_order_progress import (
     WebOrderProgressCog,
@@ -979,7 +978,7 @@ class DepositModal(discord.ui.Modal):
         )
 
 
-@bot.tree.command(name="운송장", description="구매 티켓과 구매자 DM으로 운송장 발급 안내를 전송합니다. (관리자 전용)")
+@bot.tree.command(name="운송장", description="배송문의 티켓과 구매자 DM으로 운송장 발급 안내를 전송합니다. (관리자 전용)")
 @app_commands.describe(
     유저="운송장을 발급받을 구매자를 선택해 주세요.",
     주문번호="해당 구매자의 주문번호를 입력해 주세요.",
@@ -996,7 +995,7 @@ async def issue_waybill(
         return
 
     if interaction.guild is None or not interaction.channel:
-        await interaction.response.send_message("❌ 서버의 구매 티켓 채널에서 사용해 주세요.", ephemeral=True)
+        await interaction.response.send_message("❌ 서버의 배송문의 티켓 채널에서 사용해 주세요.", ephemeral=True)
         return
 
     try:
@@ -1027,8 +1026,8 @@ async def issue_waybill(
             유저.id,
         )
 
-    if not ticket or ticket['ticket_type'] != 'purchase':
-        await interaction.followup.send("❌ 구매문의 티켓 채널에서만 사용할 수 있습니다.", ephemeral=True)
+    if not ticket or ticket['ticket_type'] != 'shipping':
+        await interaction.followup.send("❌ 배송문의 티켓 채널에서만 사용할 수 있습니다.", ephemeral=True)
         return
 
     if ticket['user_id'] != 유저.id:
@@ -1455,31 +1454,8 @@ async def cancel_order(interaction: discord.Interaction, 주문번호: str):
 # ==========================================
 # [기능 5] 문의 티켓 시스템 (모달 및 생성)
 # ==========================================
-PURCHASE_INFO_FIELDS = ("name", "contact", "address", "cvs")
-
-
-def has_complete_purchase_info(user_data) -> bool:
-    """구매 배송에 필요한 정보가 모두 등록되어 있는지 확인합니다."""
-    if not user_data:
-        return False
-
-    try:
-        return all(str(user_data[field] or "").strip() for field in PURCHASE_INFO_FIELDS)
-    except (KeyError, TypeError):
-        return False
-
-
-def build_missing_purchase_info_notice(user_id: int) -> str:
-    return (
-        "## ⚠️ 구매자 정보 미등록\n\n"
-        f"<@{user_id}>님, 아직 배송 정보가 등록되지 않았습니다!\n"
-        "빠른 발송을 위해 채널 밖에서 <#1553664818349608960> 채널에서 [정보 등록] 버튼을 눌러 배송지를 등록해 주세요."
-    )
-
-
 async def create_ticket_channel(interaction: discord.Interaction, t_type: str, type_kr: str, form_answers: dict):
     await interaction.response.defer(ephemeral=True)
-    purchase_info_missing = False
     
     async with bot.db_pool.acquire() as conn:
         settings = await conn.fetchrow('SELECT * FROM guild_settings WHERE guild_id = $1', interaction.guild.id)
@@ -1554,74 +1530,13 @@ async def create_ticket_channel(interaction: discord.Interaction, t_type: str, t
             json=welcome_payload
         )
         
-        if t_type == "purchase":
-            user_data = await conn.fetchrow('SELECT * FROM user_info WHERE user_id = $1', interaction.user.id)
-            
-            if has_complete_purchase_info(user_data):
-                info_content = (
-                    "## 📋 구매자 등록 배송 정보\n\n"
-                    "`👤`**이름:** `" + user_data['name'] + "`\n\n"
-                    "`📞`**연락처:** `" + user_data['contact'] + "`\n\n"
-                    "`🏠`**주소:** `" + user_data['address'] + "`\n\n"
-                    "`🏪`**편의점:** `" + user_data['cvs'] + "`\n\n"
-                    "-# 💡 관리자는 위 정보를 바탕으로 상품을 발송합니다."
-                )
-                info_payload = {
-                    "flags": 1 << 15,
-                    "components": [
-                        {
-                            "type": 17,
-                            "accent_color": 0x32CD32,
-                            "components": [
-                                {
-                                    "type": 10,
-                                    "content": info_content
-                                }
-                            ]
-                        }
-                    ]
-                }
-
-                await interaction.client.http.request(
-                    discord.http.Route("POST", f"/channels/{ticket_channel.id}/messages"),
-                    json=info_payload
-                )
-            else:
-                purchase_info_missing = True
-                
         await interaction.followup.send(f"✅ 티켓이 정상적으로 생성되었습니다: {ticket_channel.mention}", ephemeral=True)
-
-        if purchase_info_missing:
-            await interaction.followup.send(
-                build_missing_purchase_info_notice(interaction.user.id),
-                ephemeral=True,
-                allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False)
-            )
-
-
-class PurchaseTicketModal(discord.ui.Modal, title="💳 구매 문의 작성"):
-    product = discord.ui.TextInput(
-        label="구매상품", 
-        required=True
-    )
-    quantity = discord.ui.TextInput(
-        label="수량", 
-        placeholder="1", 
-        required=True
-    )
-    
-    async def on_submit(self, interaction: discord.Interaction):
-        answers = {
-            "구매상품": self.product.value, 
-            "수량": self.quantity.value
-        }
-        await create_ticket_channel(interaction, "purchase", "구매문의", answers)
 
 
 class GeneralTicketModal(discord.ui.Modal, title="💌 일반 문의 작성"):
     content = discord.ui.TextInput(
-        label="문의내용", 
-        style=discord.TextStyle.paragraph, 
+        label="문의내용",
+        style=discord.TextStyle.paragraph,
         required=True
     )
     
@@ -1630,6 +1545,46 @@ class GeneralTicketModal(discord.ui.Modal, title="💌 일반 문의 작성"):
             "문의내용": self.content.value
         }
         await create_ticket_channel(interaction, "general", "일반문의", answers)
+
+
+class PaymentTicketModal(discord.ui.Modal, title="💳 입금 문의 작성"):
+    order_id = discord.ui.TextInput(
+        label="주문번호",
+        placeholder="주문번호가 없다면 없음이라고 입력해 주세요.",
+        required=True,
+    )
+    content = discord.ui.TextInput(
+        label="문의내용",
+        style=discord.TextStyle.paragraph,
+        required=True,
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        answers = {
+            "주문번호": self.order_id.value,
+            "문의내용": self.content.value,
+        }
+        await create_ticket_channel(interaction, "payment", "입금문의", answers)
+
+
+class ShippingTicketModal(discord.ui.Modal, title="🚚 배송 문의 작성"):
+    order_id = discord.ui.TextInput(
+        label="주문번호",
+        placeholder="확인할 주문번호를 입력해 주세요.",
+        required=True,
+    )
+    content = discord.ui.TextInput(
+        label="문의내용",
+        style=discord.TextStyle.paragraph,
+        required=True,
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        answers = {
+            "주문번호": self.order_id.value,
+            "문의내용": self.content.value,
+        }
+        await create_ticket_channel(interaction, "shipping", "배송문의", answers)
 
 
 class PartnerTicketModal(discord.ui.Modal, title="🤝 제휴 문의 작성"):
@@ -1651,35 +1606,51 @@ class PartnerTicketModal(discord.ui.Modal, title="🤝 제휴 문의 작성"):
 
 
 @bot.tree.command(name="티켓카테고리", description="티켓 카테고리를 설정합니다.")
-async def set_ticket_cat(interaction: discord.Interaction, 구매문의_카테고리: discord.CategoryChannel, 일반문의_카테고리: discord.CategoryChannel, 제휴문의_카테고리: discord.CategoryChannel):
+async def set_ticket_cat(
+    interaction: discord.Interaction,
+    일반문의_카테고리: discord.CategoryChannel,
+    입금문의_카테고리: discord.CategoryChannel,
+    배송문의_카테고리: discord.CategoryChannel,
+    제휴문의_카테고리: discord.CategoryChannel,
+):
     if not bot.db_pool: 
         await interaction.response.send_message("❌ DB 오류가 발생했습니다.", ephemeral=True)
         return
         
     async with bot.db_pool.acquire() as conn:
         await conn.execute('''
-            INSERT INTO guild_settings (guild_id, ticket_cat_purchase, ticket_cat_general, ticket_cat_partner) 
-            VALUES ($1, $2, $3, $4) 
+            INSERT INTO guild_settings (guild_id, ticket_cat_general, ticket_cat_payment, ticket_cat_shipping, ticket_cat_partner)
+            VALUES ($1, $2, $3, $4, $5)
             ON CONFLICT (guild_id) DO UPDATE 
-            SET ticket_cat_purchase = $2, ticket_cat_general = $3, ticket_cat_partner = $4;
-        ''', interaction.guild.id, 구매문의_카테고리.id, 일반문의_카테고리.id, 제휴문의_카테고리.id)
+            SET ticket_cat_general = $2, ticket_cat_payment = $3,
+                ticket_cat_shipping = $4, ticket_cat_partner = $5;
+        ''', interaction.guild.id, 일반문의_카테고리.id, 입금문의_카테고리.id,
+             배송문의_카테고리.id, 제휴문의_카테고리.id)
         
     await interaction.response.send_message("✅ 카테고리 설정 완료!", ephemeral=True)
 
 
 @bot.tree.command(name="보관카테고리", description="닫힌 티켓 보관 카테고리를 설정합니다.")
-async def set_archive_cat(interaction: discord.Interaction, 구매문의_보관: discord.CategoryChannel, 일반문의_보관: discord.CategoryChannel, 제휴문의_보관: discord.CategoryChannel):
+async def set_archive_cat(
+    interaction: discord.Interaction,
+    일반문의_보관: discord.CategoryChannel,
+    입금문의_보관: discord.CategoryChannel,
+    배송문의_보관: discord.CategoryChannel,
+    제휴문의_보관: discord.CategoryChannel,
+):
     if not bot.db_pool: 
         await interaction.response.send_message("❌ DB 오류가 발생했습니다.", ephemeral=True)
         return
         
     async with bot.db_pool.acquire() as conn:
         await conn.execute('''
-            INSERT INTO guild_settings (guild_id, archive_cat_purchase, archive_cat_general, archive_cat_partner) 
-            VALUES ($1, $2, $3, $4) 
+            INSERT INTO guild_settings (guild_id, archive_cat_general, archive_cat_payment, archive_cat_shipping, archive_cat_partner)
+            VALUES ($1, $2, $3, $4, $5)
             ON CONFLICT (guild_id) DO UPDATE 
-            SET archive_cat_purchase = $2, archive_cat_general = $3, archive_cat_partner = $4;
-        ''', interaction.guild.id, 구매문의_보관.id, 일반문의_보관.id, 제휴문의_보관.id)
+            SET archive_cat_general = $2, archive_cat_payment = $3,
+                archive_cat_shipping = $4, archive_cat_partner = $5;
+        ''', interaction.guild.id, 일반문의_보관.id, 입금문의_보관.id,
+             배송문의_보관.id, 제휴문의_보관.id)
         
     await interaction.response.send_message("✅ 보관 카테고리 설정 완료!", ephemeral=True)
 
@@ -1689,111 +1660,17 @@ async def set_ticket_log_chan(interaction: discord.Interaction, 채널: discord.
     await update_setting(interaction, "ticket_log_channel_id", 채널.id, f"✅ 로그 채널 설정이 {채널.mention}(으)로 완료되었습니다.")
 
 
-PURCHASE_TICKET_STATUSES = ("구매완료", "배송준비중", "배송중", "배송완료")
-PURCHASE_TICKET_PREFIXES = ("구매문의",) + PURCHASE_TICKET_STATUSES
-
-
-def purchase_ticket_status_name(channel_name: str, status: str) -> str:
-    if status not in PURCHASE_TICKET_STATUSES:
-        raise ValueError("지원하지 않는 티켓 상태입니다.")
-    current_prefix, separator, suffix = channel_name.partition("-")
-    if not separator or not suffix or current_prefix not in PURCHASE_TICKET_PREFIXES:
-        raise ValueError("구매문의 티켓 채널 이름을 확인할 수 없습니다.")
-    updated_name = f"{status}-{suffix}"
-    if len(updated_name) > 100:
-        raise ValueError("변경할 채널 이름이 Discord의 100자 제한을 초과합니다.")
-    return updated_name
-
-
-@bot.tree.command(name="티켓상태", description="현재 구매문의 티켓의 상태를 변경합니다. (관리자 전용)")
-@app_commands.describe(상태="채널 이름에 표시할 구매 처리 상태")
-@app_commands.choices(상태=[
-    app_commands.Choice(name="구매완료", value="구매완료"),
-    app_commands.Choice(name="배송준비중", value="배송준비중"),
-    app_commands.Choice(name="배송중", value="배송중"),
-    app_commands.Choice(name="배송완료", value="배송완료"),
-])
-async def set_ticket_status(interaction: discord.Interaction, 상태: app_commands.Choice[str]):
-    if bot.db_pool is None:
-        await interaction.response.send_message("❌ 데이터베이스가 연결되지 않았습니다.", ephemeral=True)
-        return
-
-    async with bot.db_pool.acquire() as conn:
-        ticket = await conn.fetchrow(
-            'SELECT ticket_type, user_id FROM tickets WHERE channel_id = $1', interaction.channel.id
-        )
-
-    if ticket is None:
-        await interaction.response.send_message("❌ 이 명령어는 봇이 생성한 티켓 채널에서만 사용할 수 있습니다.", ephemeral=True)
-        return
-    if ticket['ticket_type'] != "purchase":
-        await interaction.response.send_message("❌ 구매문의 티켓에서만 상태를 변경할 수 있습니다.", ephemeral=True)
-        return
-
-    try:
-        new_name = purchase_ticket_status_name(interaction.channel.name, 상태.value)
-    except ValueError as error:
-        await interaction.response.send_message(f"❌ {error}", ephemeral=True)
-        return
-
-    if new_name == interaction.channel.name:
-        await interaction.response.send_message(f"✅ 이미 **{상태.value}** 상태입니다.", ephemeral=True)
-        return
-
-    old_name = interaction.channel.name
-    try:
-        await interaction.channel.edit(
-            name=new_name,
-            reason=f"{interaction.user}님이 구매 티켓 상태를 {상태.value}(으)로 변경",
-        )
-    except discord.Forbidden:
-        await interaction.response.send_message("❌ 봇에 채널 관리 권한이 없어 이름을 변경할 수 없습니다.", ephemeral=True)
-        return
-    except discord.HTTPException:
-        await interaction.response.send_message("❌ Discord에서 채널 이름을 변경하지 못했습니다. 잠시 후 다시 시도해 주세요.", ephemeral=True)
-        return
-
-    await interaction.response.send_message(
-        f"✅ 티켓 상태를 **{상태.value}**(으)로 변경했습니다.\n`{old_name}` → `{new_name}`",
-        ephemeral=True,
-    )
-
-    if 상태.value == "배송완료":
-        review_message = (
-            f"## 📦 배송이 완료되었습니다!\n\n"
-            f"<@{ticket['user_id']}>님, 상품은 잘 받아보셨나요?\n"
-            "Discord에서 **`/후기작성`** 명령어를 사용해 후기와 사진을 남겨 주세요.\n\n"
-            "> 후기 작성 시 랜덤으로 **100P ~ 500P**가 적립됩니다!"
-        )
-        payload = create_v2_payload(review_message)
-        payload["allowed_mentions"] = {"parse": [], "users": [str(ticket["user_id"])]}
-        try:
-            await interaction.client.http.request(
-                discord.http.Route("POST", f"/channels/{interaction.channel.id}/messages"),
-                json=payload,
-            )
-        except discord.HTTPException:
-            logging.exception("배송완료 후기 안내를 티켓에 전송하지 못했습니다: channel=%s", interaction.channel.id)
-        try:
-            member = interaction.guild.get_member(ticket["user_id"]) or await interaction.guild.fetch_member(ticket["user_id"])
-            dm_channel = await member.create_dm()
-            await interaction.client.http.request(
-                discord.http.Route("POST", f"/channels/{dm_channel.id}/messages"),
-                json=payload,
-            )
-        except (discord.Forbidden, discord.HTTPException, discord.NotFound):
-            logging.info("배송완료 후기 안내 DM을 전송하지 못했습니다: user=%s", ticket["user_id"])
-
-
 @bot.tree.command(name="문의패널", description="문의(티켓) 생성 패널을 띄웁니다.")
 async def send_support_panel(interaction: discord.Interaction):
     support_content = (
         "## VAPE SP0T SUPPORT\n\n"
         "- 아래에서 문의 유형을 선택하여 티켓을 열어 주시기 바랍니다.\n\n"
-        "- `💳`구매문의\n"
-        "> 전담, 상단배너 구매를 위한 티켓입니다.\n\n"
         "- `💌`일반문의\n"
         "> 질문 또는 후원 등 기타 문의를 위한 티켓입니다.\n\n"
+        "- `💳`입금문의\n"
+        "> 입금 확인 및 결제 관련 문의를 위한 티켓입니다.\n\n"
+        "- `🚚`배송문의\n"
+        "> 배송 현황 및 운송장 관련 문의를 위한 티켓입니다.\n\n"
         "- `🤝`제휴문의\n"
         "> 파트너 또는 제휴상단 문의를 위한 티켓입니다.\n\n"
         "-# 티켓을 여신 후 10분 동안 응답이 없을 경우 티켓이 자동으로 닫힙니다.\n"
@@ -1821,16 +1698,22 @@ async def send_support_panel(interaction: discord.Interaction):
                                 "placeholder": "티켓 유형을 선택해 주세요", 
                                 "options": [
                                     {
-                                        "label": "구매문의", 
-                                        "value": "purchase", 
-                                        "description": "전담, 상단배너를 구매하는 티켓입니다.", 
-                                        "emoji": {"name": "💳"}
-                                    },
-                                    {
                                         "label": "일반문의", 
                                         "value": "general", 
                                         "description": "질문 혹은 후원 등 기타 문의를 담당하는 티켓입니다.", 
                                         "emoji": {"name": "💌"}
+                                    },
+                                    {
+                                        "label": "입금문의",
+                                        "value": "payment",
+                                        "description": "입금 확인 및 결제 관련 문의를 담당합니다.",
+                                        "emoji": {"name": "💳"}
+                                    },
+                                    {
+                                        "label": "배송문의",
+                                        "value": "shipping",
+                                        "description": "배송 현황 및 운송장 관련 문의를 담당합니다.",
+                                        "emoji": {"name": "🚚"}
                                     },
                                     {
                                         "label": "제휴문의", 
@@ -2943,8 +2826,8 @@ async def create_device_price_post(
     content = (
         f"- 가격 : {가격} ( 택배비, 수수료 포함 )\n"
         f"- 색상 : {real_colors}\n"
-        "- 구매문의 : <#1553664487117168640>\n"
-        "** 품절 현황은 티켓에서! **\n"
+        "- 구매 안내 : <#1553664487117168640>\n"
+        "** 구매는 웹사이트에서 진행해 주세요. **\n"
         "-# <a:__:1553621821268697128> 재고 및 가격은 GS와 CU가 다를 수 있습니다."
     )
     
@@ -2994,8 +2877,8 @@ async def create_disposable_price_post(
     content = (
         f"- 가격 : {가격} ( 택배비, 수수료 포함 )\n"
         f"- 맛 : {real_flavors}\n"
-        "- 구매문의 : <#1553664487117168640>\n"
-        "** 품절 현황은 티켓에서! **\n"
+        "- 구매 안내 : <#1553664487117168640>\n"
+        "** 구매는 웹사이트에서 진행해 주세요. **\n"
         "-# <a:__:1553621821268697128> 재고 및 가격은 GS와 CU가 다를 수 있습니다."
     )
 
@@ -3048,8 +2931,8 @@ async def create_liquid_price_post(
     content = (
         f"- 가격 : {가격} ( 택배비, 수수료 포함 )\n"
         f"- 맛 : {real_flavors}\n"
-        "- 구매문의 : <#1553664487117168640>\n"
-        "** 품절 현황은 티켓에서! **\n"
+        "- 구매 안내 : <#1553664487117168640>\n"
+        "** 구매는 웹사이트에서 진행해 주세요. **\n"
         "-# <a:__:1553621821268697128> 재고 및 가격은 GS와 CU가 다를 수 있습니다."
     )
     
@@ -3113,16 +2996,16 @@ async def restore_price_lists(interaction: discord.Interaction, 채널: discord.
             content = (
                 f"- 가격 : {price} ( 택배비, 수수료 포함 )\n"
                 f"- 색상 : {real_options}\n"
-                "- 구매문의 : <#1553664487117168640>\n"
-                "** 품절 현황은 티켓에서! **\n"
+                "- 구매 안내 : <#1553664487117168640>\n"
+                "** 구매는 웹사이트에서 진행해 주세요. **\n"
                 "-# <a:__:1553621821268697128> 재고 및 가격은 GS와 CU가 다를 수 있습니다."
             )
         elif p_type in ('액상', '일회용'):
             content = (
                 f"- 가격 : {price} ( 택배비, 수수료 포함 )\n"
                 f"- 맛 : {real_options}\n"
-                "- 구매문의 : <#1553664487117168640>\n"
-                "** 품절 현황은 티켓에서! **\n"
+                "- 구매 안내 : <#1553664487117168640>\n"
+                "** 구매는 웹사이트에서 진행해 주세요. **\n"
                 "-# <a:__:1553621821268697128> 재고 및 가격은 GS와 CU가 다를 수 있습니다."
             )
         else:
@@ -3270,12 +3153,19 @@ async def on_interaction(interaction: discord.Interaction):
     # 티켓 생성 드롭다운
     if custom_id == "select_ticket_type":
         t_type = interaction.data["values"][0]
-        if t_type == "purchase": 
-            await interaction.response.send_modal(PurchaseTicketModal())
-        elif t_type == "general": 
+        if t_type == "general":
             await interaction.response.send_modal(GeneralTicketModal())
-        elif t_type == "partner": 
+        elif t_type == "payment":
+            await interaction.response.send_modal(PaymentTicketModal())
+        elif t_type == "shipping":
+            await interaction.response.send_modal(ShippingTicketModal())
+        elif t_type == "partner":
             await interaction.response.send_modal(PartnerTicketModal())
+        else:
+            await interaction.response.send_message(
+                "❌ 이전 문의 패널입니다. 새로 등록된 문의 패널을 이용해 주세요.",
+                ephemeral=True,
+            )
         return
 
     # 티켓 닫기 버튼
@@ -3664,11 +3554,6 @@ async def on_interaction(interaction: discord.Interaction):
         )
 
         if action == 'approve':
-            try:
-                await ensure_approved_purchase_ticket(bot, order)
-            except Exception:
-                logging.exception("수동승인 구매티켓 생성 실패: order=%s", order_id)
-
             if settings and settings['log_channel_id']:
                 log_payload = build_purchase_log_payload(order, anonymous_role_id)
                 log_response = await interaction.client.http.request(
