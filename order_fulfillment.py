@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime
 import logging
+import os
 
 import discord
 
@@ -42,6 +43,37 @@ async def _send_dm(bot, user_id: int, payload: dict):
     return await _send_channel(bot, dm.id, payload)
 
 
+async def notify_product_subadmins(bot, order: dict):
+    """담당 상품이 포함된 승인 주문을 소유자와 해당 부관리자에게 알린다."""
+    guild_id, buyer_id = int(order["guild_id"]), int(order["buyer_id"])
+    async with bot.db_pool.acquire() as conn:
+        rows = await conn.fetch(
+            """SELECT DISTINCT s.user_id FROM web_order_items i
+               JOIN web_subadmin_products s ON s.guild_id=$2 AND s.product_id=i.product_id
+               WHERE i.order_id=$1""", order["order_id"], guild_id,
+        )
+        user_info = await conn.fetchrow("SELECT * FROM user_info WHERE user_id=$1", buyer_id)
+    recipients = {int(row["user_id"]) for row in rows}
+    owner_id = int(os.getenv("BOT_OWNER_ID", "0") or 0)
+    if recipients and owner_id: recipients.add(owner_id)
+    if not recipients: return
+    info = dict(user_info) if user_info else {}
+    detail = (
+        "## 🛒 담당 상품 주문 승인\n\n"
+        f"**주문번호:** `{order['order_id']}`\n**구매자:** <@{buyer_id}> (`{buyer_id}`)\n"
+        f"**성함:** `{order.get('shipping_name') or info.get('name') or '미등록'}`\n"
+        f"**연락처:** `{order.get('shipping_contact') or info.get('contact') or '미등록'}`\n"
+        f"**배송방식:** `{order.get('shipping_method') or '미등록'}`\n"
+        f"**주소:** `{order.get('shipping_address') or info.get('address') or '미등록'}`\n"
+        f"**편의점:** `{order.get('shipping_cvs') or info.get('cvs') or '없음'}`\n"
+        f"**배송메모:** `{order.get('shipping_memo') or '없음'}`\n"
+        f"**상품:** `{order['product']}`\n**결제금액:** `{order['amount']}`"
+    )
+    for recipient_id in recipients:
+        try: await _send_dm(bot, recipient_id, _v2(detail, users=[buyer_id]))
+        except (discord.Forbidden, discord.NotFound, discord.HTTPException): pass
+
+
 async def finalize_approved_order(bot, order: dict, *, processor: str = "Pushbullet 자동승인"):
     """자동승인 주문에도 기존 구매로그, 누적액, 역할, 랭킹 동기화를 적용한다."""
     guild_id = int(order["guild_id"])
@@ -59,6 +91,8 @@ async def finalize_approved_order(bot, order: dict, *, processor: str = "Pushbul
         settings_row = await conn.fetchrow("SELECT * FROM guild_settings WHERE guild_id = $1", guild_id)
         user_info = await conn.fetchrow("SELECT * FROM user_info WHERE user_id = $1", buyer_id)
     settings = dict(settings_row) if settings_row else {}
+
+    await notify_product_subadmins(bot, order)
 
     if guild:
         try:
@@ -90,6 +124,7 @@ async def finalize_approved_order(bot, order: dict, *, processor: str = "Pushbul
             f"`🚚` **배송방식:** `{shipping_method}`\n"
             f"`🏠` **주소:** `{shipping_address}`\n"
             f"`🏪` **편의점:** `{shipping_cvs}`\n"
+            f"`📝` **배송메모:** `{order.get('shipping_memo') or '없음'}`\n"
             f"`📦` **상품:**\n{products}\n\n"
             f"`💰` **금액:** `{order['amount']}`"
         )

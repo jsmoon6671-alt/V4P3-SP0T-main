@@ -29,6 +29,11 @@ const state = {
   eventNotices: [],
   notices: [],
   welcomePending: false,
+  chatSessions: [],
+  activeChatId: null,
+  chatPoll: null,
+  adminInquiries: [],
+  subadmins: [],
 };
 
 const $ = (selector, parent = document) => parent.querySelector(selector);
@@ -135,7 +140,7 @@ function route() {
   if (id === "tiers") renderTiers();
   if (id === "terms") loadPolicies();
   if (id === "ranking") loadPurchaseRanking();
-  if (id === "support") renderSupportForm();
+  if (id === "support") { renderSupportForm(); loadInquiries(); }
   if (id === "events" && state.me) loadCouponEvents(false);
   if (id === "notices") loadNoticesPage();
   if (id === "admin") openAdminGate();
@@ -990,6 +995,83 @@ const statusText = status => ({
   SHIPPING_READY: "배송 준비중", SHIPPING: "배송중", DELIVERED: "배송완료",
 })[status] || status;
 
+async function openChatPanel() {
+  if (!state.me) { location.href = "/auth/login"; return; }
+  $("#chat-panel").hidden = false;
+  await loadChatSessions();
+}
+
+function closeChatPanel() {
+  $("#chat-panel").hidden = true;
+  clearInterval(state.chatPoll); state.chatPoll = null;
+}
+
+async function loadChatSessions() {
+  try {
+    const data = await api("/api/chat");
+    state.chatSessions = data.sessions || [];
+    $("#chat-availability").textContent = data.available ? `상담이 가능합니다! · ${data.start}~${data.end}` : `상담시간이 아닙니다. · ${data.start}~${data.end}`;
+    $("#chat-start").disabled = !data.available;
+    $("#chat-history").innerHTML = state.chatSessions.map(session => `<button type="button" data-chat-session="${session.id}"><span><b>${escapeHtml(session.subject)}</b><small>${new Date(session.updated_at).toLocaleString("ko-KR")}</small></span><i>${({OPEN:"접수",ASSIGNED:"상담중",CLOSING:"종료확인",CLOSED:"종료",FORCE_CLOSED:"강제종료"})[session.status] || session.status}</i></button>`).join("") || '<p class="empty">아직 상담 기록이 없습니다.</p>';
+    $$('[data-chat-session]').forEach(button => { button.onclick = () => openChatRoom(button.dataset.chatSession); });
+  } catch (error) { toast(error.message); }
+}
+
+async function createChatSession() {
+  const content = $("#chat-initial-content").value.trim();
+  if (!content) return toast("문의 내용을 입력해 주세요.");
+  try {
+    const data = await api("/api/chat", { method: "POST", body: JSON.stringify({ content }) });
+    $("#chat-initial-content").value = ""; $("#chat-initial-wrap").hidden = true;
+    await openChatRoom(data.session.id);
+  } catch (error) { toast(error.message); }
+}
+
+async function openChatRoom(sessionId) {
+  state.activeChatId = String(sessionId);
+  $("#chat-home").hidden = true; $("#chat-room").hidden = false;
+  await loadChatRoom();
+  clearInterval(state.chatPoll);
+  state.chatPoll = setInterval(() => { if (!$("#chat-panel").hidden && state.activeChatId) loadChatRoom(true); }, 2500);
+}
+
+async function loadChatRoom(silent = false) {
+  if (!state.activeChatId) return;
+  try {
+    const data = await api(`/api/chat/${state.activeChatId}`);
+    const box = $("#chat-messages");
+    const nearBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 80;
+    box.innerHTML = (data.messages || []).map(message => `<article class="chat-bubble ${message.sender_type === "USER" ? "user" : message.sender_type === "STAFF" ? "staff" : "system"}"><small>${escapeHtml(message.sender_name || "V4P3 SP0T")}</small>${message.content ? `<p>${escapeHtml(message.content)}</p>` : ""}${message.image_url ? `<img src="${message.image_url}" alt="상담 첨부 이미지">` : ""}${message.sender_type === "CLOSE_PROMPT" ? `<div class="chat-close-actions"><button type="button" class="button danger compact" data-chat-choice="close">종료하기</button><button type="button" class="button secondary compact" data-chat-choice="continue">계속하기</button></div>` : ""}<time>${new Date(message.created_at).toLocaleTimeString("ko-KR", {hour:"2-digit",minute:"2-digit"})}</time></article>`).join("");
+    if (nearBottom || !silent) box.scrollTop = box.scrollHeight;
+    $$('[data-chat-choice]', box).forEach(button => { button.onclick = () => chatCloseChoice(button.dataset.chatChoice); });
+    const writable = ["OPEN", "ASSIGNED", "CLOSING"].includes(data.session.status);
+    $("#chat-message-form").hidden = !writable;
+  } catch (error) { if (!silent) toast(error.message); }
+}
+
+async function sendChatMessage(event) {
+  event.preventDefault();
+  const form = event.currentTarget; const data = new FormData(form);
+  const file = form.elements.image.files?.[0];
+  if (file && file.size > 5 * 1024 * 1024) return toast("이미지는 5MB 이하로 보내 주세요.");
+  try {
+    const response = await fetch(`/api/chat/${state.activeChatId}/messages`, { method: "POST", headers: {"X-CSRF-Token": state.csrf}, body: data });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(result.error || "메시지를 보내지 못했습니다.");
+    form.reset(); await loadChatRoom();
+  } catch (error) { toast(error.message); }
+}
+
+async function chatCloseChoice(choice) {
+  try { await api(`/api/chat/${state.activeChatId}/close-choice`, { method: "POST", body: JSON.stringify({ choice }) }); await loadChatRoom(); await loadChatSessions(); }
+  catch (error) { toast(error.message); }
+}
+
+function backToChatHistory() {
+  clearInterval(state.chatPoll); state.chatPoll = null; state.activeChatId = null;
+  $("#chat-room").hidden = true; $("#chat-home").hidden = false; loadChatSessions();
+}
+
 function bindForms() {
   bindShippingBanner();
   restoreChannelForm();
@@ -1046,6 +1128,9 @@ function bindForms() {
   $("#blacklist-type").onchange = updateBlacklistDuration;
   $("#blacklist-duration").onchange = updateBlacklistDuration;
   $("#refresh-admin-users").onclick = loadAdminUsers;
+  $("#refresh-admin-inquiries").onclick = loadAdminInquiries;
+  $("#refresh-subadmins").onclick = loadSubadmins;
+  $("#subadmin-form").onsubmit = saveSubadmin;
   $("#refresh-admin-coupon-events").onclick = loadAdminCouponEvents;
   $("#point-admin-form").onsubmit = saveAdminPoints;
   $("#coupon-admin-form").onsubmit = issueCoupon;
@@ -1061,6 +1146,12 @@ function bindForms() {
     };
   });
   $("#support-form").onsubmit = createSupportTicket;
+  $("#chat-launcher").onclick = openChatPanel;
+  $("#chat-panel-close").onclick = closeChatPanel;
+  $("#chat-start").onclick = () => { $("#chat-initial-wrap").hidden = false; $("#chat-initial-content").focus(); };
+  $("#chat-create").onclick = createChatSession;
+  $("#chat-back").onclick = backToChatHistory;
+  $("#chat-message-form").onsubmit = sendChatMessage;
   $$(".notice-admin-form").forEach(form => { form.onsubmit = saveNotice; });
   $$('.notice-admin-form input[name="image"]').forEach(input => { input.onchange = previewNoticeImage; });
   $$('.notice-admin-form input[name="remove_image"]').forEach(input => {
@@ -1101,16 +1192,13 @@ const SUPPORT_TYPES = {
     { name: "문의내용", label: "문의내용", type: "textarea", placeholder: "문의하실 내용을 자세히 작성해 주세요." },
   ] },
   payment: { title: "입금문의 작성", icon: "💳", fields: [
-    { name: "주문번호", label: "주문번호", placeholder: "주문번호가 없다면 없음이라고 입력해 주세요." },
     { name: "문의내용", label: "문의내용", type: "textarea", placeholder: "입금 또는 결제 관련 문의를 작성해 주세요." },
   ] },
   shipping: { title: "배송문의 작성", icon: "🚚", fields: [
-    { name: "주문번호", label: "주문번호", placeholder: "확인할 주문번호를 입력해 주세요." },
     { name: "문의내용", label: "문의내용", type: "textarea", placeholder: "배송 또는 운송장 관련 문의를 작성해 주세요." },
   ] },
   partner: { title: "제휴문의 작성", icon: "🤝", fields: [
-    { name: "서버링크", label: "서버링크", placeholder: "Discord 서버 초대 링크를 입력해 주세요." },
-    { name: "배너명", label: "배너명", placeholder: "제휴에 사용할 배너명을 입력해 주세요." },
+    { name: "문의내용", label: "문의내용", type: "textarea", placeholder: "제휴 문의 내용을 자세히 작성해 주세요." },
   ] },
 };
 
@@ -1138,22 +1226,74 @@ async function createSupportTicket(event) {
   const submit = event.submitter || event.currentTarget.querySelector('button[type="submit"]');
   const original = submit.textContent;
   submit.disabled = true;
-  submit.textContent = "Discord 티켓 생성 중...";
+  submit.textContent = "문의 등록 중...";
   try {
     const result = await api("/api/tickets", { method: "POST", body: JSON.stringify(Object.fromEntries(new FormData(event.currentTarget))) });
-    $("#support-channel-name").textContent = `#${result.channel_name}`;
-    $("#support-channel-link").href = result.channel_url;
+    $("#support-complete-text").textContent = `문의번호 #${result.inquiry_id} · 관리자에게 알림을 전송했습니다.`;
     $("#support-complete").hidden = false;
     $("#support-complete").scrollIntoView({ behavior: "smooth", block: "center" });
     event.currentTarget.reset();
     event.currentTarget.elements.ticket_type.value = state.supportType;
-    toast("Discord 문의 티켓을 생성했습니다.");
+    await loadInquiries();
+    toast("문의를 등록했습니다.");
   } catch (error) {
     toast(error.message);
   } finally {
     submit.disabled = false;
     submit.textContent = original;
   }
+}
+
+async function loadInquiries() {
+  const target = $("#support-history");
+  if (!target || !state.me) return;
+  try {
+    const data = await api("/api/inquiries");
+    target.innerHTML = (data.inquiries || []).map(item => `<article class="order"><div class="order-head"><strong>문의 #${item.id}</strong><span class="badge">${item.status === "ANSWERED" ? "답변완료" : "확인중"}</span></div><p>${escapeHtml(item.content)}</p>${item.answer ? `<div class="inquiry-answer"><b>관리자 답변</b><p>${escapeHtml(item.answer)}</p></div>` : ""}<small>${new Date(item.created_at).toLocaleString("ko-KR")}</small></article>`).join("") || '<div class="empty">등록한 문의가 없습니다.</div>';
+  } catch (error) { target.innerHTML = `<div class="empty">${escapeHtml(error.message)}</div>`; }
+}
+
+async function loadAdminInquiries() {
+  const target = $("#admin-inquiries");
+  try {
+    const data = await api("/api/admin/inquiries");
+    state.adminInquiries = data.inquiries || [];
+    target.innerHTML = state.adminInquiries.map(item => `<article class="admin-inquiry"><div><strong>#${item.id} · ${escapeHtml(item.nickname || item.username)}</strong><small>${escapeHtml(item.user_id)} · ${escapeHtml(item.inquiry_type)} · ${new Date(item.created_at).toLocaleString("ko-KR")}</small><p>${escapeHtml(item.content)}</p>${item.answer ? `<div class="inquiry-answer"><b>답변</b><p>${escapeHtml(item.answer)}</p></div>` : ""}</div><form data-inquiry-answer="${item.id}"><textarea name="answer" maxlength="3000" required placeholder="답변을 입력해 주세요.">${escapeHtml(item.answer || "")}</textarea><button class="button compact" type="submit">답변 보내기</button></form></article>`).join("") || '<p class="admin-empty">등록된 문의가 없습니다.</p>';
+    $$('[data-inquiry-answer]', target).forEach(form => { form.onsubmit = answerInquiry; });
+  } catch (error) { target.innerHTML = `<p class="admin-empty">${escapeHtml(error.message)}</p>`; }
+}
+
+async function answerInquiry(event) {
+  event.preventDefault();
+  const id = event.currentTarget.dataset.inquiryAnswer;
+  try {
+    await api(`/api/admin/inquiries/${id}/answer`, { method: "POST", body: JSON.stringify(Object.fromEntries(new FormData(event.currentTarget))) });
+    await loadAdminInquiries(); toast("문의 답변을 저장하고 Discord DM으로 전송했습니다.");
+  } catch (error) { toast(error.message); }
+}
+
+async function loadSubadmins() {
+  try {
+    const data = await api("/api/admin/subadmins");
+    state.subadmins = data.subadmins || [];
+    $("#subadmin-products").innerHTML = (data.products || []).map(product => `<label class="check"><input type="checkbox" name="product_ids" value="${product.id}"><span>${escapeHtml(product.name)}</span></label>`).join("") || '<p class="admin-empty">활성 상품이 없습니다.</p>';
+    $("#subadmin-list").innerHTML = state.subadmins.map(item => `<div class="admin-row"><span><b>${escapeHtml(item.nickname || item.username)}</b><br><small>${escapeHtml(item.user_id)} · 담당 상품 ${item.product_ids.length}개</small></span><button class="remove" data-delete-subadmin="${item.user_id}">삭제</button></div>`).join("") || '<p class="admin-empty">등록된 부관리자가 없습니다.</p>';
+    $$('[data-delete-subadmin]').forEach(button => { button.onclick = () => deleteSubadmin(button.dataset.deleteSubadmin); });
+  } catch (error) { toast(error.message); }
+}
+
+async function saveSubadmin(event) {
+  event.preventDefault();
+  const data = Object.fromEntries(new FormData(event.currentTarget));
+  data.product_ids = [...event.currentTarget.querySelectorAll('[name="product_ids"]:checked')].map(input => Number(input.value));
+  try { await api("/api/admin/subadmins", { method: "POST", body: JSON.stringify(data) }); event.currentTarget.reset(); await loadSubadmins(); toast("부관리자와 담당 상품을 저장했습니다."); }
+  catch (error) { toast(error.message); }
+}
+
+async function deleteSubadmin(userId) {
+  if (!confirm("이 부관리자를 삭제할까요?")) return;
+  try { await api(`/api/admin/subadmins/${userId}`, { method: "DELETE", body: "{}" }); await loadSubadmins(); toast("부관리자를 삭제했습니다."); }
+  catch (error) { toast(error.message); }
 }
 
 function setAdminSection(section) {
@@ -1163,6 +1303,8 @@ function setAdminSection(section) {
   if (section === "users") loadAdminUsers();
   if (section === "policies") loadAdminPolicies();
   if (section === "coupons") loadAdminCouponEvents();
+  if (section === "inquiries") loadAdminInquiries();
+  if (section === "subadmins") loadSubadmins();
 }
 
 function updateBlacklistDuration() {
@@ -1284,6 +1426,8 @@ async function unlockAdmin(event) {
     await api("/api/admin/unlock", { method: "POST", body: JSON.stringify({ password }) });
     closeAdminGate();
     await loadAdmin();
+    const requested = new URLSearchParams(location.search).get("admin_section");
+    if (requested) setAdminSection(requested);
   } catch (error) {
     toast(error.message);
     event.target.querySelector('input[name="password"]').select();
@@ -1810,6 +1954,7 @@ function renderAdminOrders() {
         <small>${escapeHtml(order.buyer_name)} · ${escapeHtml(order.amount)} · ${String(order.created_at).slice(0, 16).replace("T", " ")}</small>
         <small>수령인 ${escapeHtml(order.shipping_name || "미등록")} · ${escapeHtml(order.shipping_contact || "미등록")} · ${escapeHtml(order.shipping_method || "배송방식 미등록")}</small>
         <small>배송지 ${escapeHtml(order.shipping_cvs || order.shipping_address || "미등록")}</small>
+        <small>배송메모 ${escapeHtml(order.shipping_memo || "없음")}</small>
         <small>현금 ${money(order.cash_amount)} · 포인트 ${Number(order.points_used || 0).toLocaleString()}P</small>
         ${order.cancel_reason ? `<small class="cancel-reason">취소 사유: ${escapeHtml(order.cancel_reason)}</small>` : ""}
         ${order.waybill_number ? `<small>운송장: ${escapeHtml(order.waybill_number)}</small>` : ""}

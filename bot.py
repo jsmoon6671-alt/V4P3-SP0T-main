@@ -43,6 +43,7 @@ from chat_ranking import (
 )
 from database import initialize_database
 from order_editing import build_purchase_log_payload, register_order_edit_command
+from order_fulfillment import notify_product_subadmins
 from web_store import save_web_review, start_web_store
 from web_order_progress import (
     WebOrderProgressCog,
@@ -3094,11 +3095,26 @@ async def restore_price_lists(interaction: discord.Interaction, 채널: discord.
 # [기능 9] 모든 버튼/드롭다운 클릭 이벤트 통제 센터
 # ==========================================
 @bot.event
+async def on_message(message: discord.Message):
+    if bot.web_store is not None:
+        try:
+            handled = await bot.web_store.handle_discord_chat_message(message)
+            if handled:
+                return
+        except Exception:
+            logging.exception("웹 실시간 상담 메시지 연동 실패: channel=%s", message.channel.id)
+    await bot.process_commands(message)
+
+
+@bot.event
 async def on_interaction(interaction: discord.Interaction):
     if interaction.type != discord.InteractionType.component: 
         return
         
     custom_id = interaction.data.get("custom_id", "")
+
+    if bot.web_store is not None and await bot.web_store.handle_discord_chat_interaction(interaction):
+        return
 
     if custom_id.startswith("web_refund_account:"):
         await interaction.response.send_modal(WebRefundAccountModal(custom_id.split(":", 1)[1]))
@@ -3553,6 +3569,12 @@ async def on_interaction(interaction: discord.Interaction):
                             )
                         except Exception as e:
                             print(f"구매자 정보 채널 전송 실패: {e}")
+
+        if action == 'approve':
+            try:
+                await notify_product_subadmins(bot, order)
+            except Exception:
+                logging.exception("부관리자 주문 알림 실패: order=%s", order_id)
 
         # 승인/거절 처리 시간 (한국 시간)
         now_str = datetime.datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S")
