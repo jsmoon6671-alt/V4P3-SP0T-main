@@ -150,8 +150,8 @@ h3,strong { font-weight: 800; }
 .coupon-event-image-preview { display: block; width: min(100%,520px); max-height: 230px; border: 1px solid var(--line); border-radius: 8px; object-fit: contain; background: #0b100d; }
 .coupon-event-image-preview[hidden] { display: none; }
 .welcome-coupon-modal { z-index: 450; }
-.welcome-coupon-card { width: min(920px,calc(100vw - 40px)); display: grid; grid-template-columns: minmax(0,1fr) minmax(230px,260px); align-items: stretch; overflow: hidden; border-top-color: #ff8a00; }
-.welcome-coupon-card>img { display: block; width: 100%; height: auto; min-height: 0; align-self: center; object-fit: contain; object-position: center; background: transparent; }
+.welcome-coupon-card { width: 827px; height: 265px; max-width: calc(100vw - 40px); display: grid; grid-template-columns: 567px 260px; align-items: stretch; overflow: hidden; border-top-color: #ff8a00; }
+.welcome-coupon-card>img { display: block; width: 567px; height: 265px; min-height: 0; object-fit: fill; background: transparent; }
 .welcome-coupon-card>div { display: flex; min-width: 0; flex-direction: column; justify-content: center; gap: 7px; padding: 14px 18px; }
 .welcome-coupon-card h2,.welcome-coupon-card p { margin: 0; word-break: keep-all; overflow-wrap: break-word; text-wrap: pretty; }
 .welcome-coupon-card h2 { font-size: 22px; line-height: 1.35; }
@@ -453,9 +453,9 @@ h3,strong { font-weight: 800; }
   .blacklist-tools { grid-template-columns: 1fr; }
   .site-header .button.small { max-width: 140px; }
 }
-@media(max-width:700px) {
-  .welcome-coupon-card { grid-template-columns: 1fr; }
-  .welcome-coupon-card>img { width: 100%; height: auto; min-height: 0; object-fit: contain; object-position: center; }
+@media(max-width:900px) {
+  .welcome-coupon-card { width: min(567px,calc(100vw - 40px)); height: auto; grid-template-columns: 1fr; }
+  .welcome-coupon-card>img { width: 100%; height: auto; min-height: 0; aspect-ratio: 567/265; object-fit: fill; }
 }
 @media(max-width:520px) {
   .action-banner { grid-template-columns: 1fr auto; padding: 8px 12px; }
