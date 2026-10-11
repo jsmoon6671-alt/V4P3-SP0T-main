@@ -9,6 +9,7 @@ from web_store import (
     option_surcharge,
     parse_product_options,
     product_selection_surcharge,
+    qualifies_for_product_free_shipping,
     selected_options_surcharge,
 )
 
@@ -20,6 +21,14 @@ class WebStoreShippingTests(unittest.TestCase):
         self.assertEqual(calculate_shipping_fee(35_000), 1_500)
         self.assertEqual(calculate_shipping_fee(49_999), 1_500)
         self.assertEqual(calculate_shipping_fee(50_000), 0)
+
+    def test_product_quantity_free_shipping_requires_a_single_product(self):
+        product_a = {"product_id": 1, "quantity": 3, "free_shipping_quantity": 3}
+        product_b = {"product_id": 2, "quantity": 1, "free_shipping_quantity": 0}
+        self.assertTrue(qualifies_for_product_free_shipping([product_a]))
+        self.assertFalse(qualifies_for_product_free_shipping([{**product_a, "quantity": 2}]))
+        self.assertFalse(qualifies_for_product_free_shipping([product_a, product_b]))
+        self.assertFalse(qualifies_for_product_free_shipping([{**product_a, "free_shipping_quantity": 0}]))
 
     def test_option_surcharge_format(self):
         self.assertEqual(option_surcharge("블랙 (+2000)"), 2_000)

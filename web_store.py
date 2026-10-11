@@ -98,6 +98,16 @@ def calculate_shipping_fee(subtotal: int) -> int:
     return BASE_SHIPPING_FEE
 
 
+def qualifies_for_product_free_shipping(items) -> bool:
+    """한 종류의 상품만 결제하며 설정 수량을 채웠을 때만 무료배송을 적용한다."""
+    rows = list(items)
+    if len(rows) != 1:
+        return False
+    row = rows[0]
+    threshold = int(row.get("free_shipping_quantity") or 0)
+    return threshold > 0 and int(row.get("quantity") or 0) >= threshold
+
+
 def option_surcharge(option: str) -> int:
     """옵션명의 (+2000), (+2,000원) 표기를 개당 추가 금액으로 해석한다."""
     return sum(int(value.replace(",", "")) for value in OPTION_SURCHARGE_PATTERN.findall(str(option or "")))
@@ -232,6 +242,7 @@ async def initialize_web_store_schema(conn):
             option_label TEXT NOT NULL DEFAULT '색상',
             options TEXT[] NOT NULL DEFAULT '{}',
             option_groups_json TEXT NOT NULL DEFAULT '[]',
+            free_shipping_quantity INTEGER NOT NULL DEFAULT 0 CHECK (free_shipping_quantity BETWEEN 0 AND 99),
             is_active BOOLEAN NOT NULL DEFAULT TRUE,
             created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -400,6 +411,7 @@ async def initialize_web_store_schema(conn):
         ALTER TABLE web_products ADD COLUMN IF NOT EXISTS option_label TEXT NOT NULL DEFAULT '색상';
         ALTER TABLE web_products ADD COLUMN IF NOT EXISTS options TEXT[] NOT NULL DEFAULT '{}';
         ALTER TABLE web_products ADD COLUMN IF NOT EXISTS option_groups_json TEXT NOT NULL DEFAULT '[]';
+        ALTER TABLE web_products ADD COLUMN IF NOT EXISTS free_shipping_quantity INTEGER NOT NULL DEFAULT 0;
         ALTER TABLE web_cart_items ADD COLUMN IF NOT EXISTS selected_option TEXT NOT NULL DEFAULT '';
         ALTER TABLE web_cart_items ADD COLUMN IF NOT EXISTS selected_options_json TEXT NOT NULL DEFAULT '[]';
         ALTER TABLE web_order_items ADD COLUMN IF NOT EXISTS product_option TEXT NOT NULL DEFAULT '';
@@ -1914,6 +1926,7 @@ class StoreServer:
                 """
                 SELECT c.product_id, c.quantity, c.selected_option, c.selected_options_json,
                        p.name, p.price, p.image_url, p.option_label, p.options, p.option_groups_json,
+                       p.free_shipping_quantity,
                        p.is_active, cat.name AS category_name
                 FROM web_cart_items c JOIN web_products p ON p.id = c.product_id
                 LEFT JOIN web_categories cat ON cat.id = p.category_id
@@ -2340,7 +2353,8 @@ class StoreServer:
                 rows = await conn.fetch(
                     """
                     SELECT c.product_id, c.quantity, c.selected_option, c.selected_options_json,
-                           p.name, p.price, p.is_active, p.option_label, p.options, p.option_groups_json
+                           p.name, p.price, p.is_active, p.option_label, p.options, p.option_groups_json,
+                           p.free_shipping_quantity
                     FROM web_cart_items c JOIN web_products p ON p.id = c.product_id
                     WHERE c.guild_id = $1 AND c.user_id = $2 AND c.product_id = ANY($3::bigint[])
                     ORDER BY c.product_id FOR UPDATE OF p
@@ -2368,7 +2382,7 @@ class StoreServer:
                     * int(row["quantity"])
                     for row in rows
                 )
-                shipping_fee = calculate_shipping_fee(subtotal)
+                shipping_fee = 0 if qualifies_for_product_free_shipping(rows) else calculate_shipping_fee(subtotal)
                 total = subtotal + shipping_fee
                 coupon_code = str(data.get("coupon_code") or "").strip()
                 coupon_discount = 0
@@ -2857,10 +2871,16 @@ class StoreServer:
         option_groups = normalize_option_groups(data.get("option_groups", []))
         first_group = option_groups[0] if option_groups else {"label": "없음", "options": []}
         option_label, options = first_group["label"], first_group["options"]
+        try:
+            free_shipping_quantity = int(data.get("free_shipping_quantity") or 0)
+        except (TypeError, ValueError):
+            raise StoreError("단독 구매 무료배송 수량을 확인해 주세요.")
+        if not 0 <= free_shipping_quantity <= 99:
+            raise StoreError("단독 구매 무료배송 수량은 0~99개로 설정해 주세요.")
         args = (
             self.guild_id, int(data["category_id"]), name,
             str(data.get("description", "")).strip(), price, 0,
-            image_url, option_label, options, json.dumps(option_groups, ensure_ascii=False),
+            image_url, option_label, options, json.dumps(option_groups, ensure_ascii=False), free_shipping_quantity,
             bool(data.get("is_active", True)),
         )
         async with self.bot.db_pool.acquire() as conn:
@@ -2880,13 +2900,13 @@ class StoreServer:
             if not category_is_leaf:
                 raise StoreError("상품은 하위 카테고리에만 등록할 수 있습니다.")
             if data.get("id"):
-                await conn.execute("UPDATE web_products SET category_id=$3,name=$4,description=$5,price=$6,stock=$7,image_url=$8,option_label=$9,options=$10,option_groups_json=$11,is_active=$12,updated_at=CURRENT_TIMESTAMP WHERE id=$1 AND guild_id=$2", int(data["id"]), *args)
+                await conn.execute("UPDATE web_products SET category_id=$3,name=$4,description=$5,price=$6,stock=$7,image_url=$8,option_label=$9,options=$10,option_groups_json=$11,free_shipping_quantity=$12,is_active=$13,updated_at=CURRENT_TIMESTAMP WHERE id=$1 AND guild_id=$2", int(data["id"]), *args)
                 await conn.execute(
                     "UPDATE web_product_sources SET price_locked=TRUE WHERE product_id=$1 AND guild_id=$2",
                     int(data["id"]), self.guild_id,
                 )
             else:
-                await conn.execute("INSERT INTO web_products (guild_id,category_id,name,description,price,stock,image_url,option_label,options,option_groups_json,is_active) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)", *args)
+                await conn.execute("INSERT INTO web_products (guild_id,category_id,name,description,price,stock,image_url,option_label,options,option_groups_json,free_shipping_quantity,is_active) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)", *args)
         return web.json_response({"ok": True})
 
     async def admin_sync_products(self, request):
@@ -2930,6 +2950,12 @@ class StoreServer:
         option_groups = normalize_option_groups(data.get("option_groups", []))
         first_group = option_groups[0] if option_groups else {"label": "없음", "options": []}
         option_label, manual_options = first_group["label"], first_group["options"]
+        try:
+            free_shipping_quantity = int(data.get("free_shipping_quantity") or 0)
+        except (TypeError, ValueError):
+            raise StoreError("단독 구매 무료배송 수량을 확인해 주세요.")
+        if not 0 <= free_shipping_quantity <= 99:
+            raise StoreError("단독 구매 무료배송 수량은 0~99개로 설정해 주세요.")
         if self._product_sync_lock.locked():
             raise StoreError("다른 상품 가져오기가 진행 중입니다. 잠시 후 다시 시도해 주세요.", 409)
 
@@ -2979,12 +3005,12 @@ class StoreServer:
                 for product in products:
                     await conn.execute(
                         """
-                        UPDATE web_products p SET option_groups_json=$4, updated_at=CURRENT_TIMESTAMP
+                        UPDATE web_products p SET option_groups_json=$4, free_shipping_quantity=$5, updated_at=CURRENT_TIMESTAMP
                         FROM web_product_sources s
                         WHERE s.product_id=p.id AND s.guild_id=$1
                           AND s.source_site=$2 AND s.source_key=$3
                         """,
-                        self.guild_id, product.source_site, product.source_key, groups_json,
+                        self.guild_id, product.source_site, product.source_key, groups_json, free_shipping_quantity,
                     )
         return web.json_response(
             summary, dumps=lambda value: json.dumps(value, ensure_ascii=False),

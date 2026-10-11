@@ -390,6 +390,7 @@ function renderProducts() {
         <small>${escapeHtml(product.parent_category_name ? `${product.parent_category_name} · ${product.category_name}` : (product.category_name || "미분류"))}</small>
         <h3>${escapeHtml(product.name)}</h3>
         <p>${escapeHtml(product.description)}</p>
+        ${Number(product.free_shipping_quantity || 0) > 0 ? `<p class="product-shipping-offer">이 상품만 ${Number(product.free_shipping_quantity)}개 이상 구매 시 무료배송</p>` : ""}
         ${optionSelect}
         <div class="product-foot">
           <div><strong data-product-price="${product.id}">${money(product.price)}</strong></div>
@@ -469,7 +470,7 @@ function renderCart() {
     const surcharge = productSelectionSurcharge(optionGroups, selectedOptions);
     return `<div class="cart-row">
       <input class="cart-check" type="checkbox" aria-label="상품 선택" data-select="${item.product_id}" ${state.selected.has(Number(item.product_id)) ? "checked" : ""}>
-      <div class="grow"><strong>${escapeHtml(item.name)}</strong><br><small>${money(itemUnitPrice(item))}${surcharge ? ` · 옵션 +${money(surcharge)}` : ""}</small>${optionField}</div>
+      <div class="grow"><strong>${escapeHtml(item.name)}</strong><br><small>${money(itemUnitPrice(item))}${surcharge ? ` · 옵션 +${money(surcharge)}` : ""}</small>${Number(item.free_shipping_quantity || 0) > 0 ? `<small class="cart-shipping-offer">단독 ${Number(item.free_shipping_quantity)}개 이상 무료배송</small>` : ""}${optionField}</div>
       <div class="cart-controls">
         <div class="quantity-stepper" aria-label="수량 조절">
           <button type="button" aria-label="수량 줄이기" data-qty-minus="${item.product_id}">−</button>
@@ -540,7 +541,8 @@ async function saveCartRow(productId, quantity, selectedOptions = null) {
 function cartTotal() {
   const selectedRows = state.cart.filter(item => state.selected.has(Number(item.product_id)));
   const subtotal = selectedRows.reduce((sum, item) => sum + itemUnitPrice(item) * Number(item.quantity), 0);
-  const shipping = selectedRows.length ? shippingFee(subtotal) : 0;
+  const productFreeShipping = qualifiesForProductFreeShipping(selectedRows);
+  const shipping = selectedRows.length ? (productFreeShipping ? 0 : shippingFee(subtotal)) : 0;
   const beforeDiscount = subtotal + shipping;
   const discount = checkoutPointDiscount(beforeDiscount);
   const coupon = state.coupons.find(item => item.code === $("#checkout-coupon")?.value);
@@ -559,7 +561,7 @@ function cartTotal() {
     ? (couponEligible ? `${money(coupon.discount_amount)} 할인이 적용됩니다.` : `이 쿠폰은 상품 금액 ${money(coupon.min_order_amount)} 이상 구매해야 사용할 수 있습니다.`)
     : "쿠폰별 최소 주문금액 조건이 적용됩니다.";
   $("#selected-count").textContent = `${selectedRows.length}개 선택`;
-  updateShippingBenefit(subtotal, selectedRows.length > 0);
+  updateShippingBenefit(subtotal, selectedRows.length > 0, productFreeShipping);
   updatePointUseHint(beforeDiscount);
 }
 
@@ -570,11 +572,19 @@ function shippingFee(subtotal) {
   return amount > 0 ? 3000 : 0;
 }
 
-function updateShippingBenefit(subtotal, hasItems) {
+function qualifiesForProductFreeShipping(items) {
+  if (items.length !== 1) return false;
+  const threshold = Number(items[0].free_shipping_quantity || 0);
+  return threshold > 0 && Number(items[0].quantity || 0) >= threshold;
+}
+
+function updateShippingBenefit(subtotal, hasItems, productFreeShipping = false) {
   const message = $("#shipping-benefit");
   if (!message) return;
   if (!hasItems) {
     message.textContent = "선택한 상품 금액에 따라 자동 적용됩니다.";
+  } else if (productFreeShipping) {
+    message.textContent = "단독 상품 수량 무료배송이 적용되었습니다.";
   } else if (subtotal >= 50000) {
     message.textContent = "무료배송이 적용되었습니다.";
   } else if (subtotal >= 35000) {
@@ -2318,6 +2328,10 @@ function openEditor(type, item = {}) {
       <label>판매 가격
         <input name="price" type="number" inputmode="numeric" min="0" step="1" placeholder="직접 판매할 가격을 입력해 주세요" required>
       </label>
+      <label>단독 구매 무료배송 수량
+        <input name="free_shipping_quantity" type="number" inputmode="numeric" min="0" max="99" value="0">
+        <small>0은 사용 안 함 · 이 상품만 설정 수량 이상 결제할 때 배송비가 0원입니다.</small>
+      </label>
       <h3>선택 항목 <small>최대 3개</small></h3>
       ${optionGroupEditors({})}
       <small>선택 항목은 반드시 1번부터 순서대로 만드세요. 구매자 직접입력 질문을 선택하면 작성한 질문에 구매자가 장바구니에 담기 전에 답변합니다. 선택형 항목값에 (+2000)을 붙이면 개당 2,000원이 추가됩니다.</small>
@@ -2335,6 +2349,7 @@ function openEditor(type, item = {}) {
       <label>이미지 파일<input id="product-image-file" type="file" accept="image/*"></label>
       <label>설명<textarea name="description">${escapeHtml(item.description || "")}</textarea></label>
       <label>가격<input name="price" type="number" min="0" value="${item.price || 0}" required></label>
+      <label>단독 구매 무료배송 수량<input name="free_shipping_quantity" type="number" min="0" max="99" value="${Number(item.free_shipping_quantity || 0)}"><small>0은 사용 안 함 · 다른 상품을 함께 결제하면 적용되지 않습니다.</small></label>
       <h3>선택 항목 <small>최대 3개</small></h3>
       ${optionGroupEditors(item)}
       <small>선택 항목은 반드시 1번부터 순서대로 만드세요. 구매자 직접입력 질문을 선택하면 작성한 질문에 구매자가 장바구니에 담기 전에 답변합니다. 선택형 항목값에 (+2000)을 붙이면 개당 2,000원이 추가됩니다.</small>
