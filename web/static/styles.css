@@ -426,7 +426,7 @@ h3,strong { font-weight: 800; }
 @keyframes review-scroll { to { transform: translateX(-50%); } }
 
 .metrics { display: grid; grid-template-columns: repeat(4,1fr); gap: 13px; margin-bottom: 20px; }
-.admin-section-nav { display: flex; gap: 8px; margin: -4px 0 24px; padding-bottom: 14px; overflow-x: auto; border-bottom: 1px solid var(--line); }
+.admin-section-nav { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: -4px 0 24px; padding-bottom: 14px; overflow: visible; border-bottom: 1px solid var(--line); }
 .admin-section-nav button,.order-filter-tabs button { flex: 0 0 auto; border: 1px solid var(--line-strong); border-radius: 999px; background: #0d1712; color: var(--muted); font-weight: 800; cursor: pointer; }
 .admin-section-nav button { min-height: 42px; padding: 10px 20px; }
 .admin-section-nav button:hover,.admin-section-nav button.active,.order-filter-tabs button:hover,.order-filter-tabs button.active { border-color: #32955e; background: #143723; color: #71eba6; }
