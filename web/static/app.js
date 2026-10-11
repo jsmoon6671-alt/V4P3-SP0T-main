@@ -20,6 +20,7 @@ const state = {
   adminOrderFilter: "all",
   blacklist: [],
   adminUsers: [],
+  adminCouponEvents: [],
   productSearch: "",
   siteMessages: [],
   coupons: [],
@@ -516,7 +517,8 @@ function cartTotal() {
   const beforeDiscount = subtotal + shipping;
   const discount = checkoutPointDiscount(beforeDiscount);
   const coupon = state.coupons.find(item => item.code === $("#checkout-coupon")?.value);
-  const couponDiscount = Math.min(Number(coupon?.discount_amount || 0), Math.max(0, beforeDiscount - discount));
+  const couponEligible = !coupon || subtotal >= Number(coupon.min_order_amount || 0);
+  const couponDiscount = couponEligible ? Math.min(Number(coupon?.discount_amount || 0), Math.max(0, beforeDiscount - discount)) : 0;
   const total = Math.max(0, beforeDiscount - discount - couponDiscount);
   $("#cart-subtotal").textContent = money(subtotal);
   $("#cart-shipping").textContent = money(shipping);
@@ -525,6 +527,10 @@ function cartTotal() {
   $("#cart-coupon-discount").textContent = `-${money(couponDiscount)}`;
   $("#cart-coupon-row").hidden = couponDiscount === 0;
   $("#cart-total").textContent = money(total);
+  const couponHint = $("#coupon-use-hint");
+  if (couponHint) couponHint.textContent = coupon
+    ? (couponEligible ? `${money(coupon.discount_amount)} 할인이 적용됩니다.` : `이 쿠폰은 상품 금액 ${money(coupon.min_order_amount)} 이상 구매해야 사용할 수 있습니다.`)
+    : "쿠폰별 최소 주문금액 조건이 적용됩니다.";
   $("#selected-count").textContent = `${selectedRows.length}개 선택`;
   updateShippingBenefit(subtotal, selectedRows.length > 0);
   updatePointUseHint(beforeDiscount);
@@ -561,7 +567,7 @@ async function loadCheckoutCustomer() {
     }
     state.pointBalance = Number(data.points || 0);
     state.coupons = couponData.coupons || [];
-    $("#checkout-coupon").innerHTML = '<option value="">사용 안 함</option>' + state.coupons.map(coupon => `<option value="${escapeHtml(coupon.code)}">${escapeHtml(coupon.code)} · ${money(coupon.discount_amount)} 할인</option>`).join("");
+    $("#checkout-coupon").innerHTML = '<option value="">사용 안 함</option>' + state.coupons.map(coupon => `<option value="${escapeHtml(coupon.code)}">${escapeHtml(coupon.code)} · ${money(coupon.discount_amount)} 할인${Number(coupon.min_order_amount || 0) ? ` · ${money(coupon.min_order_amount)} 이상` : ""}</option>`).join("");
     $("#checkout-point-balance").textContent = `보유 ${state.pointBalance.toLocaleString()}P`;
     updatePointUseHint();
     cartTotal();
@@ -579,7 +585,8 @@ function selectedCartTotal() {
   const subtotal = rows.reduce((sum, item) => sum + itemUnitPrice(item) * Number(item.quantity), 0);
   const beforeCoupon = rows.length ? subtotal + shippingFee(subtotal) : 0;
   const coupon = state.coupons.find(item => item.code === $("#checkout-coupon")?.value);
-  return Math.max(0, beforeCoupon - Number(coupon?.discount_amount || 0));
+  const couponDiscount = coupon && subtotal >= Number(coupon.min_order_amount || 0) ? Number(coupon.discount_amount || 0) : 0;
+  return Math.max(0, beforeCoupon - couponDiscount);
 }
 
 function maximumCheckoutPoints(total = selectedCartTotal()) {
@@ -966,6 +973,7 @@ function bindForms() {
   $("#blacklist-type").onchange = updateBlacklistDuration;
   $("#blacklist-duration").onchange = updateBlacklistDuration;
   $("#refresh-admin-users").onclick = loadAdminUsers;
+  $("#refresh-admin-coupon-events").onclick = loadAdminCouponEvents;
   $("#point-admin-form").onsubmit = saveAdminPoints;
   $("#coupon-admin-form").onsubmit = issueCoupon;
   $('#coupon-admin-form [name="all_users"]').onchange = updateCouponRecipient;
@@ -1079,6 +1087,7 @@ function setAdminSection(section) {
   $$('[data-admin-section-target]').forEach(button => button.classList.toggle("active", button.dataset.adminSectionTarget === section));
   if (section === "blacklist") loadBlacklist();
   if (section === "users") loadAdminUsers();
+  if (section === "coupons") loadAdminCouponEvents();
 }
 
 function updateBlacklistDuration() {
@@ -1460,9 +1469,53 @@ async function createCouponEvent(event) {
     await api("/api/admin/coupon-events", { method: "POST", body: JSON.stringify(data) });
     event.target.reset();
     $("#coupon-event-image-preview").hidden = true;
+    await loadAdminCouponEvents();
+    await loadCouponEvents(false);
     toast("이벤트 페이지에 쿠폰을 등록했습니다.");
   } catch (error) { toast(error.message); }
   finally { submit.disabled = false; }
+}
+
+async function loadAdminCouponEvents() {
+  const target = $("#admin-coupon-events");
+  try {
+    const data = await api("/api/admin/coupon-events");
+    state.adminCouponEvents = data.events || [];
+    target.innerHTML = state.adminCouponEvents.length ? state.adminCouponEvents.map(event => `
+      <article class="admin-coupon-event-row">
+        <div><strong>${escapeHtml(event.title)}</strong><p>${escapeHtml(event.description || "설명 없음")}</p><small>${money(event.discount_amount)} 할인 · 수령 후 ${Number(event.valid_days)}일 · 받은 인원 ${Number(event.claim_count)}명${Number(event.max_claims || 0) ? `/${Number(event.max_claims)}명` : " · 인원 제한 없음"}</small><small>${escapeHtml(couponEventConditions(event).join(" · "))}</small></div>
+        <button type="button" class="button danger compact" data-delete-coupon-event="${escapeHtml(event.event_key)}" data-coupon-title="${escapeHtml(event.title)}">이벤트창에서 삭제</button>
+      </article>`).join("") : '<p class="admin-empty">현재 등록된 이벤트 쿠폰이 없습니다.</p>';
+    $$('[data-delete-coupon-event]', target).forEach(button => {
+      button.onclick = () => deleteAdminCouponEvent(button.dataset.deleteCouponEvent, button.dataset.couponTitle);
+    });
+  } catch (error) {
+    target.innerHTML = `<p class="admin-empty">${escapeHtml(error.message)}</p>`;
+  }
+}
+
+function couponEventConditions(event) {
+  const purchaserLabels = {
+    ALL: "구매 이력 제한 없음",
+    FIRST_PURCHASE: "첫 구매 전용",
+    EXISTING_BUYER: "기존 구매자 전용",
+  };
+  return [
+    event.minimum_tier === "NONE" ? "등급 제한 없음" : `${event.minimum_tier_label || String(event.minimum_tier).replaceAll("_", " ")} 이상`,
+    purchaserLabels[event.purchaser_requirement] || "구매 이력 제한 없음",
+    Number(event.min_order_amount || 0) ? `${money(event.min_order_amount)} 이상 구매 시 사용` : "최소 주문금액 없음",
+  ];
+}
+
+async function deleteAdminCouponEvent(eventKey, title) {
+  if (!confirm(`'${title}' 쿠폰을 이벤트창에서 삭제할까요?\n삭제 후에는 새로 받을 수 없으며, 이미 받은 쿠폰은 유지됩니다.`)) return;
+  try {
+    await api(`/api/admin/coupon-events/${encodeURIComponent(eventKey)}`, { method: "DELETE", body: "{}" });
+    await Promise.all([loadAdminCouponEvents(), loadCouponEvents(false)]);
+    toast("이벤트 쿠폰을 삭제했습니다. 이제 새로 받을 수 없습니다.");
+  } catch (error) {
+    toast(error.message);
+  }
 }
 
 async function loadCouponEvents(showWelcome = false) {
@@ -1505,8 +1558,8 @@ function renderCouponEvents() {
   target.innerHTML = state.couponEvents.length ? state.couponEvents.map(event => `
     <article class="coupon-event-card">
       <img src="${escapeHtml(event.image_url)}" alt="${escapeHtml(event.title)} 쿠폰 이미지" loading="lazy">
-      <div><p class="eyebrow">COUPON EVENT</p><h2>${escapeHtml(event.title)}</h2><p>${escapeHtml(event.description || "이벤트 쿠폰을 받아 결제할 때 사용해 주세요.")}</p><strong>${money(event.discount_amount)} 할인</strong><small>수령일부터 ${Number(event.valid_days)}일 동안 사용 가능</small></div>
-      <button type="button" class="button ${event.claimed ? "secondary" : ""}" data-claim-coupon="${escapeHtml(event.event_key)}" ${event.claimed ? "disabled" : ""}>${event.claimed ? "받은 쿠폰" : "쿠폰 받기"}</button>
+      <div><p class="eyebrow">COUPON EVENT</p><h2>${escapeHtml(event.title)}</h2><p>${escapeHtml(event.description || "이벤트 쿠폰을 받아 결제할 때 사용해 주세요.")}</p><strong>${money(event.discount_amount)} 할인</strong><small>수령일부터 ${Number(event.valid_days)}일 동안 사용 가능</small><div class="coupon-condition-list">${couponEventConditions(event).map(condition => `<span>${escapeHtml(condition)}</span>`).join("")}${Number(event.max_claims || 0) ? `<span>선착순 ${Number(event.max_claims)}명 · 현재 ${Number(event.claim_count)}명 수령</span>` : ""}</div>${event.eligibility_reason ? `<small class="coupon-ineligible">${escapeHtml(event.eligibility_reason)}</small>` : ""}</div>
+      <button type="button" class="button ${event.claimed || !event.eligible ? "secondary" : ""}" data-claim-coupon="${escapeHtml(event.event_key)}" ${event.claimed || !event.eligible ? "disabled" : ""}>${event.claimed ? "받은 쿠폰" : event.eligible ? "쿠폰 받기" : "조건 미충족"}</button>
     </article>`).join("") : '<div class="empty">현재 받을 수 있는 이벤트 쿠폰이 없습니다.</div>';
   $$('[data-claim-coupon]', target).forEach(button => {
     button.onclick = () => claimCouponEvent(button.dataset.claimCoupon, false);

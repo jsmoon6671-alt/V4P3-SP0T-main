@@ -57,6 +57,19 @@ FREE_SHIPPING_THRESHOLD = 50_000
 LOGGER = logging.getLogger(__name__)
 REVIEW_SYNC_INTERVAL = 300
 OPTION_SURCHARGE_PATTERN = re.compile(r"\(\+\s*([0-9][0-9,]*)\s*(?:원)?\)")
+COUPON_TIER_THRESHOLDS = {
+    "NONE": 0,
+    "VIP": 50_000,
+    "VVIP": 100_000,
+    "SVIP": 300_000,
+    "ROYAL": 500_000,
+    "VAPE_MASTER": 800_000,
+    "VAPE_GOD": 1_000_000,
+}
+COUPON_TIER_LABELS = {
+    "NONE": "등급 제한 없음", "VIP": "VIP", "VVIP": "VVIP", "SVIP": "SVIP",
+    "ROYAL": "ROYAL", "VAPE_MASTER": "VAPE MASTER", "VAPE_GOD": "VAPE GOD",
+}
 
 
 def calculate_shipping_fee(subtotal: int) -> int:
@@ -270,13 +283,16 @@ async def initialize_web_store_schema(conn):
         CREATE TABLE IF NOT EXISTS web_coupons (
             id BIGSERIAL PRIMARY KEY, guild_id BIGINT NOT NULL, code TEXT NOT NULL,
             user_id BIGINT, discount_amount BIGINT NOT NULL CHECK (discount_amount > 0),
-            expires_at TIMESTAMPTZ, used_order_id TEXT, created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            expires_at TIMESTAMPTZ, used_order_id TEXT, min_order_amount BIGINT NOT NULL DEFAULT 0,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
             UNIQUE (guild_id, code)
         );
         CREATE TABLE IF NOT EXISTS web_coupon_events (
             guild_id BIGINT NOT NULL, event_key TEXT NOT NULL, title TEXT NOT NULL,
             description TEXT NOT NULL DEFAULT '', discount_amount BIGINT NOT NULL CHECK (discount_amount > 0),
             valid_days INTEGER NOT NULL DEFAULT 30 CHECK (valid_days BETWEEN 1 AND 365),
+            minimum_tier TEXT NOT NULL DEFAULT 'NONE', purchaser_requirement TEXT NOT NULL DEFAULT 'ALL',
+            max_claims INTEGER NOT NULL DEFAULT 0, min_order_amount BIGINT NOT NULL DEFAULT 0,
             image_mime TEXT NOT NULL, image_data BYTEA NOT NULL,
             is_active BOOLEAN NOT NULL DEFAULT TRUE, created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
             PRIMARY KEY (guild_id, event_key)
@@ -287,6 +303,11 @@ async def initialize_web_store_schema(conn):
             claimed_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
             PRIMARY KEY (guild_id, event_key, user_id)
         );
+        ALTER TABLE web_coupons ADD COLUMN IF NOT EXISTS min_order_amount BIGINT NOT NULL DEFAULT 0;
+        ALTER TABLE web_coupon_events ADD COLUMN IF NOT EXISTS minimum_tier TEXT NOT NULL DEFAULT 'NONE';
+        ALTER TABLE web_coupon_events ADD COLUMN IF NOT EXISTS purchaser_requirement TEXT NOT NULL DEFAULT 'ALL';
+        ALTER TABLE web_coupon_events ADD COLUMN IF NOT EXISTS max_claims INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE web_coupon_events ADD COLUMN IF NOT EXISTS min_order_amount BIGINT NOT NULL DEFAULT 0;
         CREATE TABLE IF NOT EXISTS web_age_confirmations (
             guild_id BIGINT NOT NULL,
             ip_hash TEXT NOT NULL,
@@ -536,7 +557,9 @@ class StoreServer:
             web.get("/api/coupon-events", self.coupon_events),
             web.post(r"/api/coupon-events/{event_key}/claim", self.claim_coupon_event),
             web.get(r"/api/coupon-events/{event_key}/image", self.coupon_event_image),
+            web.get("/api/admin/coupon-events", self.admin_coupon_events),
             web.post("/api/admin/coupon-events", self.admin_create_coupon_event),
+            web.delete(r"/api/admin/coupon-events/{event_key}", self.admin_delete_coupon_event),
         ]
         self.app.add_routes(routes)
         self.app.router.add_static("/static", STATIC, show_index=False)
@@ -1366,7 +1389,7 @@ class StoreServer:
         user = await self._user(request)
         async with self.bot.db_pool.acquire() as conn:
             rows = await conn.fetch(
-                """SELECT code,discount_amount,expires_at FROM web_coupons
+                """SELECT code,discount_amount,expires_at,min_order_amount FROM web_coupons
                    WHERE guild_id=$1 AND user_id=$2 AND used_order_id IS NULL
                      AND (expires_at IS NULL OR expires_at>CURRENT_TIMESTAMP)
                    ORDER BY expires_at NULLS LAST,created_at""",
@@ -1384,8 +1407,9 @@ class StoreServer:
             raise StoreError("쿠폰 금액은 1원 이상이어야 합니다.")
         try:
             days = max(1, min(int(data.get("days") or 30), 365))
+            min_order_amount = max(0, int(data.get("min_order_amount") or 0))
         except (TypeError, ValueError) as exc:
-            raise StoreError("쿠폰 사용 기한을 1~365일로 입력해 주세요.") from exc
+            raise StoreError("쿠폰 사용 기한과 최소 주문금액을 숫자로 입력해 주세요.") from exc
         expires_at = datetime.now().astimezone() + timedelta(days=days)
         async with self.bot.db_pool.acquire() as conn:
             if data.get("all_users"):
@@ -1397,16 +1421,16 @@ class StoreServer:
                     for row in users:
                         code = f"V4P3-{secrets.token_hex(4).upper()}"
                         await conn.execute(
-                            "INSERT INTO web_coupons (guild_id,code,user_id,discount_amount,expires_at) VALUES ($1,$2,$3,$4,$5)",
-                            self.guild_id, code, int(row["user_id"]), amount, expires_at,
+                            "INSERT INTO web_coupons (guild_id,code,user_id,discount_amount,expires_at,min_order_amount) VALUES ($1,$2,$3,$4,$5,$6)",
+                            self.guild_id, code, int(row["user_id"]), amount, expires_at, min_order_amount,
                         )
                         codes.append(code)
                 return web.json_response({"ok": True, "count": len(codes)})
             user_id = self._parse_discord_user_id(data.get("user_id"))
             code = f"V4P3-{secrets.token_hex(4).upper()}"
             await conn.execute(
-                "INSERT INTO web_coupons (guild_id,code,user_id,discount_amount,expires_at) VALUES ($1,$2,$3,$4,$5)",
-                self.guild_id, code, user_id, amount, expires_at,
+                "INSERT INTO web_coupons (guild_id,code,user_id,discount_amount,expires_at,min_order_amount) VALUES ($1,$2,$3,$4,$5,$6)",
+                self.guild_id, code, user_id, amount, expires_at, min_order_amount,
             )
         return web.json_response({"ok": True, "code": code, "count": 1})
 
@@ -1414,6 +1438,9 @@ class StoreServer:
         user = await self._user(request)
         user_id = int(user["id"])
         async with self.bot.db_pool.acquire() as conn:
+            total_spent = int(await conn.fetchval(
+                "SELECT COALESCE(total_spent,0) FROM user_info WHERE user_id=$1", user_id,
+            ) or 0)
             purchased = bool(await conn.fetchval(
                 """SELECT EXISTS(SELECT 1 FROM orders WHERE guild_id=$1 AND buyer_id=$2 AND status='APPROVED')
                           OR COALESCE((SELECT total_spent > 0 FROM user_info WHERE user_id=$2),FALSE)""",
@@ -1421,7 +1448,10 @@ class StoreServer:
             ))
             rows = await conn.fetch(
                 """SELECT e.event_key,e.title,e.description,e.discount_amount,e.valid_days,e.created_at,
-                          (c.user_id IS NOT NULL) claimed
+                          e.minimum_tier,e.purchaser_requirement,e.max_claims,e.min_order_amount,
+                          (c.user_id IS NOT NULL) claimed,
+                          (SELECT COUNT(*) FROM web_coupon_claims cc
+                           WHERE cc.guild_id=e.guild_id AND cc.event_key=e.event_key)::INTEGER claim_count
                    FROM web_coupon_events e
                    LEFT JOIN web_coupon_claims c ON c.guild_id=e.guild_id AND c.event_key=e.event_key AND c.user_id=$2
                    WHERE e.guild_id=$1 AND e.is_active=TRUE ORDER BY e.created_at DESC""",
@@ -1431,22 +1461,42 @@ class StoreServer:
                 "SELECT EXISTS(SELECT 1 FROM web_coupon_claims WHERE guild_id=$1 AND event_key='WELCOME' AND user_id=$2)",
                 self.guild_id, user_id,
             ))
-        events = [{
-            **dict(row),
-            "discount_amount": int(row["discount_amount"]),
-            "image_url": f"/api/coupon-events/{row['event_key']}/image",
-        } for row in rows]
+        events = []
+        for row in rows:
+            item = dict(row)
+            minimum_tier = item.get("minimum_tier") if item.get("minimum_tier") in COUPON_TIER_THRESHOLDS else "NONE"
+            requirement = item.get("purchaser_requirement") or "ALL"
+            reason = ""
+            if int(item.get("max_claims") or 0) > 0 and int(item.get("claim_count") or 0) >= int(item["max_claims"]):
+                reason = "쿠폰 수령이 마감되었습니다."
+            elif total_spent < COUPON_TIER_THRESHOLDS[minimum_tier]:
+                reason = f"{COUPON_TIER_LABELS[minimum_tier]} 등급 이상만 받을 수 있습니다."
+            elif requirement == "FIRST_PURCHASE" and purchased:
+                reason = "구매 이력이 없는 회원만 받을 수 있습니다."
+            elif requirement == "EXISTING_BUYER" and not purchased:
+                reason = "구매 이력이 있는 회원만 받을 수 있습니다."
+            item.update({
+                "discount_amount": int(item["discount_amount"]),
+                "minimum_tier_label": COUPON_TIER_LABELS[minimum_tier],
+                "eligible": not reason,
+                "eligibility_reason": reason,
+                "image_url": f"/api/coupon-events/{row['event_key']}/image",
+            })
+            events.append(item)
         if not purchased:
             events.insert(0, {
                 "event_key": "WELCOME", "title": "웰컴 2,000원 할인쿠폰",
                 "description": "V4P3 SP0T 첫 구매에 사용할 수 있는 신규 회원 전용 쿠폰입니다.",
                 "discount_amount": 2_000, "valid_days": 30,
+                "minimum_tier": "NONE", "minimum_tier_label": "등급 제한 없음",
+                "purchaser_requirement": "FIRST_PURCHASE", "max_claims": 0, "claim_count": 0,
+                "min_order_amount": 0, "eligible": True, "eligibility_reason": "",
                 "claimed": welcome_claimed, "image_url": "/static/welcome-coupon.png", "created_at": "",
             })
         return web.json_response({
             "events": events,
             "welcome_pending": not purchased and not welcome_claimed,
-        })
+        }, dumps=lambda value: json.dumps(value, ensure_ascii=False, default=str))
 
     async def claim_coupon_event(self, request):
         user = await self._user(request)
@@ -1456,7 +1506,7 @@ class StoreServer:
             async with conn.transaction():
                 await conn.execute(
                     "SELECT pg_advisory_xact_lock(hashtextextended($1,0))",
-                    f"coupon:{self.guild_id}:{event_key}:{user_id}",
+                    f"coupon-event:{self.guild_id}:{event_key}",
                 )
                 already = await conn.fetchval(
                     "SELECT 1 FROM web_coupon_claims WHERE guild_id=$1 AND event_key=$2 AND user_id=$3 FOR UPDATE",
@@ -1472,22 +1522,47 @@ class StoreServer:
                     )
                     if purchased:
                         raise StoreError("첫 구매 이력이 없는 사용자만 받을 수 있는 쿠폰입니다.", 403)
-                    amount, days = 2_000, 30
+                    amount, days, min_order_amount = 2_000, 30, 0
                 else:
                     event = await conn.fetchrow(
-                        """SELECT discount_amount,valid_days FROM web_coupon_events
+                        """SELECT discount_amount,valid_days,minimum_tier,purchaser_requirement,
+                                  max_claims,min_order_amount FROM web_coupon_events
                            WHERE guild_id=$1 AND event_key=$2 AND is_active=TRUE FOR UPDATE""",
                         self.guild_id, event_key,
                     )
                     if not event:
                         raise StoreError("종료되었거나 존재하지 않는 쿠폰 이벤트입니다.", 404)
+                    total_spent = int(await conn.fetchval(
+                        "SELECT COALESCE(total_spent,0) FROM user_info WHERE user_id=$1", user_id,
+                    ) or 0)
+                    purchased = bool(await conn.fetchval(
+                        """SELECT EXISTS(SELECT 1 FROM orders WHERE guild_id=$1 AND buyer_id=$2 AND status='APPROVED')
+                                  OR COALESCE((SELECT total_spent > 0 FROM user_info WHERE user_id=$2),FALSE)""",
+                        self.guild_id, user_id,
+                    ))
+                    minimum_tier = event["minimum_tier"] if event["minimum_tier"] in COUPON_TIER_THRESHOLDS else "NONE"
+                    requirement = event["purchaser_requirement"] or "ALL"
+                    claim_count = int(await conn.fetchval(
+                        "SELECT COUNT(*) FROM web_coupon_claims WHERE guild_id=$1 AND event_key=$2",
+                        self.guild_id, event_key,
+                    ) or 0)
+                    if int(event["max_claims"] or 0) > 0 and claim_count >= int(event["max_claims"]):
+                        raise StoreError("쿠폰 수령이 마감되었습니다.", 409)
+                    if total_spent < COUPON_TIER_THRESHOLDS[minimum_tier]:
+                        raise StoreError(f"{COUPON_TIER_LABELS[minimum_tier]} 등급 이상만 받을 수 있습니다.", 403)
+                    if requirement == "FIRST_PURCHASE" and purchased:
+                        raise StoreError("구매 이력이 없는 회원만 받을 수 있습니다.", 403)
+                    if requirement == "EXISTING_BUYER" and not purchased:
+                        raise StoreError("구매 이력이 있는 회원만 받을 수 있습니다.", 403)
                     amount, days = int(event["discount_amount"]), int(event["valid_days"])
+                    min_order_amount = int(event["min_order_amount"] or 0)
                 code = f"V4P3-{secrets.token_hex(4).upper()}"
                 coupon_id = await conn.fetchval(
-                    """INSERT INTO web_coupons (guild_id,code,user_id,discount_amount,expires_at)
-                       VALUES ($1,$2,$3,$4,$5) RETURNING id""",
+                    """INSERT INTO web_coupons (guild_id,code,user_id,discount_amount,expires_at,min_order_amount)
+                       VALUES ($1,$2,$3,$4,$5,$6) RETURNING id""",
                     self.guild_id, code, user_id, amount,
                     datetime.now().astimezone() + timedelta(days=days),
+                    min_order_amount,
                 )
                 await conn.execute(
                     "INSERT INTO web_coupon_claims (guild_id,event_key,user_id,coupon_id) VALUES ($1,$2,$3,$4)",
@@ -1516,10 +1591,18 @@ class StoreServer:
         try:
             amount = int(data.get("discount_amount") or 0)
             days = int(data.get("valid_days") or 30)
+            max_claims = int(data.get("max_claims") or 0)
+            min_order_amount = int(data.get("min_order_amount") or 0)
         except (TypeError, ValueError) as exc:
-            raise StoreError("쿠폰 금액과 사용 기한을 숫자로 입력해 주세요.") from exc
-        if len(title) < 2 or amount <= 0 or not 1 <= days <= 365:
-            raise StoreError("쿠폰명, 1원 이상의 금액, 1~365일의 사용 기한을 입력해 주세요.")
+            raise StoreError("쿠폰 금액, 사용 기한, 인원 제한과 최소 주문금액을 숫자로 입력해 주세요.") from exc
+        minimum_tier = str(data.get("minimum_tier") or "NONE").upper()
+        purchaser_requirement = str(data.get("purchaser_requirement") or "ALL").upper()
+        if minimum_tier not in COUPON_TIER_THRESHOLDS:
+            raise StoreError("쿠폰 등급 제한이 올바르지 않습니다.")
+        if purchaser_requirement not in {"ALL", "FIRST_PURCHASE", "EXISTING_BUYER"}:
+            raise StoreError("쿠폰 구매 이력 제한이 올바르지 않습니다.")
+        if len(title) < 2 or amount <= 0 or not 1 <= days <= 365 or not 0 <= max_claims <= 1_000_000 or min_order_amount < 0:
+            raise StoreError("쿠폰명, 금액, 사용 기한 및 제한 조건을 올바르게 입력해 주세요.")
         image_value = str(data.get("image_data_url") or "")
         match = re.fullmatch(r"data:(image/(?:png|jpeg|webp));base64,(.+)", image_value, re.DOTALL)
         if not match:
@@ -1534,11 +1617,46 @@ class StoreServer:
         async with self.bot.db_pool.acquire() as conn:
             await conn.execute(
                 """INSERT INTO web_coupon_events
-                   (guild_id,event_key,title,description,discount_amount,valid_days,image_mime,image_data)
-                   VALUES ($1,$2,$3,$4,$5,$6,$7,$8)""",
-                self.guild_id, event_key, title, description, amount, days, match.group(1), image_data,
+                   (guild_id,event_key,title,description,discount_amount,valid_days,minimum_tier,
+                    purchaser_requirement,max_claims,min_order_amount,image_mime,image_data)
+                   VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)""",
+                self.guild_id, event_key, title, description, amount, days, minimum_tier,
+                purchaser_requirement, max_claims, min_order_amount, match.group(1), image_data,
             )
         return web.json_response({"ok": True, "event_key": event_key})
+
+    async def admin_coupon_events(self, request):
+        await self._admin(request)
+        async with self.bot.db_pool.acquire() as conn:
+            rows = await conn.fetch(
+                """SELECT e.event_key,e.title,e.description,e.discount_amount,e.valid_days,e.created_at,
+                          e.minimum_tier,e.purchaser_requirement,e.max_claims,e.min_order_amount,
+                          COUNT(c.user_id)::INTEGER claim_count
+                   FROM web_coupon_events e
+                   LEFT JOIN web_coupon_claims c
+                     ON c.guild_id=e.guild_id AND c.event_key=e.event_key
+                   WHERE e.guild_id=$1
+                   GROUP BY e.guild_id,e.event_key,e.title,e.description,e.discount_amount,e.valid_days,e.created_at,
+                            e.minimum_tier,e.purchaser_requirement,e.max_claims,e.min_order_amount
+                   ORDER BY e.created_at DESC""",
+                self.guild_id,
+            )
+        return web.json_response(
+            {"events": [dict(row) for row in rows]},
+            dumps=lambda value: json.dumps(value, ensure_ascii=False, default=str),
+        )
+
+    async def admin_delete_coupon_event(self, request):
+        await self._admin(request)
+        event_key = str(request.match_info["event_key"] or "").strip()
+        async with self.bot.db_pool.acquire() as conn:
+            deleted = await conn.fetchval(
+                "DELETE FROM web_coupon_events WHERE guild_id=$1 AND event_key=$2 RETURNING event_key",
+                self.guild_id, event_key,
+            )
+        if not deleted:
+            raise StoreError("이미 삭제되었거나 존재하지 않는 이벤트 쿠폰입니다.", 404)
+        return web.json_response({"ok": True})
 
     async def cart(self, request):
         user = await self._user(request)
@@ -1785,12 +1903,14 @@ class StoreServer:
                 coupon_discount = 0
                 if coupon_code:
                     coupon = await conn.fetchrow(
-                        """SELECT id,discount_amount FROM web_coupons WHERE guild_id=$1 AND user_id=$2 AND code=$3
+                        """SELECT id,discount_amount,min_order_amount FROM web_coupons WHERE guild_id=$1 AND user_id=$2 AND code=$3
                            AND used_order_id IS NULL AND (expires_at IS NULL OR expires_at>CURRENT_TIMESTAMP) FOR UPDATE""",
                         self.guild_id, user_id, coupon_code,
                     )
                     if not coupon:
                         raise StoreError("사용할 수 없는 쿠폰입니다.")
+                    if subtotal < int(coupon["min_order_amount"] or 0):
+                        raise StoreError(f"이 쿠폰은 상품 금액 {int(coupon['min_order_amount']):,}원 이상 구매할 때 사용할 수 있습니다.")
                     coupon_discount = min(int(coupon["discount_amount"]), total)
                     total -= coupon_discount
                 if not self.payment_service.enabled and total - points > 0:

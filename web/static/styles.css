@@ -165,6 +165,9 @@ h3,strong { font-weight: 800; }
 .coupon-event-card>div>p:not(.eyebrow),.coupon-event-card small { color: var(--muted); line-height: 1.6; }
 .coupon-event-card strong { color: var(--accent-hover); font-size: 22px; }
 .coupon-event-card>.button { width: auto; min-width: 116px; white-space: nowrap; }
+.coupon-condition-list { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
+.coupon-condition-list span { padding: 5px 8px; border: 1px solid var(--line); border-radius: 999px; background: #0b1710; color: #b8c8be; font-size: 10px; line-height: 1.25; }
+.coupon-event-card .coupon-ineligible { color: #ff8d98; font-weight: 700; }
 .coupon-event-image-preview,.notice-image-preview { display: block; width: min(100%,520px); max-height: 230px; border: 1px solid var(--line); border-radius: 8px; object-fit: contain; background: #0b100d; }
 .coupon-event-image-preview[hidden],.notice-image-preview[hidden] { display: none; }
 .welcome-coupon-modal { z-index: 450; }
@@ -368,6 +371,12 @@ h3,strong { font-weight: 800; }
 .bar span { position: absolute; bottom: -24px; width: 100%; text-align: center; color: var(--muted); font-size: 10px; }
 .admin-row { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 13px 0; border-bottom: 1px solid var(--line); font-size: 13px; font-weight: 600; }
 .admin-row:last-child { border-bottom: 0; }
+.admin-coupon-events { display: grid; margin-top: 16px; border-top: 1px solid var(--line); }
+.admin-coupon-event-row { display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 18px; align-items: center; padding: 18px 0; border-bottom: 1px solid var(--line); }
+.admin-coupon-event-row>div { display: grid; gap: 5px; min-width: 0; }
+.admin-coupon-event-row strong { font-size: 15px; overflow-wrap: anywhere; }
+.admin-coupon-event-row p { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; }
+.admin-coupon-event-row small { color: var(--accent-hover); }
 .category-parent-row>span:first-child { display: grid; gap: 3px; }
 .category-parent-row small { color: var(--accent); font-size: 10px; font-weight: 800; }
 .category-child-row { padding-left: 18px; background: linear-gradient(90deg,rgba(40,207,124,.055),transparent 42%); }
@@ -526,6 +535,8 @@ body.admin-locked #admin { visibility: hidden; }
   .admin-order { align-items: flex-start; flex-direction: column; }
   .admin-order-actions { width: 100%; }
   .admin-order-actions .button { flex: 1; }
+  .admin-coupon-event-row { grid-template-columns: 1fr; }
+  .admin-coupon-event-row .button { width: 100%; }
   .admin-section-nav button { min-height: 38px; padding: 8px 15px; }
   .blacklist-row { grid-template-columns: 48px minmax(0,1fr); align-items: start; }
   .blacklist-avatar { width: 48px; height: 48px; }
