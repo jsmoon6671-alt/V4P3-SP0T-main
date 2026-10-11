@@ -1022,7 +1022,7 @@ async function createChatSession() {
   if (!content) return toast("문의 내용을 입력해 주세요.");
   try {
     const data = await api("/api/chat", { method: "POST", body: JSON.stringify({ content }) });
-    $("#chat-initial-content").value = ""; $("#chat-initial-wrap").hidden = true;
+    $("#chat-initial-content").value = ""; $("#chat-initial-count").textContent = "0"; $("#chat-initial-wrap").hidden = true;
     await openChatRoom(data.session.id);
   } catch (error) { toast(error.message); }
 }
@@ -1150,6 +1150,7 @@ function bindForms() {
   $("#chat-panel-close").onclick = closeChatPanel;
   $("#chat-start").onclick = () => { $("#chat-initial-wrap").hidden = false; $("#chat-initial-content").focus(); };
   $("#chat-create").onclick = createChatSession;
+  $("#chat-initial-content").oninput = event => { $("#chat-initial-count").textContent = String(event.target.value.length); };
   $("#chat-back").onclick = backToChatHistory;
   $("#chat-message-form").onsubmit = sendChatMessage;
   $$(".notice-admin-form").forEach(form => { form.onsubmit = saveNotice; });

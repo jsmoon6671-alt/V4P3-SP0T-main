@@ -90,8 +90,18 @@ button,a { -webkit-tap-highlight-color: transparent; }
 #chat-home,#chat-room { height: calc(100% - 163px); overflow-y: auto; padding: 18px; }
 .chat-start { width: 100%; padding: 15px; border: 0; border-radius: 14px; background: #287ef0; color: #fff; font-weight: 800; cursor: pointer; }
 .chat-start:disabled { filter: grayscale(1); opacity: .55; }
-#chat-initial-wrap { display: grid; gap: 9px; margin-top: 12px; }
-#chat-initial-wrap textarea { min-height: 90px; }
+#chat-initial-wrap { display: grid; gap: 10px; margin-top: 12px; padding: 15px; border: 1px solid #294437; border-radius: 16px; background: linear-gradient(145deg,#101a14,#0c130f); box-shadow: inset 0 1px 0 rgba(255,255,255,.025); }
+.chat-compose-title { display: flex; align-items: center; justify-content: space-between; gap: 12px; color: #edf7f1; }
+.chat-compose-title b { display: flex; align-items: center; gap: 7px; font-size: 13px; }
+.chat-compose-title i { display: grid; place-items: center; width: 22px; height: 22px; border-radius: 7px; background: rgba(40,207,124,.13); color: var(--accent); font-size: 11px; font-style: normal; }
+.chat-compose-title small { color: #71847a; font-size: 10px; font-variant-numeric: tabular-nums; }
+#chat-initial-wrap textarea { width: 100%; min-height: 112px; padding: 13px 14px; border: 1px solid #2a4135; border-radius: 12px; outline: none; resize: vertical; background: #080e0a; color: #f1f5f2; caret-color: var(--accent); line-height: 1.65; box-shadow: inset 0 1px 8px rgba(0,0,0,.2); transition: border-color .16s ease,box-shadow .16s ease,background .16s ease; }
+#chat-initial-wrap textarea::placeholder { color: #607067; }
+#chat-initial-wrap textarea:hover { border-color: #3a5b49; }
+#chat-initial-wrap textarea:focus { border-color: var(--accent); background: #0a120d; box-shadow: 0 0 0 3px rgba(40,207,124,.11),inset 0 1px 8px rgba(0,0,0,.18); }
+.chat-compose-hint { color: #7f9187; font-size: 10px; line-height: 1.5; }
+#chat-initial-wrap .button { min-height: 46px; border-radius: 12px; font-size: 13px; box-shadow: 0 8px 22px rgba(40,207,124,.13); }
+#chat-initial-wrap .button span { margin-left: 5px; font-size: 16px; }
 .chat-history { display: grid; gap: 9px; }
 .chat-history>button { display: flex; justify-content: space-between; gap: 12px; width: 100%; padding: 13px; border: 1px solid var(--line); border-radius: 14px; background: #111915; color: #fff; text-align: left; cursor: pointer; }
 .chat-history span { min-width: 0; }
