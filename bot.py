@@ -216,6 +216,58 @@ class MyBot(commands.Bot):
         await super().close()
 
 bot = MyBot()
+
+
+class WebRefundAccountModal(discord.ui.Modal, title="환불계좌 등록"):
+    account = discord.ui.TextInput(
+        label="환불계좌",
+        placeholder="은행명 / 계좌번호 / 예금주",
+        required=True,
+        max_length=150,
+    )
+
+    def __init__(self, order_id: str):
+        super().__init__()
+        self.order_id = order_id
+
+    async def on_submit(self, interaction: discord.Interaction):
+        account = self.account.value.strip()
+        async with bot.db_pool.acquire() as conn:
+            order = await conn.fetchrow(
+                "SELECT buyer_id,product FROM orders WHERE order_id=$1", self.order_id,
+            )
+            if not order or int(order["buyer_id"]) != interaction.user.id:
+                await interaction.response.send_message("❌ 환불 대상 주문을 찾을 수 없습니다.", ephemeral=True)
+                return
+            await conn.execute(
+                "UPDATE user_info SET refund_account=$2 WHERE user_id=$1",
+                interaction.user.id, account,
+            )
+        owner_id = int(os.getenv("BOT_OWNER_ID", "0") or 0)
+        owner = bot.get_user(owner_id) if owner_id else None
+        if owner is None:
+            try:
+                owner = (await bot.application_info()).owner
+            except Exception:
+                owner = None
+        if owner:
+            dm = await owner.create_dm()
+            payload = {
+                "flags": 1 << 15,
+                "components": [{"type": 17, "accent_color": 0x32CD32, "components": [{
+                    "type": 10,
+                    "content": (
+                        "## 💳 주문취소 환불계좌 등록\n\n"
+                        f"`유저` {interaction.user} (`{interaction.user.id}`)\n"
+                        f"`주문` {order['product']}\n`주문 ID` {self.order_id}\n"
+                        f"`환불계좌` {account}"
+                    ),
+                }]}],
+            }
+            await bot.http.request(
+                discord.http.Route("POST", f"/channels/{dm.id}/messages"), json=payload,
+            )
+        await interaction.response.send_message("✅ 환불계좌를 등록했습니다. 확인 후 환불이 진행됩니다.", ephemeral=True)
 register_event_command(bot)
 register_admin_role_command(bot)
 register_chat_ranking_commands(bot)
@@ -3047,6 +3099,10 @@ async def on_interaction(interaction: discord.Interaction):
         return
         
     custom_id = interaction.data.get("custom_id", "")
+
+    if custom_id.startswith("web_refund_account:"):
+        await interaction.response.send_modal(WebRefundAccountModal(custom_id.split(":", 1)[1]))
+        return
 
     if await handle_web_progress_interaction(interaction, bot):
         return

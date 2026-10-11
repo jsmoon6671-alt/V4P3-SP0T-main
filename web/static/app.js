@@ -15,6 +15,8 @@ const state = {
   pointBalance: 0,
   carriers: [],
   trackingPreset: null,
+  profileStoreResults: [],
+  adminOrders: [],
 };
 
 const $ = (selector, parent = document) => parent.querySelector(selector);
@@ -95,7 +97,7 @@ async function api(path, options = {}) {
 
 function route() {
   const id = location.hash.slice(1) || "home";
-  if (id === "account" && !state.me) {
+  if (["account", "review-write"].includes(id) && !state.me) {
     location.href = "/auth/login";
     return;
   }
@@ -108,6 +110,7 @@ function route() {
   }
   if (id === "tracking" && state.me) loadCarriers().then(applyTrackingPreset);
   if (id === "tiers") renderTiers();
+  if (id === "ranking") loadPurchaseRanking();
   if (id === "admin") openAdminGate();
   scrollTo(0, 0);
 }
@@ -124,6 +127,7 @@ async function boot() {
     $("#admin-link").hidden = !data.is_admin;
     $("#login-button").onclick = () => { location.hash = "account"; };
     await loadCart();
+    await refreshRegistrationPrompt();
     if ((location.hash.slice(1) || "home") === "cart") await loadCheckoutCustomer();
   } catch {
     $("#login-button").onclick = () => { location.href = "/auth/login"; };
@@ -634,6 +638,118 @@ function chooseStore() {
   $("#shipping-address").value = store.address;
 }
 
+async function searchProfileStores() {
+  const brand = $("#profile-cvs-brand").value;
+  const query = $("#profile-store-query").value.trim();
+  if (!brand) return toast("GS25 또는 CU를 먼저 선택해 주세요.");
+  if (!query) return toast("편의점 지점명을 입력해 주세요.");
+  const button = $("#profile-store-search");
+  button.disabled = true;
+  button.textContent = "조회 중";
+  try {
+    const data = await api(`/api/stores?brand=${encodeURIComponent(brand)}&q=${encodeURIComponent(query)}`);
+    state.profileStoreResults = data.stores || [];
+    $("#profile-store-results").innerHTML = '<option value="">받을 편의점을 선택해 주세요</option>' + state.profileStoreResults.map((store, index) => (
+      `<option value="${index}">${escapeHtml(store.name)} · ${escapeHtml(store.address)}</option>`
+    )).join("");
+    if (!state.profileStoreResults.length) toast("검색된 편의점이 없습니다.");
+  } catch (error) {
+    toast(error.message);
+  } finally {
+    button.disabled = false;
+    button.textContent = "주소 조회";
+  }
+}
+
+function chooseProfileStore() {
+  const store = state.profileStoreResults[Number($("#profile-store-results").value)];
+  if (!store) return;
+  $('#customer-form [name="cvs"]').value = store.name;
+  $('#customer-form [name="cvs_address"]').value = store.address;
+}
+
+async function refreshRegistrationPrompt() {
+  const prompt = $("#register-prompt");
+  if (!prompt || !state.me) return;
+  try {
+    const data = await api("/api/customer");
+    const customer = data.customer || {};
+    const hasDestination = Boolean(String(customer.address || "").trim()) || Boolean(
+      String(customer.cvs || "").trim() && String(customer.cvs_address || "").trim()
+    );
+    prompt.hidden = Boolean(String(customer.name || "").trim() && String(customer.contact || "").trim() && hasDestination);
+  } catch {
+    prompt.hidden = false;
+  }
+}
+
+function bindStarPicker() {
+  const picker = $("#star-picker");
+  if (!picker) return;
+  picker.innerHTML = Array.from({ length: 5 }, (_, index) => `<button type="button" data-rating="${index + 1}" aria-label="${index + 1}점">★</button>`).join("");
+  const input = $('#review-form [name="rating"]');
+  const paint = rating => $$('button', picker).forEach(button => button.classList.toggle("active", Number(button.dataset.rating) <= rating));
+  $$('button', picker).forEach(button => {
+    button.onclick = () => { input.value = button.dataset.rating; paint(Number(input.value)); };
+  });
+  paint(Number(input.value));
+}
+
+const fileToDataUrl = file => new Promise((resolve, reject) => {
+  const reader = new FileReader();
+  reader.onload = () => resolve(reader.result);
+  reader.onerror = () => reject(new Error("사진을 읽지 못했습니다."));
+  reader.readAsDataURL(file);
+});
+
+async function submitReview(event) {
+  event.preventDefault();
+  if (!state.me) return void (location.href = "/auth/login");
+  const form = event.currentTarget;
+  const files = [...form.elements.images.files];
+  if (files.length > 4) return toast("후기 사진은 최대 4장까지 등록할 수 있습니다.");
+  if (files.some(file => file.size > 5 * 1024 * 1024)) return toast("후기 사진은 한 장당 5MB 이하로 등록해 주세요.");
+  const submit = form.querySelector('[type="submit"]');
+  submit.disabled = true;
+  submit.textContent = "후기 등록 중...";
+  try {
+    const images = await Promise.all(files.map(fileToDataUrl));
+    const data = await api("/api/reviews", {
+      method: "POST",
+      body: JSON.stringify({
+        rating: Number(form.elements.rating.value),
+        content: form.elements.content.value,
+        images,
+      }),
+    });
+    form.reset();
+    form.elements.rating.value = "5";
+    bindStarPicker();
+    await loadReviews();
+    toast(data.reward ? `후기가 등록되어 ${Number(data.reward).toLocaleString()}P가 지급되었습니다.` : "후기가 등록되었습니다.");
+    location.hash = "home";
+  } catch (error) {
+    toast(error.message);
+  } finally {
+    submit.disabled = false;
+    submit.textContent = "후기 올리기";
+  }
+}
+
+async function loadPurchaseRanking() {
+  const target = $("#purchase-ranking");
+  if (!target) return;
+  target.innerHTML = '<div class="empty">랭킹을 불러오는 중입니다.</div>';
+  try {
+    const data = await api("/api/purchase-ranking");
+    target.innerHTML = data.ranking.length ? data.ranking.map((item, index) => `
+      <div class="ranking-row"><span class="ranking-number">${index + 1}</span><strong>${escapeHtml(item.name)}</strong><b>${money(item.total)}</b></div>
+    `).join("") : '<div class="empty">아직 구매랭킹이 없습니다.</div>';
+  } catch (error) {
+    target.innerHTML = `<div class="empty">${escapeHtml(error.message)}</div>`;
+  }
+}
+
 async function loadAccount() {
   if (!state.me) return;
   try {
@@ -698,7 +814,7 @@ async function toggleOrderTracking(button) {
 }
 
 const statusText = status => ({
-  PENDING: "입금 대기", APPROVED: "구매 완료", CANCELLED: "자동 취소", REJECTED: "거절",
+  PENDING: "입금 대기", APPROVED: "구매 완료", CANCELLED: "주문 취소", REJECTED: "거절",
   SHIPPING_READY: "배송 준비중", SHIPPING: "배송중", DELIVERED: "배송완료",
 })[status] || status;
 
@@ -713,6 +829,7 @@ function bindForms() {
     try {
       await api("/api/customer", { method: "PUT", body: JSON.stringify(Object.fromEntries(new FormData(event.target))) });
       toast("고객정보를 저장했습니다.");
+      await refreshRegistrationPrompt();
     } catch (error) {
       toast(error.message);
     }
@@ -726,6 +843,15 @@ function bindForms() {
   $("#shipping-method").onchange = updateShippingMode;
   $("#store-search").onclick = searchStores;
   $("#store-results").onchange = chooseStore;
+  $("#profile-store-search").onclick = searchProfileStores;
+  $("#profile-store-results").onchange = chooseProfileStore;
+  $("#profile-cvs-brand").onchange = () => {
+    state.profileStoreResults = [];
+    $("#profile-store-results").innerHTML = '<option value="">편의점을 조회해 주세요</option>';
+    $('#customer-form [name="cvs_address"]').value = "";
+  };
+  $("#review-form").onsubmit = submitReview;
+  bindStarPicker();
   $("#add-parent-category").onclick = () => openEditor("category", { parentMode: true });
   $("#add-category").onclick = () => openEditor("category", { childMode: true });
   $("#add-manual-product").onclick = () => openEditor("product", { manualCreate: true });
@@ -737,6 +863,8 @@ function bindForms() {
   $("#admin-gate-close").onclick = () => { closeAdminGate(); location.hash = "home"; };
   $("#notice-close").onclick = closeDiscordNotice;
   $("#notice-day").onclick = dismissDiscordNoticeForDay;
+  $("#action-banner-close").onclick = () => { $("#action-banner").hidden = true; };
+  $("#refresh-admin-orders").onclick = loadAdminOrders;
   addEventListener("keydown", event => {
     if (event.key === "Escape" && !$("#editor").hidden) closeEditor();
   });
@@ -866,6 +994,7 @@ async function loadAdmin(period = "week") {
     api("/api/admin/categories"),
     api("/api/admin/products"),
     api("/api/admin/channels"),
+    api("/api/admin/orders"),
   ]);
   const failures = results.filter(result => result.status === "rejected");
   const passwordFailure = failures.find(result => result.reason?.message?.includes("비밀번호"));
@@ -874,7 +1003,7 @@ async function loadAdmin(period = "week") {
     return;
   }
 
-  const [dashboardResult, categoriesResult, productsResult, channelsResult] = results;
+  const [dashboardResult, categoriesResult, productsResult, channelsResult, ordersResult] = results;
   if (categoriesResult.status === "fulfilled") {
     state.adminCategories = categoriesResult.value.categories;
   }
@@ -904,7 +1033,74 @@ async function loadAdmin(period = "week") {
     fillChannelForm(channelsResult.value.channels);
     cacheChannelForm(channelsResult.value.channels);
   }
+  if (ordersResult.status === "fulfilled") {
+    state.adminOrders = ordersResult.value.orders || [];
+    renderAdminOrders();
+  }
   if (failures.length) toast(failures[0].reason?.message || "관리자 정보를 일부 불러오지 못했습니다.");
+}
+
+async function loadAdminOrders() {
+  try {
+    const data = await api("/api/admin/orders");
+    state.adminOrders = data.orders || [];
+    renderAdminOrders();
+  } catch (error) {
+    toast(error.message);
+  }
+}
+
+function renderAdminOrders() {
+  const target = $("#admin-orders");
+  if (!target) return;
+  target.innerHTML = state.adminOrders.length ? state.adminOrders.map(order => `
+    <article class="admin-order">
+      <div class="admin-order-main">
+        <div><strong>${escapeHtml(order.order_id)}</strong><span class="badge ${escapeHtml(order.status)}">${escapeHtml(statusText(order.status))}</span></div>
+        <p>${escapeHtml(order.product)} · ${escapeHtml(order.quantity)}</p>
+        <small>${escapeHtml(order.buyer_name)} · ${escapeHtml(order.amount)} · ${String(order.created_at).slice(0, 16).replace("T", " ")}</small>
+        ${order.cancel_reason ? `<small class="cancel-reason">취소 사유: ${escapeHtml(order.cancel_reason)}</small>` : ""}
+        ${order.waybill_number ? `<small>운송장: ${escapeHtml(order.waybill_number)}</small>` : ""}
+      </div>
+      <div class="admin-order-actions">
+        <button type="button" class="button secondary compact" data-admin-waybill="${escapeHtml(order.order_id)}">운송장 발송</button>
+        <button type="button" class="button danger compact" data-admin-cancel="${escapeHtml(order.order_id)}" ${["CANCELLED", "REJECTED"].includes(order.status) ? "disabled" : ""}>주문취소</button>
+      </div>
+    </article>
+  `).join("") : '<p class="admin-empty">웹 주문이 없습니다.</p>';
+  $$('[data-admin-cancel]', target).forEach(button => {
+    button.onclick = async () => {
+      const reason = prompt("구매자에게 전달할 주문취소 사유를 입력해 주세요.");
+      if (reason === null) return;
+      if (reason.trim().length < 2) return toast("주문취소 사유를 2자 이상 입력해 주세요.");
+      if (!confirm("이 주문을 취소하고 구매자에게 환불 안내를 보낼까요?")) return;
+      button.disabled = true;
+      try {
+        await api(`/api/admin/orders/${encodeURIComponent(button.dataset.adminCancel)}/cancel`, { method: "POST", body: JSON.stringify({ reason }) });
+        await loadAdminOrders();
+        toast("주문을 취소하고 구매자에게 안내했습니다.");
+      } catch (error) {
+        button.disabled = false;
+        toast(error.message);
+      }
+    };
+  });
+  $$('[data-admin-waybill]', target).forEach(button => {
+    button.onclick = async () => {
+      const waybill = prompt("발송할 운송장 번호를 입력해 주세요.");
+      if (waybill === null) return;
+      if (!waybill.trim()) return toast("운송장 번호를 입력해 주세요.");
+      button.disabled = true;
+      try {
+        await api(`/api/admin/orders/${encodeURIComponent(button.dataset.adminWaybill)}/waybill`, { method: "POST", body: JSON.stringify({ waybill }) });
+        await loadAdminOrders();
+        toast("운송장을 저장하고 구매자에게 DM을 보냈습니다.");
+      } catch (error) {
+        button.disabled = false;
+        toast(error.message);
+      }
+    };
+  });
 }
 
 function fillChannelForm(channels) {

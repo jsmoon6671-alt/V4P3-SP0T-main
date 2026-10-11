@@ -8,10 +8,15 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@500;600;700;800&family=Noto+Sans+KR:wght@500;600;700;800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/static/styles.css?v=20261011-26">
+  <link rel="stylesheet" href="/static/styles.css?v=20261011-28">
 </head>
 <body>
   <div class="grain"></div>
+  <aside id="action-banner" class="action-banner">
+    <a id="register-prompt" href="#account" hidden>배송 정보를 등록해 주세요</a>
+    <span>📩 배송 알림은 Discord DM으로 전송됩니다. <a href="https://discord.gg/v4p3sp0t" target="_blank" rel="noopener">서버 입장</a></span>
+    <button type="button" id="action-banner-close" aria-label="안내 닫기">×</button>
+  </aside>
   <aside id="shipping-banner" class="shipping-banner" aria-label="배송비 할인 안내">
     <p><strong>배송비 혜택</strong><span>상품 금액 3만 5천원 이상은 배송비 1,500원, 5만원 이상은 무료배송입니다.</span></p>
     <button type="button" id="shipping-banner-close" aria-label="배송비 안내 닫기">×</button>
@@ -19,7 +24,7 @@
   <header class="site-header">
     <a class="brand" href="#home"><span>V4P3</span> SP0T</a>
     <nav id="nav">
-      <a href="#home">스토어</a><a href="#tiers">등급표</a><a href="#tracking">배송조회</a><a href="#cart">장바구니 <b id="cart-count">0</b></a>
+      <a href="#home">스토어</a><a href="#account">정보등록</a><a href="#review-write">후기작성</a><a href="#ranking">구매랭킹</a><a href="#tiers">등급표</a><a href="#tracking">배송조회</a><a href="#cart">장바구니 <b id="cart-count">0</b></a>
       <a href="#admin" id="admin-link" hidden>관리자</a>
     </nav>
     <button class="button small" id="login-button">Discord 로그인</button>
@@ -53,14 +58,34 @@
       <div class="two-column">
         <form id="customer-form" class="panel form-panel">
           <h2>배송 정보</h2><p>주문에 사용할 정보를 입력해 주세요.</p>
-          <label>이름<input name="name" required></label>
-          <label>연락처<input name="contact" required></label>
-          <label>주소<textarea name="address" required></textarea></label>
-          <label>편의점명 또는 배송 메모<input name="cvs"></label>
+          <label>이름(실명)<input name="name" required></label>
+          <label>전화번호<input name="contact" inputmode="tel" pattern="010-[0-9]{4}-[0-9]{4}" placeholder="010-1234-5678" required></label>
+          <label>일반택배 주소 <small>편의점 수령 시 입력하지 않아도 됩니다.</small><textarea name="address"></textarea></label>
+          <label>편의점<select name="cvs_brand" id="profile-cvs-brand"><option value="">선택 안 함</option><option value="GS25">GS25</option><option value="CU">CU</option></select></label>
+          <label>편의점명<span class="input-action"><input id="profile-store-query" name="cvs" placeholder="지점명"><button type="button" id="profile-store-search" class="button secondary compact">주소 조회</button></span></label>
+          <label>편의점 검색결과<select id="profile-store-results"><option value="">편의점을 조회해 주세요</option></select></label>
+          <label>편의점 주소<textarea name="cvs_address" readonly></textarea></label>
+          <label>환불계좌 <small>선택사항</small><input name="refund_account" placeholder="은행명 / 계좌번호 / 예금주"></label>
           <button class="button" type="submit">정보 저장</button>
         </form>
         <div><div class="point-card"><small>사용 가능 포인트</small><strong id="point-balance">0P</strong><span>1P = 1원 할인</span></div><div id="orders" class="order-list"></div></div>
       </div>
+    </section>
+
+    <section id="review-write" class="page">
+      <div class="page-title"><p class="eyebrow">WRITE A REVIEW</p><h1>후기 작성</h1></div>
+      <form id="review-form" class="panel form-panel review-form">
+        <h2>구매후기를 남겨주세요</h2>
+        <fieldset><legend>별점</legend><div class="star-picker" id="star-picker">★★★★★</div><input type="hidden" name="rating" value="5"></fieldset>
+        <label>후기<textarea name="content" minlength="5" placeholder="후기를 5자 이상 작성해 주세요." required></textarea></label>
+        <label>사진 <small>최대 4장 · 등록 시 V4P3 SP0T 워터마크가 적용됩니다.</small><input name="images" type="file" accept="image/*" multiple></label>
+        <button class="button wide" type="submit">후기 올리기</button>
+      </form>
+    </section>
+
+    <section id="ranking" class="page">
+      <div class="page-title"><p class="eyebrow">PURCHASE RANKING</p><h1>구매랭킹</h1></div>
+      <div id="purchase-ranking" class="panel ranking-list"><div class="empty">랭킹을 불러오는 중입니다.</div></div>
     </section>
 
     <section id="tiers" class="page">
@@ -151,6 +176,7 @@
         <div class="panel"><div class="panel-head"><h2>카테고리</h2><span class="admin-actions"><button type="button" id="add-parent-category" class="button secondary compact">+ 대분류 추가</button><button type="button" id="add-category" class="button secondary compact">+ 하위 카테고리 추가</button></span></div><div id="category-admin"></div></div>
         <div class="panel"><div class="panel-head"><h2>상품 관리</h2><span class="admin-actions"><button type="button" id="sync-products" class="button secondary compact">상품 자동 동기화</button><button type="button" id="add-manual-product" class="button secondary compact">+ 직접 상품 추가</button><button type="button" id="add-product" class="button secondary compact">+ 링크로 상품 추가</button></span></div><div id="product-admin"></div></div>
       </div>
+      <div class="panel"><div class="panel-head"><h2>웹 주문 관리</h2><button type="button" id="refresh-admin-orders" class="button secondary compact">새로고침</button></div><div id="admin-orders"></div></div>
       <form id="channel-form" class="panel form-panel channels"><h2>Discord 채널 설정</h2><label>결제 승인 채널 ID<input name="approval_channel_id" inputmode="numeric" autocomplete="off"></label><label>구매로그 채널 ID<input name="log_channel_id" inputmode="numeric" autocomplete="off"></label><label>구매자정보 채널 ID<input name="buyer_info_channel_id" inputmode="numeric" autocomplete="off"></label><label>구매후기 채널 ID<input name="review_channel_id" inputmode="numeric" autocomplete="off"></label><button class="button" type="submit">채널 저장</button></form>
     </section>
   </main>
@@ -200,6 +226,6 @@
     </div>
   </div>
   <div id="toast"></div>
-  <script src="/static/app.js?v=20261011-29"></script>
+  <script src="/static/app.js?v=20261011-30"></script>
 </body>
 </html>

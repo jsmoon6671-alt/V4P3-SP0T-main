@@ -12,6 +12,7 @@ import os
 import re
 import secrets
 import time
+from io import BytesIO
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlencode
@@ -26,7 +27,8 @@ from delivery_tracking import (
     normalize_waybill,
     track_shipment,
 )
-from loyalty_points import PointsError, get_balance, maximum_points, request_payment, resolve_payment
+from loyalty_points import PointsError, award_review_points, get_balance, maximum_points, parse_amount, request_payment, resolve_payment
+from order_editing import sync_buyer_roles
 from order_fulfillment import finalize_approved_order, notify_expired_order
 from payment_automation import (
     DepositNotice,
@@ -41,6 +43,7 @@ from product_scraper import (
     sync_scraped_products,
 )
 from store_lookup import StoreLookupError, search_stores
+from review_watermark import ReviewImageError, watermark_review_image
 
 
 ROOT = Path(__file__).resolve().parent
@@ -211,6 +214,13 @@ async def initialize_web_store_schema(conn):
             created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
             PRIMARY KEY (guild_id, discord_message_id)
         );
+        CREATE TABLE IF NOT EXISTS web_review_images (
+            guild_id BIGINT NOT NULL,
+            review_id BIGINT NOT NULL,
+            image_index SMALLINT NOT NULL,
+            image_data BYTEA NOT NULL,
+            PRIMARY KEY (guild_id, review_id, image_index)
+        );
         CREATE TABLE IF NOT EXISTS web_product_sources (
             guild_id BIGINT NOT NULL,
             source_site TEXT NOT NULL,
@@ -265,6 +275,9 @@ async def initialize_web_store_schema(conn):
         ALTER TABLE orders ADD COLUMN IF NOT EXISTS carrier_id TEXT;
         ALTER TABLE orders ADD COLUMN IF NOT EXISTS fulfillment_status TEXT NOT NULL DEFAULT 'PAYMENT_APPROVED';
         ALTER TABLE orders ADD COLUMN IF NOT EXISTS fulfillment_updated_at TIMESTAMPTZ;
+        ALTER TABLE user_info ADD COLUMN IF NOT EXISTS cvs_brand TEXT NOT NULL DEFAULT '';
+        ALTER TABLE user_info ADD COLUMN IF NOT EXISTS cvs_address TEXT NOT NULL DEFAULT '';
+        ALTER TABLE user_info ADD COLUMN IF NOT EXISTS refund_account TEXT NOT NULL DEFAULT '';
 
         UPDATE web_products
         SET option_groups_json = json_build_array(
@@ -332,7 +345,7 @@ class StoreServer:
             self._payment_expired,
         )
         self.app = web.Application(
-            client_max_size=8 * 1024 ** 2,
+            client_max_size=32 * 1024 ** 2,
             middlewares=[self._errors, self._no_cache, self._session],
         )
         self._routes()
@@ -413,6 +426,9 @@ class StoreServer:
             web.get(r"/api/products/{product_id:\d+}/image", self.product_image),
             web.get("/api/catalog", self.catalog),
             web.get("/api/reviews", self.reviews),
+            web.post("/api/reviews", self.submit_review),
+            web.get(r"/api/reviews/{review_id:\d+}/image/{image_index:\d+}", self.review_image),
+            web.get("/api/purchase-ranking", self.purchase_ranking),
             web.get("/api/stores", self.stores),
             web.get("/api/tracking/carriers", self.tracking_carriers),
             web.post("/api/tracking", self.tracking),
@@ -438,6 +454,9 @@ class StoreServer:
             web.delete(r"/api/admin/products/{product_id:\d+}", self.admin_delete_product),
             web.get("/api/admin/channels", self.admin_channels),
             web.put("/api/admin/channels", self.admin_save_channels),
+            web.get("/api/admin/orders", self.admin_orders),
+            web.post(r"/api/admin/orders/{order_id}/cancel", self.admin_cancel_order),
+            web.post(r"/api/admin/orders/{order_id}/waybill", self.admin_set_waybill),
         ]
         self.app.add_routes(routes)
         self.app.router.add_static("/static", STATIC, show_index=False)
@@ -835,6 +854,83 @@ class StoreServer:
             dumps=lambda value: json.dumps(value, ensure_ascii=False, default=str),
         )
 
+    async def review_image(self, request):
+        async with self.bot.db_pool.acquire() as conn:
+            data = await conn.fetchval(
+                "SELECT image_data FROM web_review_images WHERE guild_id=$1 AND review_id=$2 AND image_index=$3",
+                self.guild_id, int(request.match_info["review_id"]), int(request.match_info["image_index"]),
+            )
+        if not data:
+            raise web.HTTPNotFound()
+        return web.Response(body=bytes(data), content_type="image/jpeg", headers={"Cache-Control": "public,max-age=31536000"})
+
+    async def submit_review(self, request):
+        user, data = await self._user(request), await self._body(request)
+        content = str(data.get("content", "")).strip()
+        rating = int(data.get("rating", 0) or 0)
+        images = data.get("images", [])
+        if rating not in range(1, 6):
+            raise StoreError("별점을 선택해 주세요.")
+        if len(content) < 5:
+            raise StoreError("후기는 5자 이상 작성해 주세요.")
+        if not isinstance(images, list) or len(images) > 4:
+            raise StoreError("후기 사진은 최대 4장까지 등록할 수 있습니다.")
+        processed = []
+        for encoded in images:
+            try:
+                raw = base64.b64decode(str(encoded).split(",", 1)[-1], validate=True)
+                processed.append(await asyncio.to_thread(watermark_review_image, raw))
+            except (ValueError, ReviewImageError) as exc:
+                raise StoreError(str(exc)) from exc
+        review_id = int(time.time() * 1000) * 1000 + secrets.randbelow(1000)
+        async with self.bot.db_pool.acquire() as conn:
+            has_order = await conn.fetchval(
+                "SELECT EXISTS(SELECT 1 FROM orders WHERE guild_id=$1 AND buyer_id=$2 AND source='WEB' AND status='APPROVED')",
+                self.guild_id, int(user["id"]),
+            )
+            if not has_order:
+                raise StoreError("구매가 승인된 고객만 후기를 작성할 수 있습니다.", 403)
+            image_url = f"/api/reviews/{review_id}/image/0" if processed else ""
+            await save_web_review(conn, self.guild_id, review_id, int(user["id"]), rating, content, image_url)
+            for index, image in enumerate(processed):
+                await conn.execute(
+                    "INSERT INTO web_review_images (guild_id,review_id,image_index,image_data) VALUES ($1,$2,$3,$4)",
+                    self.guild_id, review_id, index, image,
+                )
+            try:
+                reward, balance = await award_review_points(conn, self.guild_id, int(user["id"]), review_id)
+            except Exception:
+                reward, balance = 0, await get_balance(conn, self.guild_id, int(user["id"]))
+            channel_id = await conn.fetchval("SELECT review_channel_id FROM guild_settings WHERE guild_id=$1", self.guild_id)
+        if channel_id:
+            channel = self.bot.get_channel(int(channel_id))
+            if channel:
+                try:
+                    files = [discord.File(BytesIO(image), filename=f"review-{review_id}-{index}.jpg") for index, image in enumerate(processed)]
+                    await channel.send(
+                        f"## 구매후기\n- 구매자 : 익명\n- 별점 : {'⭐' * rating}\n\n**{content}**",
+                        files=files,
+                    )
+                except Exception:
+                    LOGGER.exception("웹 구매후기 Discord 전송 실패: %s", review_id)
+        return web.json_response({"ok": True, "reward": reward, "balance": balance})
+
+    async def purchase_ranking(self, request):
+        async with self.bot.db_pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT user_id AS buyer_id, total_spent::BIGINT total
+                FROM user_info WHERE total_spent > 0
+                ORDER BY total_spent DESC, user_id ASC LIMIT 100
+                """,
+            )
+        guild = self._guild()
+        ranking = []
+        for row in rows:
+            member = guild.get_member(int(row["buyer_id"])) if guild else None
+            ranking.append({"name": member.display_name if member else "탈퇴한 사용자", "total": int(row["total"])})
+        return web.json_response({"ranking": ranking}, dumps=lambda value: json.dumps(value, ensure_ascii=False))
+
     async def stores(self, request):
         await self._user(request)
         brand = str(request.query.get("brand", "")).strip().upper()
@@ -905,23 +1001,28 @@ class StoreServer:
     async def customer(self, request):
         user = await self._user(request)
         async with self.bot.db_pool.acquire() as conn:
-            row = await conn.fetchrow("SELECT name, contact, address, cvs FROM user_info WHERE user_id = $1", int(user["id"]))
+            row = await conn.fetchrow("SELECT name,contact,address,cvs,cvs_brand,cvs_address,refund_account FROM user_info WHERE user_id = $1", int(user["id"]))
             balance = await get_balance(conn, self.guild_id, int(user["id"]))
         return web.json_response({"customer": dict(row) if row else {}, "points": balance})
 
     async def save_customer(self, request):
         user, data = await self._user(request), await self._body(request)
-        values = [str(data.get(key, "")).strip() for key in ("name", "contact", "address", "cvs")]
-        if not all(values[:3]):
-            raise StoreError("이름, 연락처, 주소를 모두 입력해 주세요.")
+        keys = ("name", "contact", "address", "cvs", "cvs_brand", "cvs_address", "refund_account")
+        values = [str(data.get(key, "")).strip() for key in keys]
+        if not values[0] or not re.fullmatch(r"010-\d{4}-\d{4}", values[1]):
+            raise StoreError("실명과 010-1234-5678 형식의 전화번호를 입력해 주세요.")
+        if not values[2] and not (values[3] and values[4] in {"GS25", "CU"} and values[5]):
+            raise StoreError("집주소 또는 조회한 편의점 정보를 입력해 주세요.")
         async with self.bot.db_pool.acquire() as conn:
             await conn.execute(
                 """
-                INSERT INTO user_info (user_id, name, contact, address, cvs)
-                VALUES ($1, $2, $3, $4, $5)
+                INSERT INTO user_info (user_id,name,contact,address,cvs,cvs_brand,cvs_address,refund_account)
+                VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
                 ON CONFLICT (user_id) DO UPDATE SET
                     name = EXCLUDED.name, contact = EXCLUDED.contact,
-                    address = EXCLUDED.address, cvs = EXCLUDED.cvs
+                    address = EXCLUDED.address, cvs = EXCLUDED.cvs,
+                    cvs_brand=EXCLUDED.cvs_brand,cvs_address=EXCLUDED.cvs_address,
+                    refund_account=EXCLUDED.refund_account
                 """, int(user["id"]), *values,
             )
         return web.json_response({"ok": True})
@@ -1587,6 +1688,130 @@ class StoreServer:
             "ok": True,
             "channels": {key: str(value) if value is not None else "" for key, value in zip(keys, values)},
         })
+
+    async def admin_orders(self, request):
+        await self._admin(request)
+        async with self.bot.db_pool.acquire() as conn:
+            rows = await conn.fetch(
+                """SELECT order_id,buyer_id,product,quantity,amount,status,created_at,
+                          shipping_method,waybill_number,carrier_id,fulfillment_status,cancel_reason
+                   FROM orders WHERE guild_id=$1 AND source='WEB'
+                   ORDER BY created_at DESC LIMIT 200""", self.guild_id,
+            )
+        guild = self._guild()
+        result = []
+        for row in rows:
+            item = dict(row)
+            member = guild.get_member(int(row["buyer_id"])) if guild else None
+            item["buyer_name"] = member.display_name if member else str(row["buyer_id"])
+            result.append(item)
+        return web.json_response({"orders": result}, dumps=lambda value: json.dumps(value, ensure_ascii=False, default=str))
+
+    async def admin_cancel_order(self, request):
+        await self._admin(request)
+        data = await self._body(request)
+        reason = str(data.get("reason", "")).strip()
+        if len(reason) < 2:
+            raise StoreError("주문취소 사유를 입력해 주세요.")
+        order_id = request.match_info["order_id"]
+        async with self.bot.db_pool.acquire() as conn:
+            async with conn.transaction():
+                order = await conn.fetchrow(
+                    "SELECT * FROM orders WHERE order_id=$1 AND guild_id=$2 AND source='WEB' FOR UPDATE",
+                    order_id, self.guild_id,
+                )
+                if not order or order["status"] in {"CANCELLED", "REJECTED"}:
+                    raise StoreError("취소할 수 있는 주문을 찾을 수 없습니다.", 404)
+                points = int(order.get("points_used") or 0)
+                if points and not order.get("points_refunded"):
+                    await conn.execute(
+                        "INSERT INTO point_balances (guild_id,user_id,balance) VALUES ($1,$2,$3) ON CONFLICT (guild_id,user_id) DO UPDATE SET balance=point_balances.balance+$3",
+                        self.guild_id, int(order["buyer_id"]), points,
+                    )
+                await conn.execute(
+                    "UPDATE orders SET status='CANCELLED',cancel_reason=$2,points_refunded=CASE WHEN points_used>0 THEN TRUE ELSE points_refunded END,processed_at=CURRENT_TIMESTAMP WHERE order_id=$1",
+                    order_id, reason,
+                )
+                if order["status"] == "APPROVED":
+                    await conn.execute(
+                        "UPDATE user_info SET total_spent=GREATEST(COALESCE(total_spent,0)-$2,0) WHERE user_id=$1",
+                        int(order["buyer_id"]), parse_amount(order["amount"]),
+                    )
+                refund_account = await conn.fetchval("SELECT refund_account FROM user_info WHERE user_id=$1", int(order["buyer_id"]))
+        payload = {
+            "flags": 1 << 15,
+            "components": [{"type": 17, "accent_color": 0xE74C3C, "components": [
+                {"type": 10, "content": f"## 주문이 취소되었습니다\n\n`주문번호` {order_id}\n`취소 사유` {reason}\n\n결제하신 금액은 확인 후 환불됩니다."},
+                *([] if refund_account else [{"type": 1, "components": [{"type": 2, "style": 1, "label": "환불계좌 등록", "custom_id": f"web_refund_account:{order_id}"}]}]),
+            ]}],
+        }
+        try:
+            user = self.bot.get_user(int(order["buyer_id"])) or await self.bot.fetch_user(int(order["buyer_id"]))
+            dm = await user.create_dm()
+            await self.bot.http.request(discord.http.Route("POST", f"/channels/{dm.id}/messages"), json=payload)
+        except Exception:
+            LOGGER.exception("주문취소 DM 실패: %s", order_id)
+        if refund_account:
+            try:
+                owner_id = int(os.getenv("BOT_OWNER_ID", "0") or 0)
+                owner = self.bot.get_user(owner_id) if owner_id else None
+                if owner is None:
+                    owner = (await self.bot.application_info()).owner
+                owner_dm = await owner.create_dm()
+                owner_payload = {
+                    "flags": 1 << 15,
+                    "components": [{"type": 17, "accent_color": 0x32CD32, "components": [{
+                        "type": 10,
+                        "content": f"## 💳 주문취소 환불정보\n\n`유저` {order['buyer_id']}\n`주문` {order['product']}\n`주문 ID` {order_id}\n`환불계좌` {refund_account}",
+                    }]}],
+                }
+                await self.bot.http.request(discord.http.Route("POST", f"/channels/{owner_dm.id}/messages"), json=owner_payload)
+            except Exception:
+                LOGGER.exception("기존 환불계좌 소유자 DM 실패: %s", order_id)
+        if order["status"] == "APPROVED":
+            guild = self._guild()
+            if guild:
+                try:
+                    await sync_buyer_roles(self.bot, guild, int(order["buyer_id"]))
+                except Exception:
+                    LOGGER.exception("주문취소 후 구매자 역할 동기화 실패: %s", order_id)
+            refresh = getattr(self.bot, "refresh_purchase_leaderboard", None)
+            if refresh:
+                try:
+                    await refresh(self.guild_id)
+                except Exception:
+                    LOGGER.exception("주문취소 후 구매랭킹 동기화 실패: %s", order_id)
+        return web.json_response({"ok": True})
+
+    async def admin_set_waybill(self, request):
+        await self._admin(request)
+        data = await self._body(request)
+        try:
+            waybill = normalize_waybill(str(data.get("waybill", "")))
+        except DeliveryTrackingError as exc:
+            raise StoreError(str(exc)) from exc
+        order_id = request.match_info["order_id"]
+        async with self.bot.db_pool.acquire() as conn:
+            order = await conn.fetchrow("SELECT buyer_id,shipping_method,product FROM orders WHERE order_id=$1 AND guild_id=$2 AND source='WEB' AND status='APPROVED'", order_id, self.guild_id)
+            if not order:
+                raise StoreError("승인된 웹 주문을 찾을 수 없습니다.", 404)
+            method = str(order["shipping_method"] or "")
+            carrier = "kr.cvsnet" if "GS25" in method else "kr.cupost" if "CU" in method else "kr.cjlogistics"
+            await conn.execute("UPDATE orders SET waybill_number=$2,carrier_id=$3,fulfillment_status='SHIPPING_PREPARING',fulfillment_updated_at=CURRENT_TIMESTAMP WHERE order_id=$1", order_id, waybill, carrier)
+        try:
+            user = self.bot.get_user(int(order["buyer_id"])) or await self.bot.fetch_user(int(order["buyer_id"]))
+            dm = await user.create_dm()
+            payload = {
+                "flags": 1 << 15,
+                "components": [{"type": 17, "accent_color": 0x32CD32, "components": [{
+                    "type": 10,
+                    "content": f"## 🚚 운송장이 발급되었습니다\n\n`◼️` **주문번호** : `{order_id}`\n`◼️` **운송장** : `{waybill}`\n`◼️` **상품** : `{order['product']}`\n`◼️` **진행상황** : **배송준비중 (60%)**\n\n> 웹사이트 **내 정보 → 주문내역 → 상세조회**에서 배송 현황을 확인할 수 있습니다.",
+                }]}],
+            }
+            await self.bot.http.request(discord.http.Route("POST", f"/channels/{dm.id}/messages"), json=payload)
+        except Exception:
+            LOGGER.exception("웹 운송장 DM 실패: %s", order_id)
+        return web.json_response({"ok": True, "waybill": waybill})
 
     async def _payment_approved(self, order: dict, notice: DepositNotice):
         await finalize_approved_order(self.bot, order, processor=f"Pushbullet · {notice.application_name or notice.package_name}")
