@@ -17,6 +17,7 @@ const state = {
   trackingPreset: null,
   profileStoreResults: [],
   adminOrders: [],
+  adminOrderFilter: "all",
 };
 
 const $ = (selector, parent = document) => parent.querySelector(selector);
@@ -50,15 +51,23 @@ const optionSurcharge = option => [...String(option || "").matchAll(/\(\+\s*([\d
   .reduce((sum, match) => sum + Number(match[1].replaceAll(",", "")), 0);
 const selectedOptionsSurcharge = options => options.reduce((sum, option) => sum + optionSurcharge(option), 0);
 const itemUnitPrice = item => Number(item.price || 0) + selectedOptionsSurcharge(selectedProductOptions(item));
-const optionTypeChoices = selected => ["없음", "옵션", "색상", "맛", "농도", "패키지"]
-  .map(label => `<option value="${label}" ${label === selected ? "selected" : ""}>${label}</option>`).join("");
+const BUILTIN_OPTION_LABELS = ["없음", "옵션", "색상", "맛", "농도", "패키지"];
+const CUSTOM_OPTION_LABEL = "__custom__";
+const optionTypeChoices = selected => {
+  const custom = selected !== "없음" && !BUILTIN_OPTION_LABELS.includes(selected);
+  return BUILTIN_OPTION_LABELS
+    .map(label => `<option value="${label}" ${label === selected ? "selected" : ""}>${label}</option>`).join("")
+    + `<option value="${CUSTOM_OPTION_LABEL}" ${custom ? "selected" : ""}>직접입력</option>`;
+};
 const optionGroupEditors = product => {
   const groups = productOptionGroups(product || {});
   return Array.from({ length: 3 }, (_, index) => {
     const group = groups[index] || { label: "없음", options: [] };
+    const customLabel = BUILTIN_OPTION_LABELS.includes(group.label) ? "" : group.label;
     return `<div class="option-group-editor" data-option-group>
       <strong>선택 항목 ${index + 1}</strong>
       <label>종류<select data-group-label>${optionTypeChoices(group.label)}</select></label>
+      <label data-group-custom ${customLabel ? "" : "hidden"}>직접 입력할 옵션명<input data-group-custom-label maxlength="30" value="${escapeHtml(customLabel)}" placeholder="예: 용량, 코일, 구성"></label>
       <label data-group-options>목록<textarea data-group-values placeholder="한 줄에 하나씩 입력&#10;예: 3mg&#10;6mg (+1000)">${escapeHtml(group.options.join("\n"))}</textarea></label>
     </div>`;
   }).join("");
@@ -98,6 +107,7 @@ async function api(path, options = {}) {
 function route() {
   const id = location.hash.slice(1) || "home";
   if (["account", "review-write"].includes(id) && !state.me) {
+    try { sessionStorage.setItem("v4p3PostLoginHash", `#${id}`); } catch {}
     location.href = "/auth/login";
     return;
   }
@@ -128,6 +138,13 @@ async function boot() {
     $("#login-button").onclick = () => { location.hash = "account"; };
     await loadCart();
     await refreshRegistrationPrompt();
+    try {
+      const postLoginHash = sessionStorage.getItem("v4p3PostLoginHash");
+      if (postLoginHash) {
+        sessionStorage.removeItem("v4p3PostLoginHash");
+        location.hash = postLoginHash;
+      }
+    } catch {}
     if ((location.hash.slice(1) || "home") === "cart") await loadCheckoutCustomer();
   } catch {
     $("#login-button").onclick = () => { location.href = "/auth/login"; };
@@ -197,11 +214,11 @@ async function loadReviews() {
 
   const data = await api("/api/reviews");
   const reviews = (Array.isArray(data.reviews) ? data.reviews : []).filter(review => (
-    Number(review.rating) === 5
+    Number(review.rating) >= 1 && Number(review.rating) <= 5
     && String(review.content || "").trim().length >= 5
   ));
   if (!reviews.length) {
-    track.innerHTML = '<p class="review-empty">아직 공개할 수 있는 별점 5점 후기가 없습니다.</p>';
+    track.innerHTML = '<p class="review-empty">아직 공개할 수 있는 구매후기가 없습니다.</p>';
     return;
   }
 
@@ -210,11 +227,12 @@ async function loadReviews() {
   const loopReviews = Array.from({ length: repeats }, () => reviews).flat();
   const cards = loopReviews.map(review => {
     const imageUrl = String(review.image_url || "").trim();
+    const rating = Math.max(1, Math.min(5, Number(review.rating) || 5));
     return `
     <article class="review-card${imageUrl ? "" : " review-card-text"}">
       ${imageUrl ? `<img src="${escapeHtml(imageUrl)}" alt="구매후기 사진" loading="lazy">` : ""}
       <div class="review-card-body">
-        <div class="review-stars" aria-label="별점 5점">★★★★★</div>
+        <div class="review-stars" aria-label="별점 ${rating}점">${"★".repeat(rating)}${"☆".repeat(5 - rating)}</div>
         <p>${escapeHtml(String(review.content).trim())}</p>
       </div>
     </article>`;
@@ -275,9 +293,9 @@ function renderProducts() {
   $("#products").innerHTML = rows.length ? rows.map(product => {
     const optionGroups = productOptionGroups(product);
     const optionSelect = optionGroups.map((group, index) => `
-      <label class="product-option">${escapeHtml(group.label)}
-        <select data-product-option="${product.id}" data-option-index="${index}">
-          <option value="">선택해 주세요</option>
+      <label class="product-option${index ? " locked" : ""}">${escapeHtml(group.label)}
+        <select data-product-option="${product.id}" data-option-index="${index}" ${index ? "disabled" : ""}>
+          <option value="">${index ? "위 옵션을 먼저 선택해 주세요" : "선택해 주세요"}</option>
           ${group.options.map(option => `<option value="${escapeHtml(option)}">${escapeHtml(option)}</option>`).join("")}
         </select>
       </label>`).join("");
@@ -302,7 +320,14 @@ function renderProducts() {
     select.onchange = () => {
       const product = state.products.find(item => Number(item.id) === Number(select.dataset.productOption));
       const price = $(`[data-product-price="${select.dataset.productOption}"]`);
-      const selected = $$(`[data-product-option="${select.dataset.productOption}"]`).map(field => field.value);
+      const optionFields = $$(`[data-product-option="${select.dataset.productOption}"]`);
+      optionFields.forEach((field, index) => {
+        const enabled = index === 0 || Boolean(optionFields[index - 1].value);
+        field.disabled = !enabled;
+        if (!enabled) field.value = "";
+        field.closest(".product-option")?.classList.toggle("locked", !enabled);
+      });
+      const selected = optionFields.map(field => field.value);
       if (product && price) price.textContent = money(Number(product.price) + selectedOptionsSurcharge(selected));
     };
   });
@@ -865,10 +890,18 @@ function bindForms() {
   $("#notice-day").onclick = dismissDiscordNoticeForDay;
   $("#action-banner-close").onclick = () => { $("#action-banner").hidden = true; };
   $("#refresh-admin-orders").onclick = loadAdminOrders;
+  $$('[data-admin-section-target]').forEach(button => {
+    button.onclick = () => setAdminSection(button.dataset.adminSectionTarget);
+  });
   addEventListener("keydown", event => {
     if (event.key === "Escape" && !$("#editor").hidden) closeEditor();
   });
   updateShippingMode();
+}
+
+function setAdminSection(section) {
+  $$('[data-admin-section]').forEach(panel => panel.classList.toggle("active", panel.dataset.adminSection === section));
+  $$('[data-admin-section-target]').forEach(button => button.classList.toggle("active", button.dataset.adminSectionTarget === section));
 }
 
 function bindShippingBanner() {
@@ -963,6 +996,7 @@ function openAdminGate() {
     location.href = "/auth/login";
     return;
   }
+  setAdminSection("dashboard");
   $("#admin-gate").hidden = false;
   document.body.classList.add("modal-open");
   setTimeout(() => $('#admin-password-form input[name="password"]').focus(), 0);
@@ -1053,21 +1087,51 @@ async function loadAdminOrders() {
 function renderAdminOrders() {
   const target = $("#admin-orders");
   if (!target) return;
-  target.innerHTML = state.adminOrders.length ? state.adminOrders.map(order => `
+  const filters = [
+    ["all", "전체"], ["pending", "입금대기"], ["approved", "승인"],
+    ["preparing", "상품준비중"], ["shipping-ready", "배송준비중"],
+    ["shipping", "배송중"], ["delivered", "배송완료"], ["cancelled", "취소"],
+  ];
+  const matches = (order, filter) => {
+    const progress = order.fulfillment_status || "PAYMENT_APPROVED";
+    if (filter === "all") return true;
+    if (filter === "pending") return order.status === "PENDING";
+    if (filter === "cancelled") return ["CANCELLED", "REJECTED"].includes(order.status);
+    if (order.status !== "APPROVED") return false;
+    return ({ approved: "PAYMENT_APPROVED", preparing: "PRODUCT_PREPARING", "shipping-ready": "SHIPPING_PREPARING", shipping: "SHIPPING", delivered: "DELIVERED" })[filter] === progress;
+  };
+  const filterBox = $("#admin-order-filters");
+  filterBox.innerHTML = filters.map(([value, label]) => {
+    const count = state.adminOrders.filter(order => matches(order, value)).length;
+    return `<button type="button" class="${state.adminOrderFilter === value ? "active" : ""}" data-order-filter="${value}">${label}<b>${count}</b></button>`;
+  }).join("");
+  $$('[data-order-filter]', filterBox).forEach(button => {
+    button.onclick = () => { state.adminOrderFilter = button.dataset.orderFilter; renderAdminOrders(); };
+  });
+  const orders = state.adminOrders.filter(order => matches(order, state.adminOrderFilter));
+  target.innerHTML = orders.length ? orders.map(order => {
+    const cancelled = ["CANCELLED", "REJECTED"].includes(order.status);
+    const progress = order.fulfillment_status || "PAYMENT_APPROVED";
+    const progressLabel = ({ PAYMENT_APPROVED: "승인", PRODUCT_PREPARING: "상품준비중", SHIPPING_PREPARING: "배송준비중", SHIPPING: "배송중", DELIVERED: "배송완료" })[progress] || progress;
+    return `
     <article class="admin-order">
       <div class="admin-order-main">
-        <div><strong>${escapeHtml(order.order_id)}</strong><span class="badge ${escapeHtml(order.status)}">${escapeHtml(statusText(order.status))}</span></div>
+        <div><strong>${escapeHtml(order.order_id)}</strong><span class="badge ${escapeHtml(order.status)}">${escapeHtml(cancelled || order.status === "PENDING" ? statusText(order.status) : progressLabel)}</span></div>
         <p>${escapeHtml(order.product)} · ${escapeHtml(order.quantity)}</p>
         <small>${escapeHtml(order.buyer_name)} · ${escapeHtml(order.amount)} · ${String(order.created_at).slice(0, 16).replace("T", " ")}</small>
+        <small>수령인 ${escapeHtml(order.shipping_name || "미등록")} · ${escapeHtml(order.shipping_contact || "미등록")} · ${escapeHtml(order.shipping_method || "배송방식 미등록")}</small>
+        <small>배송지 ${escapeHtml(order.shipping_cvs || order.shipping_address || "미등록")}</small>
+        <small>현금 ${money(order.cash_amount)} · 포인트 ${Number(order.points_used || 0).toLocaleString()}P</small>
         ${order.cancel_reason ? `<small class="cancel-reason">취소 사유: ${escapeHtml(order.cancel_reason)}</small>` : ""}
         ${order.waybill_number ? `<small>운송장: ${escapeHtml(order.waybill_number)}</small>` : ""}
       </div>
       <div class="admin-order-actions">
-        <button type="button" class="button secondary compact" data-admin-waybill="${escapeHtml(order.order_id)}">운송장 발송</button>
-        <button type="button" class="button danger compact" data-admin-cancel="${escapeHtml(order.order_id)}" ${["CANCELLED", "REJECTED"].includes(order.status) ? "disabled" : ""}>주문취소</button>
+        ${cancelled
+          ? `<button type="button" class="button danger compact" data-admin-delete-order="${escapeHtml(order.order_id)}">기록삭제</button>`
+          : `${order.status === "APPROVED" ? `<button type="button" class="button secondary compact" data-admin-waybill="${escapeHtml(order.order_id)}">운송장 발송</button>` : ""}<button type="button" class="button danger compact" data-admin-cancel="${escapeHtml(order.order_id)}">주문취소</button>`}
       </div>
     </article>
-  `).join("") : '<p class="admin-empty">웹 주문이 없습니다.</p>';
+  `; }).join("") : '<p class="admin-empty">선택한 상태의 주문이 없습니다.</p>';
   $$('[data-admin-cancel]', target).forEach(button => {
     button.onclick = async () => {
       const reason = prompt("구매자에게 전달할 주문취소 사유를 입력해 주세요.");
@@ -1095,6 +1159,20 @@ function renderAdminOrders() {
         await api(`/api/admin/orders/${encodeURIComponent(button.dataset.adminWaybill)}/waybill`, { method: "POST", body: JSON.stringify({ waybill }) });
         await loadAdminOrders();
         toast("운송장을 저장하고 구매자에게 DM을 보냈습니다.");
+      } catch (error) {
+        button.disabled = false;
+        toast(error.message);
+      }
+    };
+  });
+  $$('[data-admin-delete-order]', target).forEach(button => {
+    button.onclick = async () => {
+      if (!confirm("취소된 주문 기록을 완전히 삭제할까요? 삭제 후 복구할 수 없습니다.")) return;
+      button.disabled = true;
+      try {
+        await api(`/api/admin/orders/${encodeURIComponent(button.dataset.adminDeleteOrder)}`, { method: "DELETE", body: "{}" });
+        await loadAdminOrders();
+        toast("취소된 주문 기록을 삭제했습니다.");
       } catch (error) {
         button.disabled = false;
         toast(error.message);
@@ -1259,7 +1337,7 @@ function openEditor(type, item = {}) {
       </label>
       <h3>선택 항목 <small>최대 3개</small></h3>
       ${optionGroupEditors({})}
-      <small>사용하지 않는 선택 항목은 없음으로 두세요. 항목값에 (+2000)을 붙이면 선택 시 개당 2,000원이 추가됩니다.</small>
+      <small>선택 항목은 반드시 1번부터 순서대로 만드세요. 원하는 옵션명이 없으면 직접입력을 선택하고, 항목값에 (+2000)을 붙이면 개당 2,000원이 추가됩니다.</small>
       <small>비비빈스와 일렉샵 링크를 지원합니다. 입력한 가격은 자동 동기화 후에도 유지됩니다. 목록 링크를 사용하면 가져온 모든 상품에 같은 가격과 옵션이 적용됩니다.</small>`;
   } else {
     fields.innerHTML = `<input type="hidden" name="id" value="${item.id || ""}">
@@ -1276,26 +1354,35 @@ function openEditor(type, item = {}) {
       <label>가격<input name="price" type="number" min="0" value="${item.price || 0}" required></label>
       <h3>선택 항목 <small>최대 3개</small></h3>
       ${optionGroupEditors(item)}
-      <small>사용하지 않는 선택 항목은 없음으로 두세요. 항목값에 (+2000)을 붙이면 선택 시 개당 2,000원이 추가됩니다.</small>
+      <small>선택 항목은 반드시 1번부터 순서대로 만드세요. 원하는 옵션명이 없으면 직접입력을 선택하고, 항목값에 (+2000)을 붙이면 개당 2,000원이 추가됩니다.</small>
       <label class="check"><input name="is_active" type="checkbox" ${item.is_active !== false ? "checked" : ""}> 판매 활성화</label>`;
   }
   $("#editor-form button[type='submit']").textContent = isLinkImport ? "링크에서 가져오기" : "저장";
   $("#editor").hidden = false;
   document.body.classList.add("modal-open");
   if (type === "product") {
-    $$('[data-option-group]', fields).forEach(group => {
+    const optionGroups = $$('[data-option-group]', fields);
+    const syncOptionGroups = () => optionGroups.forEach((group, index) => {
       const typeSelect = $('[data-group-label]', group);
+      const customField = $('[data-group-custom]', group);
+      const customInput = $('[data-group-custom-label]', group);
       const optionsField = $('[data-group-options]', group);
       const optionsInput = $('[data-group-values]', group);
-      const syncOptionField = () => {
-        const disabled = typeSelect.value === "없음";
-        optionsField.hidden = disabled;
-        optionsInput.disabled = disabled;
-        optionsInput.required = !disabled;
-      };
-      typeSelect.addEventListener("change", syncOptionField);
-      syncOptionField();
+      const previousEnabled = index === 0 || $('[data-group-label]', optionGroups[index - 1]).value !== "없음";
+      if (!previousEnabled) typeSelect.value = "없음";
+      typeSelect.disabled = !previousEnabled;
+      group.classList.toggle("locked", !previousEnabled);
+      const unused = typeSelect.value === "없음";
+      const custom = typeSelect.value === CUSTOM_OPTION_LABEL;
+      customField.hidden = !custom;
+      customInput.disabled = !custom;
+      customInput.required = custom;
+      optionsField.hidden = unused;
+      optionsInput.disabled = unused;
+      optionsInput.required = !unused;
     });
+    optionGroups.forEach(group => $('[data-group-label]', group).addEventListener("change", syncOptionGroups));
+    syncOptionGroups();
   }
   if (type === "product" && !isLinkImport) {
     $("#product-image-file").onchange = event => {
@@ -1317,7 +1404,9 @@ function openEditor(type, item = {}) {
     const data = Object.fromEntries(new FormData(event.target));
     if (type === "product") {
       data.option_groups = $$('[data-option-group]', fields).map(group => ({
-        label: $('[data-group-label]', group).value,
+        label: $('[data-group-label]', group).value === CUSTOM_OPTION_LABEL
+          ? $('[data-group-custom-label]', group).value.trim()
+          : $('[data-group-label]', group).value,
         options: $('[data-group-values]', group).disabled ? "" : $('[data-group-values]', group).value,
       }));
     }

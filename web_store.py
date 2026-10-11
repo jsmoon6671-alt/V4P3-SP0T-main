@@ -96,9 +96,6 @@ def parse_product_options(raw_options) -> list[str]:
     return list(dict.fromkeys(str(value).strip() for value in values if str(value).strip()))
 
 
-OPTION_LABELS = {"옵션", "색상", "맛", "농도", "패키지"}
-
-
 def parse_json_list(value) -> list:
     if isinstance(value, list):
         return value
@@ -119,14 +116,20 @@ def normalize_option_groups(raw_groups, legacy_label="없음", legacy_options=No
     if len(groups) > 3:
         raise StoreError("선택 항목은 최대 3개까지만 만들 수 있습니다.")
     normalized = []
+    unused_seen = False
     for group in groups:
         if not isinstance(group, dict):
             raise StoreError("선택 항목 형식을 확인해 주세요.")
         label = str(group.get("label", "없음")).strip()
         if label == "없음":
+            unused_seen = True
             continue
-        if label not in OPTION_LABELS:
-            raise StoreError("선택 항목 종류를 올바르게 선택해 주세요.")
+        if unused_seen:
+            raise StoreError("선택 항목은 1번부터 순서대로 만들어 주세요.")
+        if not label:
+            raise StoreError("직접 입력할 옵션명을 작성해 주세요.")
+        if len(label) > 30 or any(ord(character) < 32 for character in label):
+            raise StoreError("옵션명은 줄바꿈 없이 30자 이하로 입력해 주세요.")
         options = parse_product_options(group.get("options", []))
         if not options:
             raise StoreError(f"{label} 항목을 한 개 이상 입력해 주세요.")
@@ -265,6 +268,7 @@ async def initialize_web_store_schema(conn):
         ALTER TABLE web_order_items ADD COLUMN IF NOT EXISTS product_options_json TEXT NOT NULL DEFAULT '[]';
         ALTER TABLE web_product_sources ADD COLUMN IF NOT EXISTS disabled_by_admin BOOLEAN NOT NULL DEFAULT FALSE;
         ALTER TABLE web_product_sources ADD COLUMN IF NOT EXISTS price_locked BOOLEAN NOT NULL DEFAULT FALSE;
+        ALTER TABLE web_reviews ADD COLUMN IF NOT EXISTS watermark_version SMALLINT NOT NULL DEFAULT 0;
         ALTER TABLE orders ADD COLUMN IF NOT EXISTS shipping_name TEXT;
         ALTER TABLE orders ADD COLUMN IF NOT EXISTS shipping_contact TEXT;
         ALTER TABLE orders ADD COLUMN IF NOT EXISTS shipping_address TEXT;
@@ -275,6 +279,8 @@ async def initialize_web_store_schema(conn):
         ALTER TABLE orders ADD COLUMN IF NOT EXISTS carrier_id TEXT;
         ALTER TABLE orders ADD COLUMN IF NOT EXISTS fulfillment_status TEXT NOT NULL DEFAULT 'PAYMENT_APPROVED';
         ALTER TABLE orders ADD COLUMN IF NOT EXISTS fulfillment_updated_at TIMESTAMPTZ;
+        ALTER TABLE orders ADD COLUMN IF NOT EXISTS last_tracking_event TEXT;
+        ALTER TABLE orders ADD COLUMN IF NOT EXISTS last_tracking_notified_at TIMESTAMPTZ;
         ALTER TABLE user_info ADD COLUMN IF NOT EXISTS cvs_brand TEXT NOT NULL DEFAULT '';
         ALTER TABLE user_info ADD COLUMN IF NOT EXISTS cvs_address TEXT NOT NULL DEFAULT '';
         ALTER TABLE user_info ADD COLUMN IF NOT EXISTS refund_account TEXT NOT NULL DEFAULT '';
@@ -310,6 +316,7 @@ async def save_web_review(
             user_id=EXCLUDED.user_id, rating=EXCLUDED.rating,
             content=EXCLUDED.content,
             image_url=CASE
+                WHEN web_reviews.image_url LIKE '/api/reviews/%' THEN web_reviews.image_url
                 WHEN BTRIM(EXCLUDED.image_url) <> '' THEN EXCLUDED.image_url
                 ELSE web_reviews.image_url
             END
@@ -338,6 +345,7 @@ class StoreServer:
         self.admin_password = os.getenv("WEB_ADMIN_PASSWORD", "").strip() or "tb9988230.."
         self._last_review_sync = 0.0
         self._product_sync_lock = asyncio.Lock()
+        self._review_watermark_lock = asyncio.Lock()
         self.runner: web.AppRunner | None = None
         self.payment_service = PushbulletPaymentService(
             bot,
@@ -457,6 +465,7 @@ class StoreServer:
             web.get("/api/admin/orders", self.admin_orders),
             web.post(r"/api/admin/orders/{order_id}/cancel", self.admin_cancel_order),
             web.post(r"/api/admin/orders/{order_id}/waybill", self.admin_set_waybill),
+            web.delete(r"/api/admin/orders/{order_id}", self.admin_delete_order),
         ]
         self.app.add_routes(routes)
         self.app.router.add_static("/static", STATIC, show_index=False)
@@ -552,7 +561,7 @@ class StoreServer:
                 if image_url:
                     break
 
-        if rating != 5 or len(review) < 5:
+        if rating not in range(1, 6) or len(review) < 5:
             return None
         return rating, review, image_url
 
@@ -836,6 +845,7 @@ class StoreServer:
 
     async def reviews(self, request):
         await self._sync_reviews_from_discord()
+        await self._rewatermark_existing_reviews()
         guild = self._guild()
         guild_id = guild.id if guild else self.guild_id
         async with self.bot.db_pool.acquire() as conn:
@@ -843,8 +853,7 @@ class StoreServer:
                 """
                 SELECT discord_message_id AS id, rating, content, image_url, created_at
                 FROM web_reviews
-                WHERE guild_id=$1 AND rating=5
-                  AND CHAR_LENGTH(BTRIM(content)) >= 5
+                WHERE guild_id=$1 AND CHAR_LENGTH(BTRIM(content)) >= 5
                 ORDER BY created_at DESC
                 """,
                 guild_id,
@@ -853,6 +862,65 @@ class StoreServer:
             {"reviews": [dict(row) for row in rows]},
             dumps=lambda value: json.dumps(value, ensure_ascii=False, default=str),
         )
+
+    async def _rewatermark_existing_reviews(self):
+        guild = self._guild()
+        guild_id = guild.id if guild else self.guild_id
+        if not guild_id:
+            return
+        if self._review_watermark_lock.locked():
+            async with self._review_watermark_lock:
+                return
+        async with self._review_watermark_lock:
+            async with self.bot.db_pool.acquire() as conn:
+                rows = await conn.fetch(
+                    """SELECT discord_message_id,image_url FROM web_reviews
+                       WHERE guild_id=$1 AND watermark_version < 1 AND BTRIM(image_url) <> ''
+                       ORDER BY created_at""",
+                    guild_id,
+                )
+            if not rows:
+                return
+            timeout = aiohttp.ClientTimeout(total=20)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                for row in rows:
+                    review_id = int(row["discord_message_id"])
+                    try:
+                        async with self.bot.db_pool.acquire() as conn:
+                            stored_images = await conn.fetch(
+                                "SELECT image_index,image_data FROM web_review_images WHERE guild_id=$1 AND review_id=$2 ORDER BY image_index",
+                                guild_id, review_id,
+                            )
+                        if stored_images:
+                            sources = [(int(item["image_index"]), bytes(item["image_data"])) for item in stored_images]
+                        elif str(row["image_url"]).startswith(("https://", "http://")):
+                            async with session.get(str(row["image_url"])) as response:
+                                if response.status != 200:
+                                    raise StoreError(f"후기 이미지 응답 HTTP {response.status}")
+                                sources = [(0, await response.read())]
+                        else:
+                            continue
+                        rendered_images = [
+                            (index, await asyncio.to_thread(watermark_review_image, source))
+                            for index, source in sources
+                        ]
+                        local_url = f"/api/reviews/{review_id}/image/0"
+                        async with self.bot.db_pool.acquire() as conn:
+                            async with conn.transaction():
+                                for image_index, rendered in rendered_images:
+                                    await conn.execute(
+                                        """INSERT INTO web_review_images (guild_id,review_id,image_index,image_data)
+                                           VALUES ($1,$2,$3,$4)
+                                           ON CONFLICT (guild_id,review_id,image_index)
+                                           DO UPDATE SET image_data=EXCLUDED.image_data""",
+                                        guild_id, review_id, image_index, rendered,
+                                    )
+                                await conn.execute(
+                                    "UPDATE web_reviews SET image_url=$3,watermark_version=1 WHERE guild_id=$1 AND discord_message_id=$2",
+                                    guild_id, review_id, local_url,
+                                )
+                    except Exception:
+                        LOGGER.exception("기존 후기 워터마크 재적용 실패: review=%s", review_id)
 
     async def review_image(self, request):
         async with self.bot.db_pool.acquire() as conn:
@@ -897,6 +965,10 @@ class StoreServer:
                     "INSERT INTO web_review_images (guild_id,review_id,image_index,image_data) VALUES ($1,$2,$3,$4)",
                     self.guild_id, review_id, index, image,
                 )
+            await conn.execute(
+                "UPDATE web_reviews SET watermark_version=1 WHERE guild_id=$1 AND discord_message_id=$2",
+                self.guild_id, review_id,
+            )
             try:
                 reward, balance = await award_review_points(conn, self.guild_id, int(user["id"]), review_id)
             except Exception:
@@ -1693,8 +1765,10 @@ class StoreServer:
         await self._admin(request)
         async with self.bot.db_pool.acquire() as conn:
             rows = await conn.fetch(
-                """SELECT order_id,buyer_id,product,quantity,amount,status,created_at,
-                          shipping_method,waybill_number,carrier_id,fulfillment_status,cancel_reason
+                """SELECT order_id,buyer_id,product,quantity,amount,status,created_at,processed_at,
+                          shipping_name,shipping_contact,shipping_address,shipping_cvs,shipping_method,
+                          shipping_fee,points_used,cash_amount,waybill_number,carrier_id,
+                          fulfillment_status,fulfillment_updated_at,cancel_reason
                    FROM orders WHERE guild_id=$1 AND source='WEB'
                    ORDER BY created_at DESC LIMIT 200""", self.guild_id,
             )
@@ -1797,7 +1871,7 @@ class StoreServer:
                 raise StoreError("승인된 웹 주문을 찾을 수 없습니다.", 404)
             method = str(order["shipping_method"] or "")
             carrier = "kr.cvsnet" if "GS25" in method else "kr.cupost" if "CU" in method else "kr.cjlogistics"
-            await conn.execute("UPDATE orders SET waybill_number=$2,carrier_id=$3,fulfillment_status='SHIPPING_PREPARING',fulfillment_updated_at=CURRENT_TIMESTAMP WHERE order_id=$1", order_id, waybill, carrier)
+            await conn.execute("UPDATE orders SET waybill_number=$2,carrier_id=$3,fulfillment_status='SHIPPING_PREPARING',fulfillment_updated_at=CURRENT_TIMESTAMP,last_tracking_event=NULL,last_tracking_notified_at=NULL WHERE order_id=$1", order_id, waybill, carrier)
         try:
             user = self.bot.get_user(int(order["buyer_id"])) or await self.bot.fetch_user(int(order["buyer_id"]))
             dm = await user.create_dm()
@@ -1812,6 +1886,24 @@ class StoreServer:
         except Exception:
             LOGGER.exception("웹 운송장 DM 실패: %s", order_id)
         return web.json_response({"ok": True, "waybill": waybill})
+
+    async def admin_delete_order(self, request):
+        await self._admin(request)
+        order_id = request.match_info["order_id"]
+        async with self.bot.db_pool.acquire() as conn:
+            async with conn.transaction():
+                status = await conn.fetchval(
+                    "SELECT status FROM orders WHERE order_id=$1 AND guild_id=$2 AND source='WEB' FOR UPDATE",
+                    order_id, self.guild_id,
+                )
+                if status not in {"CANCELLED", "REJECTED"}:
+                    raise StoreError("취소되거나 거절된 주문 기록만 삭제할 수 있습니다.", 409)
+                await conn.execute("DELETE FROM web_order_items WHERE order_id=$1", order_id)
+                await conn.execute(
+                    "DELETE FROM orders WHERE order_id=$1 AND guild_id=$2 AND source='WEB'",
+                    order_id, self.guild_id,
+                )
+        return web.json_response({"ok": True})
 
     async def _payment_approved(self, order: dict, notice: DepositNotice):
         await finalize_approved_order(self.bot, order, processor=f"Pushbullet · {notice.application_name or notice.package_name}")

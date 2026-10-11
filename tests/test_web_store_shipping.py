@@ -45,6 +45,20 @@ class WebStoreShippingTests(unittest.TestCase):
                 for index in range(4)
             ])
 
+    def test_custom_option_label_is_allowed(self):
+        groups = normalize_option_groups([
+            {"label": "코일 종류", "options": "0.6옴\n0.8옴 (+1000)"},
+        ])
+        self.assertEqual(groups[0]["label"], "코일 종류")
+        self.assertEqual(groups[0]["options"], ["0.6옴", "0.8옴 (+1000)"])
+
+    def test_option_groups_must_be_created_from_first_to_third(self):
+        with self.assertRaisesRegex(StoreError, "1번부터"):
+            normalize_option_groups([
+                {"label": "없음", "options": []},
+                {"label": "색상", "options": ["블랙"]},
+            ])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -15,7 +15,7 @@ def maximum_points(balance, amount, allowed=True):
 REVIEW_GUIDE = (
     "## **후기 작성 안내**\n\n"
     "**`/후기작성` 명령어를 사용해 후기와 사진을 함께 작성해 주세요!**\n\n"
-    "**후기 작성 시 랜덤으로 100P \\~ 500P의 포인트가 적립됩니다!**"
+    "**후기 작성 시 랜덤으로 200P \\~ 500P의 포인트가 적립됩니다!**"
 )
 
 
@@ -130,7 +130,7 @@ async def award_review_points(conn, guild_id, user_id, interaction_id):
             INSERT INTO review_point_rewards (guild_id, interaction_id, user_id, points)
             VALUES ($1, $2, $3, $4)
             ON CONFLICT (guild_id, interaction_id) DO NOTHING RETURNING points
-        ''', guild_id, interaction_id, user_id, random.randint(100, 500))
+        ''', guild_id, interaction_id, user_id, random.randint(200, 500))
         if reward is not None:
             await conn.execute('''
                 INSERT INTO point_balances (guild_id, user_id, balance) VALUES ($1, $2, $3)

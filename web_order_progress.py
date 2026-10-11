@@ -8,10 +8,11 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
-from delivery_tracking import DeliveryTrackingError, normalize_waybill, track_shipment
+from delivery_tracking import DeliveryTrackingError, normalize_waybill, safe_text, track_shipment
 
 
 LOGGER = logging.getLogger(__name__)
+REVIEW_WRITE_URL = "https://v4p3sp0t.up.railway.app/#review-write"
 
 PROGRESS = {
     "PAYMENT_APPROVED": ("승인완료", 20),
@@ -36,23 +37,32 @@ CARRIER_CHOICES = [
 ]
 
 
-def _container(content: str, *, color: int = 0x32CD32) -> dict:
+def _container(content: str, *, color: int = 0x32CD32, button_label: str | None = None, button_url: str | None = None) -> dict:
+    components = [{"type": 10, "content": content}]
+    if button_label and button_url:
+        components.append({
+            "type": 1,
+            "components": [{"type": 2, "style": 5, "label": button_label, "url": button_url}],
+        })
     return {
         "flags": 1 << 15,
         "components": [{
             "type": 17,
             "accent_color": color,
-            "components": [{"type": 10, "content": content}],
+            "components": components,
         }],
     }
 
 
-async def send_user_container(bot, user_id: int, content: str, *, color: int = 0x32CD32):
+async def send_user_container(
+    bot, user_id: int, content: str, *, color: int = 0x32CD32,
+    button_label: str | None = None, button_url: str | None = None,
+):
     user = bot.get_user(int(user_id)) or await bot.fetch_user(int(user_id))
     dm = await user.create_dm()
     await bot.http.request(
         discord.http.Route("POST", f"/channels/{dm.id}/messages"),
-        json=_container(content, color=color),
+        json=_container(content, color=color, button_label=button_label, button_url=button_url),
     )
 
 
@@ -67,16 +77,41 @@ def infer_tracking_progress(data: dict) -> str | None:
                 value = value.get("text") or value.get("name") or ""
             pieces.append(str(value or ""))
     text = " ".join(pieces).lower().replace(" ", "")
-    if any(word in text for word in ("배송완료", "배달완료", "전달완료", "delivered")):
+    if any(word in text for word in ("배송완료", "배달완료", "전달완료", "점포에도착", "점포도착", "delivered")):
         return "DELIVERED"
-    if any(word in text for word in ("배송중", "배달중", "이동중", "간선상차", "간선하차", "출고")):
+    if any(word in text for word in ("배송중", "배달중", "이동중", "간선상차", "간선하차", "출고", "도착했습니다", "도착")):
         return "SHIPPING"
     if any(word in text for word in ("집화", "상품인수", "접수", "운송장등록")):
         return "SHIPPING_PREPARING"
     return None
 
 
-async def update_progress(bot, guild_id: int, order_id: str, status: str, *, allow_regression: bool = True):
+def latest_significant_tracking_event(data: dict) -> tuple[str, str] | None:
+    for item in reversed(data.get("allProgress") or []):
+        if not isinstance(item, dict):
+            continue
+        description = item.get("description") or item.get("status") or ""
+        if isinstance(description, dict):
+            description = description.get("text") or description.get("name") or ""
+        description = str(description).strip()
+        if "도착" not in description:
+            continue
+        location = item.get("location") or ""
+        if isinstance(location, dict):
+            location = location.get("name") or location.get("text") or ""
+        event_time = str(item.get("time") or "").strip()
+        signature = f"{event_time}|{location}|{description}"
+        display = safe_text(description, "배송 거점에 도착했습니다.", 240)
+        if location and str(location).strip() not in description:
+            display = f"{safe_text(location, limit=100)} · {display}"
+        return signature, display
+    return None
+
+
+async def update_progress(
+    bot, guild_id: int, order_id: str, status: str, *,
+    allow_regression: bool = True, notify: bool = True,
+):
     if status not in PROGRESS or status == "PAYMENT_APPROVED":
         raise ValueError("지원하지 않는 진행상황입니다.")
     async with bot.db_pool.acquire() as conn:
@@ -116,13 +151,18 @@ async def update_progress(bot, guild_id: int, order_id: str, status: str, *, all
     if status == "DELIVERED":
         content += (
             "\n\n상품은 잘 받아보셨나요?\n"
-            "**`/후기작성`** 명령어로 후기와 사진을 남겨 주세요!\n"
-            "> 후기 작성 시 랜덤으로 **100P ~ 500P**가 적립됩니다."
+            "아래 **후기작성하기** 버튼으로 후기와 사진을 남겨 주세요!\n"
+            "> 후기 작성 시 랜덤으로 **200P ~ 500P**가 적립됩니다."
         )
-    try:
-        await send_user_container(bot, order["buyer_id"], content)
-    except (discord.Forbidden, discord.NotFound, discord.HTTPException):
-        LOGGER.info("웹 주문 진행상황 DM 전송 실패: order=%s user=%s", order_id, order["buyer_id"])
+    if notify:
+        try:
+            await send_user_container(
+                bot, order["buyer_id"], content,
+                button_label="후기작성하기" if status == "DELIVERED" else None,
+                button_url=REVIEW_WRITE_URL if status == "DELIVERED" else None,
+            )
+        except (discord.Forbidden, discord.NotFound, discord.HTTPException):
+            LOGGER.info("웹 주문 진행상황 DM 전송 실패: order=%s user=%s", order_id, order["buyer_id"])
     return {**dict(order), "fulfillment_status": status}, True
 
 
@@ -281,7 +321,8 @@ def register_web_order_commands(bot):
             await conn.execute(
                 """
                 UPDATE orders SET waybill_number=$3, carrier_id=$4,
-                    fulfillment_status=$5, fulfillment_updated_at=CURRENT_TIMESTAMP
+                    fulfillment_status=$5, fulfillment_updated_at=CURRENT_TIMESTAMP,
+                    last_tracking_event=NULL,last_tracking_notified_at=NULL
                 WHERE order_id=$1 AND guild_id=$2
                 """,
                 order_id, interaction.guild.id, waybill, carrier_id, progress,
@@ -320,7 +361,8 @@ class WebOrderProgressCog(commands.Cog):
         async with self.bot.db_pool.acquire() as conn:
             rows = await conn.fetch(
                 """
-                SELECT order_id, guild_id, waybill_number, carrier_id, fulfillment_status
+                SELECT order_id, guild_id, buyer_id, product, waybill_number, carrier_id,
+                       fulfillment_status,last_tracking_event
                 FROM orders
                 WHERE source='WEB' AND status='APPROVED'
                   AND waybill_number IS NOT NULL AND carrier_id IS NOT NULL
@@ -333,10 +375,31 @@ class WebOrderProgressCog(commands.Cog):
             try:
                 data = await track_shipment(row["carrier_id"], row["waybill_number"])
                 status = infer_tracking_progress(data)
+                event = latest_significant_tracking_event(data)
                 if status:
                     await update_progress(
-                        self.bot, row["guild_id"], row["order_id"], status, allow_regression=False,
+                        self.bot, row["guild_id"], row["order_id"], status,
+                        allow_regression=False,
+                        notify=not (event and status != "DELIVERED"),
                     )
+                if event and event[0] != (row["last_tracking_event"] or ""):
+                    if status != "DELIVERED":
+                        content = (
+                            "## 🚚 배송 위치가 갱신되었습니다\n\n"
+                            f"`◼️` **주문번호** : `{row['order_id']}`\n"
+                            f"`◼️` **상품** : `{row['product']}`\n"
+                            f"`◼️` **배송 현황** : **{event[1]}**"
+                        )
+                        try:
+                            await send_user_container(self.bot, row["buyer_id"], content)
+                        except (discord.Forbidden, discord.NotFound, discord.HTTPException):
+                            LOGGER.info("웹 배송 위치 DM 전송 실패: order=%s", row["order_id"])
+                    async with self.bot.db_pool.acquire() as conn:
+                        await conn.execute(
+                            """UPDATE orders SET last_tracking_event=$3,last_tracking_notified_at=CURRENT_TIMESTAMP
+                               WHERE order_id=$1 AND guild_id=$2""",
+                            row["order_id"], row["guild_id"], event[0],
+                        )
             except (DeliveryTrackingError, ValueError):
                 continue
             except Exception:
