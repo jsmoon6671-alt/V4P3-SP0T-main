@@ -133,6 +133,7 @@ function route() {
   }
   if (id === "tracking" && state.me) loadCarriers().then(applyTrackingPreset);
   if (id === "tiers") renderTiers();
+  if (id === "terms") loadPolicies();
   if (id === "ranking") loadPurchaseRanking();
   if (id === "support") renderSupportForm();
   if (id === "events" && state.me) loadCouponEvents(false);
@@ -778,7 +779,8 @@ async function refreshRegistrationPrompt() {
     const hasDestination = Boolean(String(customer.address || "").trim()) || Boolean(
       String(customer.cvs || "").trim() && String(customer.cvs_address || "").trim()
     );
-    prompt.hidden = Boolean(String(customer.name || "").trim() && String(customer.contact || "").trim() && String(customer.refund_account || "").trim() && hasDestination);
+    const hasRefundAccount = Boolean(String(customer.refund_bank || "").trim() && String(customer.refund_account_number || "").trim() && String(customer.refund_account_holder || "").trim());
+    prompt.hidden = Boolean(String(customer.name || "").trim() && String(customer.contact || "").trim() && hasRefundAccount && customer.refund_policy_accepted && hasDestination);
   } catch {
     prompt.hidden = false;
   }
@@ -856,9 +858,11 @@ async function loadAccount() {
   try {
     const [customer, orders] = await Promise.all([api("/api/customer"), api("/api/orders")]);
     Object.entries(customer.customer).forEach(([key, value]) => {
+      if (["refund_policy_accepted", "refund_policy_version"].includes(key)) return;
       const input = $(`#customer-form [name="${key}"]`);
       if (input) input.value = value || "";
     });
+    setupRefundPolicy(customer.refund_policy || {});
     state.pointBalance = Number(customer.points || 0);
     $("#point-balance").textContent = `${state.pointBalance.toLocaleString()}P`;
     $("#checkout-point-balance").textContent = `보유 ${state.pointBalance.toLocaleString()}P`;
@@ -879,6 +883,73 @@ async function loadAccount() {
   } catch (error) {
     if (error.message.includes("로그인")) location.href = "/auth/login";
     else toast(error.message);
+  }
+}
+
+function setRefundAccountFieldsEnabled(enabled) {
+  $$("#refund-account-fields input").forEach(input => { input.disabled = !enabled; });
+  $("#refund-account-fields").classList.toggle("locked", !enabled);
+}
+
+function setupRefundPolicy(policy) {
+  const scrollBox = $("#refund-policy-scroll");
+  const checkbox = $("#refund-policy-accepted");
+  const hint = $("#refund-policy-scroll-hint");
+  $("#refund-policy-text").textContent = policy.content || "등록된 환불약관이 없습니다.";
+  $("#refund-policy-version").value = policy.version || "";
+  scrollBox.scrollTop = 0;
+  checkbox.checked = Boolean(policy.accepted);
+  checkbox.disabled = !policy.accepted;
+  setRefundAccountFieldsEnabled(Boolean(policy.accepted));
+
+  const updateScrollState = () => {
+    if (policy.accepted) return;
+    const reachedBottom = scrollBox.scrollHeight <= scrollBox.clientHeight + 4
+      || scrollBox.scrollTop + scrollBox.clientHeight >= scrollBox.scrollHeight - 4;
+    checkbox.disabled = !reachedBottom;
+    hint.textContent = reachedBottom ? "약관을 모두 확인했습니다. 동의 항목을 체크해 주세요." : "환불약관을 끝까지 내려 주세요.";
+  };
+  scrollBox.onscroll = updateScrollState;
+  checkbox.onchange = () => setRefundAccountFieldsEnabled(checkbox.checked);
+  requestAnimationFrame(updateScrollState);
+}
+
+async function loadPolicies() {
+  try {
+    const data = await api("/api/policies");
+    $("#managed-terms-text").textContent = data.terms_of_service || "";
+    $("#managed-terms-content").hidden = false;
+    $("#default-terms-content").hidden = true;
+  } catch (error) {
+    $("#managed-terms-content").hidden = true;
+    $("#default-terms-content").hidden = false;
+  }
+}
+
+async function loadAdminPolicies() {
+  const form = $("#policy-admin-form");
+  try {
+    const data = await api("/api/admin/policies");
+    form.elements.terms_of_service.value = data.terms_of_service || "";
+    form.elements.refund_policy.value = data.refund_policy || "";
+  } catch (error) {
+    toast(error.message);
+  }
+}
+
+async function saveAdminPolicies(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const submit = event.submitter || form.querySelector('[type="submit"]');
+  submit.disabled = true;
+  try {
+    await api("/api/admin/policies", { method: "PUT", body: JSON.stringify(Object.fromEntries(new FormData(form))) });
+    await loadAdminPolicies();
+    toast("이용약관과 환불약관을 저장했습니다.");
+  } catch (error) {
+    toast(error.message);
+  } finally {
+    submit.disabled = false;
   }
 }
 
@@ -928,7 +999,9 @@ function bindForms() {
   $("#customer-form").onsubmit = async event => {
     event.preventDefault();
     try {
-      await api("/api/customer", { method: "PUT", body: JSON.stringify(Object.fromEntries(new FormData(event.target))) });
+      const data = Object.fromEntries(new FormData(event.target));
+      data.refund_policy_accepted = event.target.elements.refund_policy_accepted.checked;
+      await api("/api/customer", { method: "PUT", body: JSON.stringify(data) });
       toast("고객정보를 저장했습니다.");
       await refreshRegistrationPrompt();
     } catch (error) {
@@ -978,6 +1051,7 @@ function bindForms() {
   $("#coupon-admin-form").onsubmit = issueCoupon;
   $('#coupon-admin-form [name="all_users"]').onchange = updateCouponRecipient;
   $("#coupon-event-admin-form").onsubmit = createCouponEvent;
+  $("#policy-admin-form").onsubmit = saveAdminPolicies;
   $('#coupon-event-admin-form [name="image"]').onchange = previewCouponEventImage;
   $("#claim-welcome-coupon").onclick = () => claimCouponEvent("WELCOME", true);
   $$("[data-support-type]").forEach(button => {
@@ -1087,6 +1161,7 @@ function setAdminSection(section) {
   $$('[data-admin-section-target]').forEach(button => button.classList.toggle("active", button.dataset.adminSectionTarget === section));
   if (section === "blacklist") loadBlacklist();
   if (section === "users") loadAdminUsers();
+  if (section === "policies") loadAdminPolicies();
   if (section === "coupons") loadAdminCouponEvents();
 }
 
@@ -1353,7 +1428,7 @@ function renderAdminUsers() {
   target.innerHTML = state.adminUsers.length ? state.adminUsers.map(user => `
     <details class="admin-user-row">
       <summary>${user.avatar_url ? `<img src="${escapeHtml(user.avatar_url)}" alt="">` : '<span class="blacklist-avatar fallback">?</span>'}<span><strong>${escapeHtml(user.nickname)}</strong><small>@${escapeHtml(user.username)} · ${escapeHtml(user.user_id)}</small></span><b>${Number(user.points || 0).toLocaleString()}P</b></summary>
-      <div class="admin-user-details"><p><b>실명</b>${escapeHtml(user.name || "미등록")}</p><p><b>전화번호</b>${escapeHtml(user.contact || "미등록")}</p><p><b>집주소</b>${escapeHtml(user.address || "미등록")}</p><p><b>편의점</b>${escapeHtml([user.cvs_brand, user.cvs, user.cvs_address].filter(Boolean).join(" · ") || "미등록")}</p><p><b>환불계좌</b>${escapeHtml(user.refund_account || "미등록")}</p><p><b>누적 구매</b>${money(user.total_spent)}</p></div>
+      <div class="admin-user-details"><p><b>실명</b>${escapeHtml(user.name || "미등록")}</p><p><b>전화번호</b>${escapeHtml(user.contact || "미등록")}</p><p><b>집주소</b>${escapeHtml(user.address || "미등록")}</p><p><b>편의점</b>${escapeHtml([user.cvs_brand, user.cvs, user.cvs_address].filter(Boolean).join(" · ") || "미등록")}</p><p><b>환불계좌</b>${escapeHtml([user.refund_bank, user.refund_account_number, user.refund_account_holder].filter(Boolean).join(" · ") || "미등록")}</p><p><b>누적 구매</b>${money(user.total_spent)}</p></div>
     </details>`).join("") : '<p class="admin-empty">등록된 유저 정보가 없습니다.</p>';
 }
 

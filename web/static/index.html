@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@500;600;700;800&family=Noto+Sans+KR:wght@500;600;700;800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/static/styles.css?v=20261011-51">
+  <link rel="stylesheet" href="/static/styles.css?v=20261011-52">
 </head>
 <body>
   <div class="grain"></div>
@@ -66,7 +66,18 @@
           <label>편의점명<span class="input-action"><input id="profile-store-query" name="cvs" placeholder="지점명"><button type="button" id="profile-store-search" class="button secondary compact">주소 조회</button></span></label>
           <label>편의점 검색결과<select id="profile-store-results"><option value="">편의점을 조회해 주세요</option></select></label>
           <label>편의점 주소<textarea name="cvs_address" readonly></textarea></label>
-          <label>환불계좌 <small>필수</small><input name="refund_account" placeholder="은행명 / 계좌번호 / 예금주" required></label>
+          <section class="refund-registration">
+            <div><p class="eyebrow">REFUND POLICY</p><h3>환불약관 확인</h3><p>약관을 끝까지 내리면 동의할 수 있습니다.</p></div>
+            <div id="refund-policy-scroll" class="refund-policy-scroll" tabindex="0"><p id="refund-policy-text">환불약관을 불러오는 중입니다.</p></div>
+            <small id="refund-policy-scroll-hint" class="hint">환불약관을 끝까지 내려 주세요.</small>
+            <label class="check"><input id="refund-policy-accepted" name="refund_policy_accepted" type="checkbox" disabled><span>환불약관을 모두 확인했으며 동의합니다.</span></label>
+            <input id="refund-policy-version" name="refund_policy_version" type="hidden">
+            <div id="refund-account-fields" class="refund-account-fields">
+              <label>은행 <small>필수</small><input name="refund_bank" placeholder="예: 카카오뱅크" required disabled></label>
+              <label>계좌번호 <small>필수</small><input name="refund_account_number" inputmode="numeric" placeholder="숫자 또는 하이픈" required disabled></label>
+              <label>예금주 <small>필수</small><input name="refund_account_holder" placeholder="예금주 실명" required disabled></label>
+            </div>
+          </section>
           <button class="button" type="submit">정보 저장</button>
         </form>
         <div><div class="point-card"><small>사용 가능 포인트</small><strong id="point-balance">0P</strong><span>1P = 1원 할인</span></div><div id="orders" class="order-list"></div></div>
@@ -106,7 +117,8 @@
 
     <section id="terms" class="page">
       <div class="page-title terms-page-title"><p class="eyebrow">TERMS OF USE</p><h1>이용약관</h1></div>
-      <article class="panel terms-card">
+      <article id="managed-terms-content" class="panel terms-card managed-policy" hidden><p id="managed-terms-text"></p></article>
+      <article id="default-terms-content" class="panel terms-card">
         <section class="terms-intro">
           <h2>📑 이용약관 안내</h2>
           <p><strong>제1조 &gt;</strong> 본 이용약관은 VAPE SPOT 디스코드 서버를 이용하는 모든 회원에게 적용됩니다.</p>
@@ -250,6 +262,7 @@
         <button type="button" data-admin-section-target="blacklist">블랙리스트</button>
         <button type="button" data-admin-section-target="users">유저정보</button>
         <button type="button" data-admin-section-target="notices">공지·이벤트</button>
+        <button type="button" data-admin-section-target="policies">약관관리</button>
         <button type="button" data-admin-section-target="coupons">쿠폰관리</button>
       </nav>
       <div class="admin-section active" data-admin-section="dashboard">
@@ -302,6 +315,14 @@
           <form class="panel form-panel notice-admin-form" data-notice-type="NOTICE"><h2>공지</h2><label>내용<textarea name="content" maxlength="2000"></textarea></label><label>이미지 · 선택사항<input name="image" type="file" accept="image/png,image/jpeg,image/webp"></label><img class="notice-image-preview" alt="공지 이미지 미리보기" hidden><label class="check"><input name="remove_image" type="checkbox"><span>등록된 이미지 삭제</span></label><label class="check"><input name="is_active" type="checkbox"><span>사이트 접속 시 표시</span></label><button class="button" type="submit">공지 저장</button></form>
           <form class="panel form-panel notice-admin-form" data-notice-type="EVENT"><h2>이벤트</h2><label>내용<textarea name="content" maxlength="2000"></textarea></label><label>이미지 · 선택사항<input name="image" type="file" accept="image/png,image/jpeg,image/webp"></label><img class="notice-image-preview" alt="이벤트 이미지 미리보기" hidden><label class="check"><input name="remove_image" type="checkbox"><span>등록된 이미지 삭제</span></label><label class="check"><input name="is_active" type="checkbox"><span>공지 다음에 표시</span></label><button class="button" type="submit">이벤트 저장</button></form>
         </div>
+      </div>
+      <div class="admin-section" data-admin-section="policies">
+        <form id="policy-admin-form" class="panel form-panel policy-admin-form">
+          <div><p class="eyebrow">POLICY MANAGEMENT</p><h2>이용약관·환불약관 관리</h2><p>저장한 내용은 사이트 이용약관 페이지와 환불계좌 등록 단계에 즉시 적용됩니다.</p></div>
+          <label>이용약관<textarea name="terms_of_service" minlength="20" maxlength="20000" rows="16" required></textarea></label>
+          <label>환불약관<textarea name="refund_policy" minlength="20" maxlength="20000" rows="14" required></textarea></label>
+          <button class="button" type="submit">약관 저장</button>
+        </form>
       </div>
       <div class="admin-section" data-admin-section="coupons">
         <div class="panel"><div class="panel-head"><div><p class="eyebrow">COUPON EVENTS</p><h2>등록된 이벤트 쿠폰</h2></div><button type="button" id="refresh-admin-coupon-events" class="button secondary compact">새로고침</button></div><p>삭제하면 이벤트 페이지에서 즉시 사라지고 더 이상 받을 수 없습니다. 이미 받은 쿠폰은 유지됩니다.</p><div id="admin-coupon-events" class="admin-coupon-events"><p class="admin-empty">등록된 쿠폰을 불러오는 중입니다.</p></div></div>
@@ -370,6 +391,6 @@
   <div id="site-message" class="modal-backdrop" hidden><div class="modal-card notice-card"><div class="notice-content"><p id="site-message-type" class="eyebrow">NOTICE</p><h2 id="site-message-title">안내</h2><img id="site-message-image" class="site-message-image" alt="공지 이미지" hidden><p id="site-message-content"></p><div class="notice-actions"><button type="button" id="site-message-close" class="button secondary">닫기</button><button type="button" id="site-message-day" class="button">24시간 동안 안 보기</button></div></div></div></div>
   <div id="blocked-screen" class="blocked-screen" hidden><div class="panel"><p class="eyebrow">ACCESS BLOCKED</p><h1>블랙리스트에 등록되었습니다.</h1><p id="blocked-reason"></p><p>오류라고 생각되면 Discord 서버에서 문의 티켓을 열어 주세요.</p><a class="button" href="https://discord.gg/v4p3sp0t" target="_blank" rel="noopener">Discord에서 티켓 열기</a></div></div>
   <div id="welcome-coupon-modal" class="modal-backdrop welcome-coupon-modal" hidden><div class="modal-card welcome-coupon-card"><img src="/static/welcome-coupon.png" width="567" height="265" alt="V4P3 SP0T 웰컴 2,000원 할인쿠폰"><div><h2>WELCOME 쿠폰</h2><p>첫 구매 전용 · 1인 1회</p><button type="button" id="claim-welcome-coupon" class="button wide">쿠폰 받기</button></div></div></div>
-  <script src="/static/app.js?v=20261011-43"></script>
+  <script src="/static/app.js?v=20261011-44"></script>
 </body>
 </html>

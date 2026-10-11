@@ -70,6 +70,22 @@ COUPON_TIER_LABELS = {
     "NONE": "등급 제한 없음", "VIP": "VIP", "VVIP": "VVIP", "SVIP": "SVIP",
     "ROYAL": "ROYAL", "VAPE_MASTER": "VAPE MASTER", "VAPE_GOD": "VAPE GOD",
 }
+DEFAULT_TERMS_OF_SERVICE = """V4P3 SP0T 이용약관
+
+1. 모든 상품 구매는 사이트 및 지정된 문의 채널에서 진행합니다.
+2. 배송을 위해 실명, 전화번호와 배송지를 정확히 입력해야 합니다.
+3. 모든 상품은 선불이며 입금 확인 후 구매가 진행됩니다.
+4. 단순 변심으로 인한 환불은 불가능합니다.
+5. 상품 품절 등 판매자 사유로 진행할 수 없는 주문은 환불할 수 있습니다.
+6. 택배사 또는 공급사의 사정과 잘못 입력한 배송 정보로 발생한 문제는 보상이 제한될 수 있습니다.
+7. 모든 이용자는 관리자 안내와 커뮤니티 운영 규칙을 따라야 합니다."""
+DEFAULT_REFUND_POLICY = """환불약관
+
+1. 단순 변심으로 인한 환불은 불가능합니다.
+2. 상품 품절 등 판매자 사유로 주문을 진행할 수 없는 경우 환불합니다.
+3. 이미 구매 또는 발주가 진행된 주문은 환불이 제한될 수 있습니다.
+4. 환불계좌 정보가 정확하지 않아 발생하는 지연은 구매자에게 책임이 있습니다.
+5. 환불이 결정되면 등록된 은행, 계좌번호와 예금주 정보를 기준으로 처리합니다."""
 
 
 def calculate_shipping_fee(subtotal: int) -> int:
@@ -356,6 +372,10 @@ async def initialize_web_store_schema(conn):
         ALTER TABLE user_info ADD COLUMN IF NOT EXISTS cvs_brand TEXT NOT NULL DEFAULT '';
         ALTER TABLE user_info ADD COLUMN IF NOT EXISTS cvs_address TEXT NOT NULL DEFAULT '';
         ALTER TABLE user_info ADD COLUMN IF NOT EXISTS refund_account TEXT NOT NULL DEFAULT '';
+        ALTER TABLE user_info ADD COLUMN IF NOT EXISTS refund_bank TEXT NOT NULL DEFAULT '';
+        ALTER TABLE user_info ADD COLUMN IF NOT EXISTS refund_account_number TEXT NOT NULL DEFAULT '';
+        ALTER TABLE user_info ADD COLUMN IF NOT EXISTS refund_account_holder TEXT NOT NULL DEFAULT '';
+        ALTER TABLE user_info ADD COLUMN IF NOT EXISTS refund_policy_version TEXT NOT NULL DEFAULT '';
 
         UPDATE web_products
         SET option_groups_json = json_build_array(
@@ -550,8 +570,11 @@ class StoreServer:
             web.post("/api/admin/points", self.admin_points),
             web.get("/api/notices", self.notices),
             web.get(r"/api/notices/{notice_type:[A-Za-z]+}/image", self.notice_image),
+            web.get("/api/policies", self.policies),
             web.get("/api/admin/notices", self.admin_notices),
             web.put("/api/admin/notices", self.admin_save_notice),
+            web.get("/api/admin/policies", self.admin_policies),
+            web.put("/api/admin/policies", self.admin_save_policies),
             web.get("/api/coupons", self.coupons),
             web.post("/api/admin/coupons", self.admin_issue_coupon),
             web.get("/api/coupon-events", self.coupon_events),
@@ -1244,31 +1267,58 @@ class StoreServer:
     async def customer(self, request):
         user = await self._user(request)
         async with self.bot.db_pool.acquire() as conn:
-            row = await conn.fetchrow("SELECT name,contact,address,cvs,cvs_brand,cvs_address,refund_account FROM user_info WHERE user_id = $1", int(user["id"]))
+            row = await conn.fetchrow(
+                """SELECT name,contact,address,cvs,cvs_brand,cvs_address,refund_bank,
+                          refund_account_number,refund_account_holder,refund_policy_version
+                   FROM user_info WHERE user_id = $1""",
+                int(user["id"]),
+            )
             balance = await get_balance(conn, self.guild_id, int(user["id"]))
-        return web.json_response({"customer": dict(row) if row else {}, "points": balance})
+            policy = await self._policy_data(conn)
+        customer = dict(row) if row else {}
+        accepted = bool(customer.get("refund_policy_version") == policy["refund_policy_version"])
+        customer["refund_policy_accepted"] = accepted
+        return web.json_response({
+            "customer": customer,
+            "points": balance,
+            "refund_policy": {
+                "content": policy["refund_policy"],
+                "version": policy["refund_policy_version"],
+                "accepted": accepted,
+            },
+        }, dumps=lambda value: json.dumps(value, ensure_ascii=False))
 
     async def save_customer(self, request):
         user, data = await self._user(request), await self._body(request)
-        keys = ("name", "contact", "address", "cvs", "cvs_brand", "cvs_address", "refund_account")
+        keys = ("name", "contact", "address", "cvs", "cvs_brand", "cvs_address", "refund_bank", "refund_account_number", "refund_account_holder")
         values = [str(data.get(key, "")).strip() for key in keys]
         if not values[0] or not re.fullmatch(r"010-\d{4}-\d{4}", values[1]):
             raise StoreError("실명과 010-1234-5678 형식의 전화번호를 입력해 주세요.")
         if not values[2] and not (values[3] and values[4] in {"GS25", "CU"} and values[5]):
             raise StoreError("집주소 또는 조회한 편의점 정보를 입력해 주세요.")
-        if not values[6]:
-            raise StoreError("환불계좌를 입력해 주세요.")
         async with self.bot.db_pool.acquire() as conn:
+            policy = await self._policy_data(conn)
+            submitted_version = str(data.get("refund_policy_version") or "")
+            if not data.get("refund_policy_accepted") or not hmac.compare_digest(submitted_version, policy["refund_policy_version"]):
+                raise StoreError("환불약관을 끝까지 확인하고 동의해 주세요.")
+            if not values[6] or not values[7] or not values[8]:
+                raise StoreError("환불 은행, 계좌번호와 예금주를 모두 입력해 주세요.")
+            if not re.fullmatch(r"[0-9-]{6,30}", values[7]):
+                raise StoreError("환불 계좌번호는 숫자와 하이픈만 사용해 주세요.")
+            combined_refund_account = f"{values[6]} / {values[7]} / {values[8]}"
             await conn.execute(
                 """
-                INSERT INTO user_info (user_id,name,contact,address,cvs,cvs_brand,cvs_address,refund_account)
-                VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+                INSERT INTO user_info (user_id,name,contact,address,cvs,cvs_brand,cvs_address,refund_bank,
+                                      refund_account_number,refund_account_holder,refund_policy_version,refund_account)
+                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
                 ON CONFLICT (user_id) DO UPDATE SET
                     name = EXCLUDED.name, contact = EXCLUDED.contact,
                     address = EXCLUDED.address, cvs = EXCLUDED.cvs,
                     cvs_brand=EXCLUDED.cvs_brand,cvs_address=EXCLUDED.cvs_address,
-                    refund_account=EXCLUDED.refund_account
-                """, int(user["id"]), *values,
+                    refund_bank=EXCLUDED.refund_bank,refund_account_number=EXCLUDED.refund_account_number,
+                    refund_account_holder=EXCLUDED.refund_account_holder,
+                    refund_policy_version=EXCLUDED.refund_policy_version,refund_account=EXCLUDED.refund_account
+                """, int(user["id"]), *values, policy["refund_policy_version"], combined_refund_account,
             )
         return web.json_response({"ok": True})
 
@@ -1277,7 +1327,8 @@ class StoreServer:
         async with self.bot.db_pool.acquire() as conn:
             rows = await conn.fetch(
                 """SELECT u.user_id,u.name,u.contact,u.address,u.cvs,u.cvs_brand,u.cvs_address,
-                          u.refund_account,COALESCE(u.total_spent,0) total_spent,COALESCE(p.balance,0) points
+                          u.refund_bank,u.refund_account_number,u.refund_account_holder,
+                          COALESCE(u.total_spent,0) total_spent,COALESCE(p.balance,0) points
                    FROM user_info u LEFT JOIN point_balances p ON p.guild_id=$1 AND p.user_id=u.user_id
                    ORDER BY u.user_id DESC""",
                 self.guild_id,
@@ -1303,6 +1354,52 @@ class StoreServer:
             user_id = self._parse_discord_user_id(data.get("user_id"))
             balance = await adjust_points(conn, self.guild_id, user_id, int(admin["id"]), time.time_ns(), amount)
         return web.json_response({"ok": True, "balance": balance})
+
+    async def _policy_data(self, conn) -> dict:
+        rows = await conn.fetch(
+            "SELECT setting_key,setting_value FROM web_settings WHERE guild_id=$1 AND setting_key=ANY($2::text[])",
+            self.guild_id, ["terms_of_service", "refund_policy"],
+        )
+        values = {row["setting_key"]: row["setting_value"] for row in rows}
+        terms = str(values.get("terms_of_service") or DEFAULT_TERMS_OF_SERVICE).strip()
+        refund = str(values.get("refund_policy") or DEFAULT_REFUND_POLICY).strip()
+        return {
+            "terms_of_service": terms,
+            "refund_policy": refund,
+            "refund_policy_version": hashlib.sha256(refund.encode("utf-8")).hexdigest(),
+        }
+
+    async def policies(self, request):
+        async with self.bot.db_pool.acquire() as conn:
+            data = await self._policy_data(conn)
+        return web.json_response(data, dumps=lambda value: json.dumps(value, ensure_ascii=False))
+
+    async def admin_policies(self, request):
+        await self._admin(request)
+        async with self.bot.db_pool.acquire() as conn:
+            data = await self._policy_data(conn)
+        return web.json_response(data, dumps=lambda value: json.dumps(value, ensure_ascii=False))
+
+    async def admin_save_policies(self, request):
+        await self._admin(request)
+        data = await self._body(request)
+        terms = str(data.get("terms_of_service") or "").strip()
+        refund = str(data.get("refund_policy") or "").strip()
+        if len(terms) < 20 or len(refund) < 20:
+            raise StoreError("이용약관과 환불약관을 각각 20자 이상 입력해 주세요.")
+        if len(terms) > 20_000 or len(refund) > 20_000:
+            raise StoreError("약관은 각각 20,000자 이하로 입력해 주세요.")
+        async with self.bot.db_pool.acquire() as conn:
+            async with conn.transaction():
+                for key, value in (("terms_of_service", terms), ("refund_policy", refund)):
+                    await conn.execute(
+                        """INSERT INTO web_settings (guild_id,setting_key,setting_value)
+                           VALUES ($1,$2,$3)
+                           ON CONFLICT (guild_id,setting_key) DO UPDATE
+                           SET setting_value=EXCLUDED.setting_value,updated_at=CURRENT_TIMESTAMP""",
+                        self.guild_id, key, value,
+                    )
+        return web.json_response({"ok": True})
 
     async def notices(self, request):
         async with self.bot.db_pool.acquire() as conn:
@@ -1813,13 +1910,18 @@ class StoreServer:
                 self.guild_id, int(user["id"]),
             )
             registered = await conn.fetchrow(
-                "SELECT name,contact,address,cvs,cvs_brand,cvs_address,refund_account FROM user_info WHERE user_id=$1",
+                """SELECT name,contact,address,cvs,cvs_brand,cvs_address,refund_bank,
+                          refund_account_number,refund_account_holder,refund_policy_version
+                   FROM user_info WHERE user_id=$1""",
                 int(user["id"]),
             )
+            current_policy = await self._policy_data(conn)
         if blacklist_reason:
             raise StoreError(f"블랙리스트에 등록되어 주문할 수 없습니다. 사유: {blacklist_reason}", 403)
-        if not registered or not registered["name"] or not registered["contact"] or not registered["refund_account"]:
+        if not registered or not registered["name"] or not registered["contact"] or not all((registered["refund_bank"], registered["refund_account_number"], registered["refund_account_holder"])):
             raise StoreError("정보등록에서 배송 정보와 환불계좌를 먼저 등록해 주세요.", 409)
+        if registered["refund_policy_version"] != current_policy["refund_policy_version"]:
+            raise StoreError("정보등록에서 최신 환불약관을 확인하고 다시 동의해 주세요.", 409)
         if not registered["address"] and not (registered["cvs"] and registered["cvs_brand"] and registered["cvs_address"]):
             raise StoreError("정보등록에서 집주소 또는 편의점 수령 정보를 먼저 등록해 주세요.", 409)
         if not data.get("order_confirmed"):
