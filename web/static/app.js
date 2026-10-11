@@ -1,5 +1,6 @@
 const state = {
   me: null,
+  isAdmin: false,
   csrf: "",
   products: [],
   catalogCategories: [],
@@ -143,7 +144,7 @@ function route() {
   if (id === "support") { renderSupportForm(); loadInquiries(); }
   if (id === "events" && state.me) loadCouponEvents(false);
   if (id === "notices") loadNoticesPage();
-  if (id === "admin") openAdminGate();
+  if (id === "admin") openAdminPanel();
   scrollTo(0, 0);
 }
 
@@ -154,6 +155,7 @@ async function boot() {
   try {
     const data = await api("/api/me");
     state.me = data.user;
+    state.isAdmin = Boolean(data.is_admin);
     state.csrf = data.csrf;
     if (data.blocked) {
       $("#blocked-reason").textContent = `등록 사유: ${data.blocked.reason}`;
@@ -1125,8 +1127,6 @@ function bindForms() {
   $("#sync-products").onclick = syncProducts;
   $("#editor-close").onclick = closeEditor;
   $("#editor").onclick = event => { if (event.target === $("#editor")) closeEditor(); };
-  $("#admin-password-form").onsubmit = unlockAdmin;
-  $("#admin-gate-close").onclick = () => { closeAdminGate(); location.hash = "home"; };
   $("#notice-close").onclick = closeDiscordNotice;
   $("#notice-day").onclick = dismissDiscordNoticeForDay;
   $("#action-banner-close").onclick = () => { $("#action-banner").hidden = true; };
@@ -1290,8 +1290,9 @@ async function loadAdminInquiries() {
   try {
     const data = await api("/api/admin/inquiries");
     state.adminInquiries = data.inquiries || [];
-    target.innerHTML = state.adminInquiries.map(item => `<article class="admin-inquiry"><div><strong>#${item.id} · ${escapeHtml(item.nickname || item.username)}</strong><small>${escapeHtml(item.user_id)} · ${escapeHtml(item.inquiry_type)} · ${new Date(item.created_at).toLocaleString("ko-KR")}</small><p>${escapeHtml(item.content)}</p>${item.answer ? `<div class="inquiry-answer"><b>답변</b><p>${escapeHtml(item.answer)}</p></div>` : ""}</div><form data-inquiry-answer="${item.id}"><textarea name="answer" maxlength="3000" required placeholder="답변을 입력해 주세요.">${escapeHtml(item.answer || "")}</textarea><button class="button compact" type="submit">답변 보내기</button></form></article>`).join("") || '<p class="admin-empty">등록된 문의가 없습니다.</p>';
+    target.innerHTML = state.adminInquiries.map(item => `<article class="admin-inquiry"><div><strong>#${item.id} · ${escapeHtml(item.nickname || item.username)}</strong><small>${escapeHtml(item.user_id)} · ${escapeHtml(item.inquiry_type)} · ${new Date(item.created_at).toLocaleString("ko-KR")}</small><p>${escapeHtml(item.content)}</p>${item.answer ? `<div class="inquiry-answer"><b>답변</b><p>${escapeHtml(item.answer)}</p></div>` : ""}</div><form data-inquiry-answer="${item.id}"><textarea name="answer" maxlength="3000" required placeholder="답변을 입력해 주세요.">${escapeHtml(item.answer || "")}</textarea><div class="admin-actions"><button class="button compact" type="submit">답변 보내기</button>${item.status === "ANSWERED" ? `<button class="button danger compact" type="button" data-delete-inquiry="${item.id}">문의 삭제</button>` : ""}</div></form></article>`).join("") || '<p class="admin-empty">등록된 문의가 없습니다.</p>';
     $$('[data-inquiry-answer]', target).forEach(form => { form.onsubmit = answerInquiry; });
+    $$('[data-delete-inquiry]', target).forEach(button => { button.onclick = () => deleteInquiry(button.dataset.deleteInquiry); });
   } catch (error) { target.innerHTML = `<p class="admin-empty">${escapeHtml(error.message)}</p>`; }
 }
 
@@ -1301,6 +1302,15 @@ async function answerInquiry(event) {
   try {
     await api(`/api/admin/inquiries/${id}/answer`, { method: "POST", body: JSON.stringify(Object.fromEntries(new FormData(event.currentTarget))) });
     await loadAdminInquiries(); toast("문의 답변을 저장하고 Discord DM으로 전송했습니다.");
+  } catch (error) { toast(error.message); }
+}
+
+async function deleteInquiry(inquiryId) {
+  if (!confirm("이 문의를 삭제할까요?\n문의사항과 답변은 TXT 파일로 관리자 Discord DM에 먼저 전송됩니다.")) return;
+  try {
+    await api(`/api/admin/inquiries/${inquiryId}`, { method: "DELETE", body: "{}" });
+    await loadAdminInquiries();
+    toast("문의 기록을 DM으로 보내고 문의를 삭제했습니다.");
   } catch (error) { toast(error.message); }
 }
 
@@ -1433,37 +1443,20 @@ function showPaymentApproved(message) {
   $("#payment-status").textContent = message;
 }
 
-function openAdminGate() {
+async function openAdminPanel() {
   if (!state.me) {
     location.href = "/auth/login";
     return;
   }
-  setAdminSection("dashboard");
-  document.body.classList.add("admin-locked");
-  $("#admin-gate").hidden = false;
-  document.body.classList.add("modal-open");
-  setTimeout(() => $('#admin-password-form input[name="password"]').focus(), 0);
-}
-
-function closeAdminGate() {
-  $("#admin-gate").hidden = true;
-  document.body.classList.remove("modal-open", "admin-locked");
-  $("#admin-password-form").reset();
-}
-
-async function unlockAdmin(event) {
-  event.preventDefault();
-  const password = new FormData(event.target).get("password");
-  try {
-    await api("/api/admin/unlock", { method: "POST", body: JSON.stringify({ password }) });
-    closeAdminGate();
-    await loadAdmin();
-    const requested = new URLSearchParams(location.search).get("admin_section");
-    if (requested) setAdminSection(requested);
-  } catch (error) {
-    toast(error.message);
-    event.target.querySelector('input[name="password"]').select();
+  if (!state.isAdmin) {
+    toast("관리자 계정만 접근할 수 있습니다.");
+    location.hash = "home";
+    return;
   }
+  setAdminSection("dashboard");
+  await loadAdmin();
+  const requested = new URLSearchParams(location.search).get("admin_section");
+  if (requested) setAdminSection(requested);
 }
 
 async function loadAdmin(period = "week") {
@@ -1477,12 +1470,6 @@ async function loadAdmin(period = "week") {
     api("/api/admin/notices"),
   ]);
   const failures = results.filter(result => result.status === "rejected");
-  const passwordFailure = failures.find(result => result.reason?.message?.includes("비밀번호"));
-  if (passwordFailure) {
-    openAdminGate();
-    return;
-  }
-
   const [dashboardResult, categoriesResult, productsResult, channelsResult, ordersResult, noticesResult] = results;
   if (categoriesResult.status === "fulfilled") {
     state.adminCategories = categoriesResult.value.categories;

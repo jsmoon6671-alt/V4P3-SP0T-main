@@ -1,8 +1,8 @@
 import unittest
 
 from web_store import (
+    ADMIN_USER_ID,
     StoreError,
-    StoreServer,
     calculate_shipping_fee,
     normalize_option_groups,
     option_surcharge,
@@ -60,11 +60,8 @@ class WebStoreShippingTests(unittest.TestCase):
                 {"label": "색상", "options": ["블랙"]},
             ])
 
-    def test_admin_password_is_stored_as_a_salted_hash(self):
-        encoded = StoreServer._password_hash("test-password")
-        self.assertNotIn("test-password", encoded)
-        self.assertTrue(StoreServer._verify_password("test-password", encoded))
-        self.assertFalse(StoreServer._verify_password("wrong-password", encoded))
+    def test_admin_account_is_the_configured_discord_user(self):
+        self.assertEqual(ADMIN_USER_ID, 259758966043574272)
 
 
 if __name__ == "__main__":

@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@500;600;700;800&family=Noto+Sans+KR:wght@500;600;700;800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/static/styles.css?v=20261011-56">
+  <link rel="stylesheet" href="/static/styles.css?v=20261011-57">
 </head>
 <body>
   <div class="grain"></div>
@@ -364,18 +364,6 @@
       </form>
     </div>
   </div>
-  <div id="admin-gate" class="modal-backdrop" hidden>
-    <div class="modal-card compact-modal" role="dialog" aria-modal="true" aria-labelledby="admin-gate-title">
-      <form id="admin-password-form" class="form-panel">
-        <button type="button" id="admin-gate-close" class="dialog-close" aria-label="닫기">×</button>
-        <p class="eyebrow">ADMIN ACCESS</p>
-        <h2 id="admin-gate-title">관리자 비밀번호</h2>
-        <p>관리자 패널에 들어가려면 비밀번호를 입력해 주세요.</p>
-        <label>비밀번호<input name="password" type="password" autocomplete="current-password" required></label>
-        <button class="button wide" type="submit">관리자 패널 열기</button>
-      </form>
-    </div>
-  </div>
   <div id="discord-notice" class="modal-backdrop" hidden>
     <div class="modal-card notice-card" role="dialog" aria-modal="true" aria-labelledby="discord-notice-title">
       <div class="notice-content">
@@ -408,6 +396,6 @@
     <div id="chat-home"><button type="button" id="chat-start" class="chat-start">채팅 상담</button><label id="chat-initial-wrap" hidden><span class="chat-compose-title"><b><i>✦</i> 문의 내용</b><small><span id="chat-initial-count">0</span>/1000</small></span><textarea id="chat-initial-content" maxlength="1000" placeholder="궁금한 내용을 편하게 작성해 주세요."></textarea><span class="chat-compose-hint">상담사가 확인한 뒤 실시간으로 답변해 드립니다.</span><button type="button" id="chat-create" class="button wide">상담 연결하기 <span>→</span></button></label><div><h3>상담 기록</h3><div id="chat-history" class="chat-history"></div></div></div>
     <div id="chat-room" hidden><button type="button" id="chat-back" class="text-button">← 상담 기록</button><div id="chat-messages" class="chat-messages"></div><form id="chat-message-form" class="chat-message-form"><div id="chat-upload-preview" class="chat-upload-preview" hidden><img alt="전송할 사진 미리보기"><span>사진 전송 중...</span></div><textarea name="content" maxlength="2000" rows="1" aria-label="채팅 메시지" placeholder="메시지를 입력해 주세요."></textarea><label class="chat-file" title="사진 첨부" aria-label="사진 첨부"><span aria-hidden="true">🖼️</span><input name="image" type="file" accept="image/png,image/jpeg,image/webp,image/gif"></label><button class="button chat-send" type="submit" title="메시지 보내기" aria-label="메시지 보내기"><i aria-hidden="true">↑</i></button><small class="chat-enter-hint">사진은 선택 즉시 전송 · Enter 전송 · Shift+Enter 줄바꿈</small></form></div>
   </section>
-  <script src="/static/app.js?v=20261011-48"></script>
+  <script src="/static/app.js?v=20261011-50"></script>
 </body>
 </html>

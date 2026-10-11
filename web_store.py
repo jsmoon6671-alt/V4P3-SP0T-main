@@ -49,7 +49,7 @@ from review_watermark import ReviewImageError, watermark_review_image
 ROOT = Path(__file__).resolve().parent
 STATIC = ROOT / "web" / "static"
 COOKIE = "v4p3_session"
-ADMIN_COOKIE = "v4p3_admin"
+ADMIN_USER_ID = 259758966043574272
 BASE_SHIPPING_FEE = 3_000
 DISCOUNTED_SHIPPING_FEE = 1_500
 DISCOUNTED_SHIPPING_THRESHOLD = 35_000
@@ -469,7 +469,6 @@ class StoreServer:
         self.client_secret = os.getenv("DISCORD_CLIENT_SECRET", "").strip()
         self.redirect_uri = os.getenv("DISCORD_REDIRECT_URI", "").strip()
         self.public_url = os.getenv("WEB_PUBLIC_URL", "").rstrip("/")
-        self.admin_password = os.getenv("WEB_ADMIN_PASSWORD", "").strip() or "tb9988230.."
         self._last_review_sync = 0.0
         self._product_sync_lock = asyncio.Lock()
         self._review_watermark_lock = asyncio.Lock()
@@ -588,7 +587,6 @@ class StoreServer:
             web.get("/api/orders", self.orders),
             web.get(r"/api/orders/{order_id}/tracking", self.order_tracking),
             web.get(r"/api/orders/{order_id}", self.order),
-            web.post("/api/admin/unlock", self.admin_unlock),
             web.get("/api/admin/dashboard", self.admin_dashboard),
             web.get("/api/admin/categories", self.admin_categories),
             web.post("/api/admin/categories", self.admin_save_category),
@@ -611,6 +609,7 @@ class StoreServer:
             web.get("/api/admin/users", self.admin_users),
             web.get("/api/admin/inquiries", self.admin_inquiries),
             web.post(r"/api/admin/inquiries/{inquiry_id:\d+}/answer", self.admin_answer_inquiry),
+            web.delete(r"/api/admin/inquiries/{inquiry_id:\d+}", self.admin_delete_inquiry),
             web.get("/api/admin/subadmins", self.admin_subadmins),
             web.post("/api/admin/subadmins", self.admin_save_subadmin),
             web.delete(r"/api/admin/subadmins/{user_id:\d+}", self.admin_delete_subadmin),
@@ -642,7 +641,10 @@ class StoreServer:
                     "UPDATE web_categories SET guild_id=$1 WHERE guild_id=0",
                     self.guild_id,
                 )
-                await self._ensure_admin_password(conn)
+                await conn.execute(
+                    "DELETE FROM web_settings WHERE guild_id=$1 AND setting_key='admin_password_hash'",
+                    self.guild_id,
+                )
                 await conn.execute(
                     "UPDATE web_products SET guild_id=$1 WHERE guild_id=0",
                     self.guild_id,
@@ -666,34 +668,6 @@ class StoreServer:
             guild = self.bot.guilds[0]
             self.guild_id = guild.id
         return guild
-
-    @staticmethod
-    def _password_hash(password: str, salt: bytes | None = None) -> str:
-        salt = salt or secrets.token_bytes(16)
-        digest = hashlib.pbkdf2_hmac("sha256", password.encode(), salt, 240_000)
-        return f"pbkdf2_sha256${_b64(salt)}${_b64(digest)}"
-
-    async def _ensure_admin_password(self, conn):
-        exists = await conn.fetchval(
-            "SELECT setting_value FROM web_settings WHERE guild_id=$1 AND setting_key='admin_password_hash'",
-            self.guild_id,
-        )
-        if not exists:
-            await conn.execute(
-                "INSERT INTO web_settings (guild_id,setting_key,setting_value) VALUES ($1,'admin_password_hash',$2)",
-                self.guild_id, self._password_hash(self.admin_password),
-            )
-
-    @staticmethod
-    def _verify_password(password: str, encoded: str) -> bool:
-        try:
-            algorithm, salt, expected = encoded.split("$", 2)
-            if algorithm != "pbkdf2_sha256":
-                return False
-            actual = hashlib.pbkdf2_hmac("sha256", password.encode(), _unb64(salt), 240_000)
-            return hmac.compare_digest(actual, _unb64(expected))
-        except (ValueError, TypeError):
-            return False
 
     @staticmethod
     def _review_from_payload(components, attachments):
@@ -831,28 +805,12 @@ class StoreServer:
 
     async def _admin_member(self, request) -> dict:
         session = await self._user(request)
-        guild = self._guild()
-        if guild is None:
-            raise StoreError("WEB_GUILD_ID 서버를 찾을 수 없습니다.", 503)
-        member = guild.get_member(int(session["id"]))
-        if member is None:
-            try:
-                member = await guild.fetch_member(int(session["id"]))
-            except Exception:
-                raise StoreError("해당 Discord 서버의 멤버만 이용할 수 있습니다.", 403)
-        async with self.bot.db_pool.acquire() as conn:
-            role_rows = await conn.fetch("SELECT role_id FROM guild_admin_roles WHERE guild_id = $1", guild.id)
-        role_ids = {int(row["role_id"]) for row in role_rows}
-        if not member.guild_permissions.administrator and not any(role.id in role_ids for role in member.roles):
+        if int(session["id"]) != ADMIN_USER_ID:
             raise StoreError("관리자 전용 메뉴입니다.", 403)
         return session
 
     async def _admin(self, request) -> dict:
-        session = await self._admin_member(request)
-        unlocked = self._decode(request.cookies.get(ADMIN_COOKIE, ""))
-        if not unlocked or str(unlocked.get("admin_for")) != str(session["id"]):
-            raise StoreError("관리자 비밀번호를 입력해 주세요.", 403)
-        return session
+        return await self._admin_member(request)
 
     async def _body(self, request) -> dict:
         try:
@@ -986,7 +944,6 @@ class StoreServer:
     async def logout(self, request):
         response = web.json_response({"ok": True})
         response.del_cookie(COOKIE)
-        response.del_cookie(ADMIN_COOKIE)
         return response
 
     async def me(self, request):
@@ -1003,26 +960,6 @@ class StoreServer:
                 self.guild_id, int(user["id"]),
             )
         return web.json_response({"user": {"id": user["id"], "username": user["username"], "avatar": user.get("avatar")}, "csrf": user["csrf"], "is_admin": is_admin, "blocked": dict(blocked) if blocked else None})
-
-    async def admin_unlock(self, request):
-        user = await self._admin_member(request)
-        data = await self._body(request)
-        password = str(data.get("password", ""))
-        async with self.bot.db_pool.acquire() as conn:
-            await self._ensure_admin_password(conn)
-            encoded = await conn.fetchval(
-                "SELECT setting_value FROM web_settings WHERE guild_id=$1 AND setting_key='admin_password_hash'",
-                self.guild_id,
-            )
-        if not encoded or not self._verify_password(password, encoded):
-            raise StoreError("관리자 비밀번호가 올바르지 않습니다.", 403)
-        payload = {"admin_for": str(user["id"]), "exp": int(time.time()) + 60 * 60 * 8}
-        response = web.json_response({"ok": True})
-        response.set_cookie(
-            ADMIN_COOKIE, self._encode(payload), httponly=True, secure=True,
-            samesite="Strict", max_age=60 * 60 * 8,
-        )
-        return response
 
     async def product_image(self, request):
         product_id = int(request.match_info["product_id"])
@@ -1948,9 +1885,78 @@ class StoreServer:
             raise StoreError("문의를 찾을 수 없습니다.", 404)
         try:
             target = self.bot.get_user(int(row["user_id"])) or await self.bot.fetch_user(int(row["user_id"]))
-            await target.send(f"📩 V4P3 SP0T 문의 답변\n\n{answer}")
+            dm = await target.create_dm()
+            payload = {
+                "flags": 32768,
+                "components": [{
+                    "type": 17,
+                    "accent_color": 0x5865F2,
+                    "components": [{
+                        "type": 10,
+                        "content": (
+                            "## 📩 V4P3 SP0T 문의 답변\n\n"
+                            f"{discord.utils.escape_markdown(answer)}\n\n"
+                            "-# 언제나 베이프가 필요할 땐? V4P3 SP0T"
+                        ),
+                    }],
+                }],
+                "allowed_mentions": {"parse": []},
+            }
+            await self.bot.http.request(
+                discord.http.Route("POST", f"/channels/{dm.id}/messages"),
+                json=payload,
+            )
         except (discord.Forbidden, discord.NotFound, discord.HTTPException):
             pass
+        return web.json_response({"ok": True})
+
+    async def admin_delete_inquiry(self, request):
+        await self._admin(request)
+        inquiry_id = int(request.match_info["inquiry_id"])
+        async with self.bot.db_pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """SELECT id,user_id,inquiry_type,content,status,answer,answered_by,created_at,answered_at
+                   FROM web_inquiries WHERE id=$1 AND guild_id=$2""",
+                inquiry_id, self.guild_id,
+            )
+        if not row:
+            raise StoreError("문의를 찾을 수 없습니다.", 404)
+        if row["status"] != "ANSWERED" or not str(row["answer"] or "").strip():
+            raise StoreError("답변이 완료된 문의만 삭제할 수 있습니다.")
+        archive_text = (
+            "V4P3 SP0T 문의 기록\n"
+            "=" * 48 + "\n"
+            f"문의번호: {row['id']}\n"
+            f"작성자 Discord ID: {row['user_id']}\n"
+            f"문의유형: {row['inquiry_type']}\n"
+            f"문의등록: {row['created_at']}\n"
+            f"답변관리자 ID: {row['answered_by'] or '알 수 없음'}\n"
+            f"답변완료: {row['answered_at'] or '알 수 없음'}\n\n"
+            "[문의사항]\n"
+            f"{row['content']}\n\n"
+            "[문의답변]\n"
+            f"{row['answer']}\n"
+        )
+        try:
+            admin_user = self.bot.get_user(ADMIN_USER_ID) or await self.bot.fetch_user(ADMIN_USER_ID)
+            archive_file = discord.File(
+                BytesIO(archive_text.encode("utf-8-sig")),
+                filename=f"V4P3-SP0T-inquiry-{inquiry_id}.txt",
+            )
+            await admin_user.send(
+                f"문의 #{inquiry_id} 삭제 전 기록입니다.",
+                file=archive_file,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+        except (discord.Forbidden, discord.NotFound, discord.HTTPException) as exc:
+            raise StoreError("관리자 DM으로 문의 기록 파일을 보내지 못해 문의를 삭제하지 않았습니다.", 503) from exc
+        async with self.bot.db_pool.acquire() as conn:
+            result = await conn.execute(
+                "DELETE FROM web_inquiries WHERE id=$1 AND guild_id=$2 AND status='ANSWERED'",
+                inquiry_id, self.guild_id,
+            )
+        if result == "DELETE 0":
+            raise StoreError("문의 상태가 변경되어 삭제하지 못했습니다.", 409)
         return web.json_response({"ok": True})
 
     async def _chat_availability(self, conn) -> dict:
