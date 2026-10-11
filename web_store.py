@@ -93,6 +93,60 @@ def parse_product_options(raw_options) -> list[str]:
     return list(dict.fromkeys(str(value).strip() for value in values if str(value).strip()))
 
 
+OPTION_LABELS = {"옵션", "색상", "맛", "농도", "패키지"}
+
+
+def parse_json_list(value) -> list:
+    if isinstance(value, list):
+        return value
+    if isinstance(value, str) and value.strip():
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            return []
+        return parsed if isinstance(parsed, list) else []
+    return []
+
+
+def normalize_option_groups(raw_groups, legacy_label="없음", legacy_options=None) -> list[dict]:
+    """상품 선택 항목을 최대 세 그룹으로 검증하고 정규화한다."""
+    groups = parse_json_list(raw_groups)
+    if not groups and legacy_label != "없음" and legacy_options:
+        groups = [{"label": legacy_label, "options": legacy_options}]
+    if len(groups) > 3:
+        raise StoreError("선택 항목은 최대 3개까지만 만들 수 있습니다.")
+    normalized = []
+    for group in groups:
+        if not isinstance(group, dict):
+            raise StoreError("선택 항목 형식을 확인해 주세요.")
+        label = str(group.get("label", "없음")).strip()
+        if label == "없음":
+            continue
+        if label not in OPTION_LABELS:
+            raise StoreError("선택 항목 종류를 올바르게 선택해 주세요.")
+        options = parse_product_options(group.get("options", []))
+        if not options:
+            raise StoreError(f"{label} 항목을 한 개 이상 입력해 주세요.")
+        if len(options) > 50:
+            raise StoreError(f"{label} 항목은 최대 50개까지 입력할 수 있습니다.")
+        normalized.append({"label": label, "options": options})
+    return normalized
+
+
+def normalize_selected_options(option_groups: list[dict], raw_selected) -> list[str]:
+    selected = [str(value).strip() for value in parse_json_list(raw_selected)]
+    if len(selected) != len(option_groups):
+        raise StoreError("상품의 모든 선택 항목을 골라 주세요.")
+    for index, group in enumerate(option_groups):
+        if selected[index] not in group["options"]:
+            raise StoreError(f"상품의 {group['label']} 항목을 다시 선택해 주세요.")
+    return selected
+
+
+def selected_options_surcharge(selected_options) -> int:
+    return sum(option_surcharge(value) for value in parse_json_list(selected_options))
+
+
 class StoreError(Exception):
     def __init__(self, message: str, status: int = 400):
         super().__init__(message)
@@ -122,6 +176,7 @@ async def initialize_web_store_schema(conn):
             image_url TEXT NOT NULL DEFAULT '',
             option_label TEXT NOT NULL DEFAULT '색상',
             options TEXT[] NOT NULL DEFAULT '{}',
+            option_groups_json TEXT NOT NULL DEFAULT '[]',
             is_active BOOLEAN NOT NULL DEFAULT TRUE,
             created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -132,6 +187,7 @@ async def initialize_web_store_schema(conn):
             product_id BIGINT NOT NULL REFERENCES web_products(id) ON DELETE CASCADE,
             quantity INTEGER NOT NULL CHECK (quantity BETWEEN 1 AND 99),
             selected_option TEXT NOT NULL DEFAULT '',
+            selected_options_json TEXT NOT NULL DEFAULT '[]',
             created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
             PRIMARY KEY (guild_id, user_id, product_id)
         );
@@ -142,6 +198,7 @@ async def initialize_web_store_schema(conn):
             unit_price BIGINT NOT NULL CHECK (unit_price >= 0),
             quantity INTEGER NOT NULL CHECK (quantity > 0),
             product_option TEXT NOT NULL DEFAULT '',
+            product_options_json TEXT NOT NULL DEFAULT '[]',
             PRIMARY KEY (order_id, product_id)
         );
         CREATE TABLE IF NOT EXISTS web_reviews (
@@ -191,8 +248,11 @@ async def initialize_web_store_schema(conn):
         ALTER TABLE web_products ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP;
         ALTER TABLE web_products ADD COLUMN IF NOT EXISTS option_label TEXT NOT NULL DEFAULT '색상';
         ALTER TABLE web_products ADD COLUMN IF NOT EXISTS options TEXT[] NOT NULL DEFAULT '{}';
+        ALTER TABLE web_products ADD COLUMN IF NOT EXISTS option_groups_json TEXT NOT NULL DEFAULT '[]';
         ALTER TABLE web_cart_items ADD COLUMN IF NOT EXISTS selected_option TEXT NOT NULL DEFAULT '';
+        ALTER TABLE web_cart_items ADD COLUMN IF NOT EXISTS selected_options_json TEXT NOT NULL DEFAULT '[]';
         ALTER TABLE web_order_items ADD COLUMN IF NOT EXISTS product_option TEXT NOT NULL DEFAULT '';
+        ALTER TABLE web_order_items ADD COLUMN IF NOT EXISTS product_options_json TEXT NOT NULL DEFAULT '[]';
         ALTER TABLE web_product_sources ADD COLUMN IF NOT EXISTS disabled_by_admin BOOLEAN NOT NULL DEFAULT FALSE;
         ALTER TABLE web_product_sources ADD COLUMN IF NOT EXISTS price_locked BOOLEAN NOT NULL DEFAULT FALSE;
         ALTER TABLE orders ADD COLUMN IF NOT EXISTS shipping_name TEXT;
@@ -205,6 +265,20 @@ async def initialize_web_store_schema(conn):
         ALTER TABLE orders ADD COLUMN IF NOT EXISTS carrier_id TEXT;
         ALTER TABLE orders ADD COLUMN IF NOT EXISTS fulfillment_status TEXT NOT NULL DEFAULT 'PAYMENT_APPROVED';
         ALTER TABLE orders ADD COLUMN IF NOT EXISTS fulfillment_updated_at TIMESTAMPTZ;
+
+        UPDATE web_products
+        SET option_groups_json = json_build_array(
+            json_build_object('label', option_label, 'options', options)
+        )::text
+        WHERE option_groups_json = '[]' AND cardinality(options) > 0;
+
+        UPDATE web_cart_items
+        SET selected_options_json = json_build_array(selected_option)::text
+        WHERE selected_options_json = '[]' AND selected_option <> '';
+
+        UPDATE web_order_items
+        SET product_options_json = json_build_array(product_option)::text
+        WHERE product_options_json = '[]' AND product_option <> '';
         """
     )
     await initialize_payment_automation_schema(conn)
@@ -857,8 +931,8 @@ class StoreServer:
         async with self.bot.db_pool.acquire() as conn:
             rows = await conn.fetch(
                 """
-                SELECT c.product_id, c.quantity, c.selected_option, p.name, p.price,
-                       p.image_url, p.option_label, p.options,
+                SELECT c.product_id, c.quantity, c.selected_option, c.selected_options_json,
+                       p.name, p.price, p.image_url, p.option_label, p.options, p.option_groups_json,
                        p.is_active, cat.name AS category_name
                 FROM web_cart_items c JOIN web_products p ON p.id = c.product_id
                 LEFT JOIN web_categories cat ON cat.id = p.category_id
@@ -870,23 +944,31 @@ class StoreServer:
     async def save_cart(self, request):
         user, data = await self._user(request), await self._body(request)
         product_id, quantity = int(data.get("product_id", 0)), int(data.get("quantity", 1))
-        selected_option = str(data.get("selected_option", "")).strip()
+        raw_selected_options = data.get("selected_options", [])
         if not 1 <= quantity <= 99:
             raise StoreError("수량은 1~99개로 입력해 주세요.")
         async with self.bot.db_pool.acquire() as conn:
-            product = await conn.fetchrow("SELECT is_active, options FROM web_products WHERE id = $1 AND guild_id = $2", product_id, self.guild_id)
+            product = await conn.fetchrow(
+                "SELECT is_active, option_label, options, option_groups_json FROM web_products WHERE id = $1 AND guild_id = $2",
+                product_id, self.guild_id,
+            )
             if not product or not product["is_active"]:
                 raise StoreError("판매 중인 상품이 아닙니다.", 404)
-            options = list(product["options"] or [])
-            if options and selected_option not in options:
-                raise StoreError("상품 옵션을 선택해 주세요.")
+            groups = normalize_option_groups(
+                product["option_groups_json"], product["option_label"], list(product["options"] or []),
+            )
+            selected_options = normalize_selected_options(groups, raw_selected_options)
+            selected_option = selected_options[0] if selected_options else ""
             await conn.execute(
                 """
-                INSERT INTO web_cart_items (guild_id, user_id, product_id, quantity, selected_option)
-                VALUES ($1, $2, $3, $4, $5)
+                INSERT INTO web_cart_items
+                    (guild_id, user_id, product_id, quantity, selected_option, selected_options_json)
+                VALUES ($1, $2, $3, $4, $5, $6)
                 ON CONFLICT (guild_id, user_id, product_id) DO UPDATE SET
-                    quantity = EXCLUDED.quantity, selected_option = EXCLUDED.selected_option
+                    quantity = EXCLUDED.quantity, selected_option = EXCLUDED.selected_option,
+                    selected_options_json = EXCLUDED.selected_options_json
                 """, self.guild_id, int(user["id"]), product_id, quantity, selected_option,
+                json.dumps(selected_options, ensure_ascii=False),
             )
         return web.json_response({"ok": True})
 
@@ -946,8 +1028,8 @@ class StoreServer:
                 )
                 rows = await conn.fetch(
                     """
-                    SELECT c.product_id, c.quantity, c.selected_option,
-                           p.name, p.price, p.is_active, p.options
+                    SELECT c.product_id, c.quantity, c.selected_option, c.selected_options_json,
+                           p.name, p.price, p.is_active, p.option_label, p.options, p.option_groups_json
                     FROM web_cart_items c JOIN web_products p ON p.id = c.product_id
                     WHERE c.guild_id = $1 AND c.user_id = $2 AND c.product_id = ANY($3::bigint[])
                     ORDER BY c.product_id FOR UPDATE OF p
@@ -957,12 +1039,20 @@ class StoreServer:
                     raise StoreError("장바구니 상품 일부를 찾을 수 없습니다.")
                 if any(not row["is_active"] for row in rows):
                     raise StoreError("판매가 종료된 상품이 있습니다.")
+                normalized_selections = {}
                 for row in rows:
-                    options = list(row["options"] or [])
-                    if options and row["selected_option"] not in options:
-                        raise StoreError(f"{row['name']} 상품의 옵션을 다시 선택해 주세요.")
+                    groups = normalize_option_groups(
+                        row["option_groups_json"], row["option_label"], list(row["options"] or []),
+                    )
+                    try:
+                        normalized_selections[row["product_id"]] = normalize_selected_options(
+                            groups, row["selected_options_json"],
+                        )
+                    except StoreError as error:
+                        raise StoreError(f"{row['name']} 상품: {error}") from error
                 subtotal = sum(
-                    (int(row["price"]) + option_surcharge(row["selected_option"])) * int(row["quantity"])
+                    (int(row["price"]) + selected_options_surcharge(normalized_selections[row["product_id"]]))
+                    * int(row["quantity"])
                     for row in rows
                 )
                 shipping_fee = calculate_shipping_fee(subtotal)
@@ -970,7 +1060,8 @@ class StoreServer:
                 if not self.payment_service.enabled and total - points > 0:
                     raise StoreError("Pushbullet 자동결제가 아직 설정되지 않았습니다. 관리자에게 문의해 주세요.", 503)
                 product_text = ", ".join(
-                    f"{row['name']} ({row['selected_option']})" if row["selected_option"] else row["name"]
+                    f"{row['name']} ({' / '.join(normalized_selections[row['product_id']])})"
+                    if normalized_selections[row["product_id"]] else row["name"]
                     for row in rows
                 )
                 quantity_text = f"총 {sum(int(row['quantity']) for row in rows)}개"
@@ -991,11 +1082,14 @@ class StoreServer:
                     await conn.execute(
                         """
                         INSERT INTO web_order_items
-                            (order_id, product_id, product_name, unit_price, quantity, product_option)
-                        VALUES ($1, $2, $3, $4, $5, $6)
+                            (order_id, product_id, product_name, unit_price, quantity,
+                             product_option, product_options_json)
+                        VALUES ($1, $2, $3, $4, $5, $6, $7)
                         """, order_id, row["product_id"], row["name"],
-                        int(row["price"]) + option_surcharge(row["selected_option"]),
-                        row["quantity"], row["selected_option"],
+                        int(row["price"]) + selected_options_surcharge(normalized_selections[row["product_id"]]),
+                        row["quantity"],
+                        normalized_selections[row["product_id"]][0] if normalized_selections[row["product_id"]] else "",
+                        json.dumps(normalized_selections[row["product_id"]], ensure_ascii=False),
                     )
                 order = await request_payment(conn, order_id, self.guild_id, user_id, depositor, points)
                 order = await arm_web_payment(conn, order_id, self.guild_id)
@@ -1264,18 +1358,13 @@ class StoreServer:
         image_url = str(data.get("image_url", "")).strip()
         if not image_url:
             raise StoreError("상품 이미지를 URL 또는 파일로 등록해 주세요.")
-        option_label = str(data.get("option_label", "색상")).strip()
-        if option_label not in {"없음", "옵션", "색상", "맛", "패키지"}:
-            raise StoreError("상품 옵션 종류를 올바르게 선택해 주세요.")
-        options = [] if option_label == "없음" else parse_product_options(data.get("options", []))
-        if option_label != "없음" and not options:
-            raise StoreError("옵션을 한 개 이상 입력해 주세요.")
-        if len(options) > 50:
-            raise StoreError("옵션은 최대 50개까지 등록할 수 있습니다.")
+        option_groups = normalize_option_groups(data.get("option_groups", []))
+        first_group = option_groups[0] if option_groups else {"label": "없음", "options": []}
+        option_label, options = first_group["label"], first_group["options"]
         args = (
             self.guild_id, int(data["category_id"]), name,
             str(data.get("description", "")).strip(), price, 0,
-            image_url, option_label, options,
+            image_url, option_label, options, json.dumps(option_groups, ensure_ascii=False),
             bool(data.get("is_active", True)),
         )
         async with self.bot.db_pool.acquire() as conn:
@@ -1295,13 +1384,13 @@ class StoreServer:
             if not category_is_leaf:
                 raise StoreError("상품은 하위 카테고리에만 등록할 수 있습니다.")
             if data.get("id"):
-                await conn.execute("UPDATE web_products SET category_id=$3,name=$4,description=$5,price=$6,stock=$7,image_url=$8,option_label=$9,options=$10,is_active=$11,updated_at=CURRENT_TIMESTAMP WHERE id=$1 AND guild_id=$2", int(data["id"]), *args)
+                await conn.execute("UPDATE web_products SET category_id=$3,name=$4,description=$5,price=$6,stock=$7,image_url=$8,option_label=$9,options=$10,option_groups_json=$11,is_active=$12,updated_at=CURRENT_TIMESTAMP WHERE id=$1 AND guild_id=$2", int(data["id"]), *args)
                 await conn.execute(
                     "UPDATE web_product_sources SET price_locked=TRUE WHERE product_id=$1 AND guild_id=$2",
                     int(data["id"]), self.guild_id,
                 )
             else:
-                await conn.execute("INSERT INTO web_products (guild_id,category_id,name,description,price,stock,image_url,option_label,options,is_active) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)", *args)
+                await conn.execute("INSERT INTO web_products (guild_id,category_id,name,description,price,stock,image_url,option_label,options,option_groups_json,is_active) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)", *args)
         return web.json_response({"ok": True})
 
     async def admin_sync_products(self, request):
@@ -1342,12 +1431,9 @@ class StoreServer:
             manual_price = -1
         if manual_price < 0:
             raise StoreError("판매 가격을 올바르게 입력해 주세요.")
-        option_label = str(data.get("option_label", "색상")).strip()
-        if option_label not in {"없음", "옵션", "색상", "맛", "패키지"}:
-            raise StoreError("상품 옵션 종류를 올바르게 선택해 주세요.")
-        manual_options = [] if option_label == "없음" else parse_product_options(data.get("options", ""))
-        if len(manual_options) > 50:
-            raise StoreError("옵션은 최대 50개까지 입력할 수 있습니다.")
+        option_groups = normalize_option_groups(data.get("option_groups", []))
+        first_group = option_groups[0] if option_groups else {"label": "없음", "options": []}
+        option_label, manual_options = first_group["label"], first_group["options"]
         if self._product_sync_lock.locked():
             raise StoreError("다른 상품 가져오기가 진행 중입니다. 잠시 후 다시 시도해 주세요.", 409)
 
@@ -1384,16 +1470,26 @@ class StoreServer:
                 ) from exc
             except aiohttp.ClientError as exc:
                 raise StoreError("쇼핑몰 응답을 처리하지 못했습니다. 잠시 후 다시 시도해 주세요.", 502) from exc
-            if option_label == "없음" or manual_options:
-                for product in products:
-                    product.option_label = option_label
-                    product.options = manual_options.copy()
+            for product in products:
+                product.option_label = option_label
+                product.options = manual_options.copy()
             for product in products:
                 product.price = manual_price
             async with self.bot.db_pool.acquire() as conn:
                 summary = await import_scraped_products(
                     conn, self.guild_id, category_id, products, price_locked=True,
                 )
+                groups_json = json.dumps(option_groups, ensure_ascii=False)
+                for product in products:
+                    await conn.execute(
+                        """
+                        UPDATE web_products p SET option_groups_json=$4, updated_at=CURRENT_TIMESTAMP
+                        FROM web_product_sources s
+                        WHERE s.product_id=p.id AND s.guild_id=$1
+                          AND s.source_site=$2 AND s.source_key=$3
+                        """,
+                        self.guild_id, product.source_site, product.source_key, groups_json,
+                    )
         return web.json_response(
             summary, dumps=lambda value: json.dumps(value, ensure_ascii=False),
         )

@@ -24,9 +24,43 @@ const escapeHtml = value => String(value ?? "").replace(/[&<>'"]/g, char => ({
   "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;",
 })[char]);
 const productOptions = product => Array.isArray(product.options) ? product.options : [];
+const parseJsonArray = value => {
+  if (Array.isArray(value)) return value;
+  try {
+    const parsed = JSON.parse(value || "[]");
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (_) {
+    return [];
+  }
+};
+const productOptionGroups = product => {
+  const groups = parseJsonArray(product.option_groups_json)
+    .filter(group => group && group.label && Array.isArray(group.options) && group.options.length);
+  if (groups.length) return groups.slice(0, 3);
+  const options = productOptions(product);
+  return options.length ? [{ label: product.option_label || "옵션", options }] : [];
+};
+const selectedProductOptions = item => {
+  const selected = parseJsonArray(item.selected_options_json);
+  return selected.length ? selected : (item.selected_option ? [item.selected_option] : []);
+};
 const optionSurcharge = option => [...String(option || "").matchAll(/\(\+\s*([\d,]+)\s*(?:원)?\)/g)]
   .reduce((sum, match) => sum + Number(match[1].replaceAll(",", "")), 0);
-const itemUnitPrice = item => Number(item.price || 0) + optionSurcharge(item.selected_option);
+const selectedOptionsSurcharge = options => options.reduce((sum, option) => sum + optionSurcharge(option), 0);
+const itemUnitPrice = item => Number(item.price || 0) + selectedOptionsSurcharge(selectedProductOptions(item));
+const optionTypeChoices = selected => ["없음", "옵션", "색상", "맛", "농도", "패키지"]
+  .map(label => `<option value="${label}" ${label === selected ? "selected" : ""}>${label}</option>`).join("");
+const optionGroupEditors = product => {
+  const groups = productOptionGroups(product || {});
+  return Array.from({ length: 3 }, (_, index) => {
+    const group = groups[index] || { label: "없음", options: [] };
+    return `<div class="option-group-editor" data-option-group>
+      <strong>선택 항목 ${index + 1}</strong>
+      <label>종류<select data-group-label>${optionTypeChoices(group.label)}</select></label>
+      <label data-group-options>목록<textarea data-group-values placeholder="한 줄에 하나씩 입력&#10;예: 3mg&#10;6mg (+1000)">${escapeHtml(group.options.join("\n"))}</textarea></label>
+    </div>`;
+  }).join("");
+};
 const CHANNEL_CACHE_KEY = "v4p3DiscordChannelIds";
 const SHIPPING_BANNER_KEY = "v4p3ShippingBannerClosed";
 
@@ -235,14 +269,14 @@ function renderProducts() {
   const activeChild = state.catalogCategories.find(category => Number(category.id) === Number(state.activeCategory));
   $("#catalog-title").textContent = activeChild?.name || activeParent?.name || "전체 상품";
   $("#products").innerHTML = rows.length ? rows.map(product => {
-    const options = productOptions(product);
-    const optionSelect = options.length ? `
-      <label class="product-option">${escapeHtml(product.option_label || "옵션")}
-        <select data-product-option="${product.id}">
+    const optionGroups = productOptionGroups(product);
+    const optionSelect = optionGroups.map((group, index) => `
+      <label class="product-option">${escapeHtml(group.label)}
+        <select data-product-option="${product.id}" data-option-index="${index}">
           <option value="">선택해 주세요</option>
-          ${options.map(option => `<option value="${escapeHtml(option)}">${escapeHtml(option)}</option>`).join("")}
+          ${group.options.map(option => `<option value="${escapeHtml(option)}">${escapeHtml(option)}</option>`).join("")}
         </select>
-      </label>` : "";
+      </label>`).join("");
     return `<article class="product">
       <div class="product-media">${product.image_url ? `<img src="${escapeHtml(product.image_url)}" alt="${escapeHtml(product.name)}">` : "<span>V</span>"}</div>
       <div class="product-body">
@@ -264,7 +298,8 @@ function renderProducts() {
     select.onchange = () => {
       const product = state.products.find(item => Number(item.id) === Number(select.dataset.productOption));
       const price = $(`[data-product-price="${select.dataset.productOption}"]`);
-      if (product && price) price.textContent = money(Number(product.price) + optionSurcharge(select.value));
+      const selected = $$(`[data-product-option="${select.dataset.productOption}"]`).map(field => field.value);
+      if (product && price) price.textContent = money(Number(product.price) + selectedOptionsSurcharge(selected));
     };
   });
 }
@@ -275,16 +310,17 @@ async function addCart(productId) {
     return;
   }
   const product = state.products.find(item => Number(item.id) === productId);
-  const options = productOptions(product || {});
-  const selectedOption = $(`[data-product-option="${productId}"]`)?.value || "";
-  if (options.length && !selectedOption) {
-    toast(`${product.option_label || "옵션"}을 선택해 주세요.`);
+  const optionGroups = productOptionGroups(product || {});
+  const selectedOptions = $$(`[data-product-option="${productId}"]`).map(select => select.value);
+  const missingIndex = selectedOptions.findIndex(value => !value);
+  if (optionGroups.length && missingIndex >= 0) {
+    toast(`${optionGroups[missingIndex].label}을 선택해 주세요.`);
     return;
   }
   try {
     await api("/api/cart", {
       method: "POST",
-      body: JSON.stringify({ product_id: productId, quantity: 1, selected_option: selectedOption }),
+      body: JSON.stringify({ product_id: productId, quantity: 1, selected_options: selectedOptions }),
     });
     toast("장바구니에 담았습니다.");
     await loadCart();
@@ -306,13 +342,16 @@ function renderCart() {
   const box = $("#cart-items");
   if (!box) return;
   box.innerHTML = state.cart.length ? state.cart.map(item => {
-    const options = productOptions(item);
-    const optionField = options.length ? `<select data-cart-option="${item.product_id}">
-      ${options.map(option => `<option value="${escapeHtml(option)}" ${option === item.selected_option ? "selected" : ""}>${escapeHtml(option)}</option>`).join("")}
-    </select>` : "";
+    const optionGroups = productOptionGroups(item);
+    const selectedOptions = selectedProductOptions(item);
+    const optionField = optionGroups.map((group, index) => `<label class="cart-option-label">${escapeHtml(group.label)}
+      <select data-cart-option="${item.product_id}" data-option-index="${index}">
+        ${group.options.map(option => `<option value="${escapeHtml(option)}" ${option === selectedOptions[index] ? "selected" : ""}>${escapeHtml(option)}</option>`).join("")}
+      </select></label>`).join("");
+    const surcharge = selectedOptionsSurcharge(selectedOptions);
     return `<div class="cart-row">
       <input class="cart-check" type="checkbox" aria-label="상품 선택" data-select="${item.product_id}" ${state.selected.has(Number(item.product_id)) ? "checked" : ""}>
-      <div class="grow"><strong>${escapeHtml(item.name)}</strong><br><small>${money(itemUnitPrice(item))}${optionSurcharge(item.selected_option) ? ` · 옵션 +${money(optionSurcharge(item.selected_option))}` : ""}</small>${optionField}</div>
+      <div class="grow"><strong>${escapeHtml(item.name)}</strong><br><small>${money(itemUnitPrice(item))}${surcharge ? ` · 옵션 +${money(surcharge)}` : ""}</small>${optionField}</div>
       <div class="cart-controls">
         <div class="quantity-stepper" aria-label="수량 조절">
           <button type="button" aria-label="수량 줄이기" data-qty-minus="${item.product_id}">−</button>
@@ -350,7 +389,8 @@ function renderCart() {
   $$("[data-cart-option]", box).forEach(select => {
     select.onchange = async () => {
       const item = state.cart.find(row => Number(row.product_id) === Number(select.dataset.cartOption));
-      await saveCartRow(Number(select.dataset.cartOption), Number(item.quantity), select.value);
+      const selectedOptions = $$(`[data-cart-option="${select.dataset.cartOption}"]`, box).map(field => field.value);
+      await saveCartRow(Number(select.dataset.cartOption), Number(item.quantity), selectedOptions);
     };
   });
   $$("[data-remove]", box).forEach(button => {
@@ -362,7 +402,7 @@ function renderCart() {
   cartTotal();
 }
 
-async function saveCartRow(productId, quantity, selectedOption = null) {
+async function saveCartRow(productId, quantity, selectedOptions = null) {
   const item = state.cart.find(row => Number(row.product_id) === productId);
   try {
     await api("/api/cart", {
@@ -370,7 +410,7 @@ async function saveCartRow(productId, quantity, selectedOption = null) {
       body: JSON.stringify({
         product_id: productId,
         quantity,
-        selected_option: selectedOption ?? item.selected_option ?? "",
+        selected_options: selectedOptions ?? selectedProductOptions(item),
       }),
     });
     await loadCart();
@@ -903,9 +943,10 @@ function renderAdminLists() {
   });
   $("#category-admin").innerHTML = categoryRows.join("") || '<p class="admin-empty">등록된 카테고리가 없습니다.</p>';
   const productRows = state.adminProducts.map(product => {
-    const options = productOptions(product);
+    const optionGroups = productOptionGroups(product);
     const categoryPath = product.parent_category_name ? `${product.parent_category_name} › ${product.category_name}` : (product.category_name || "미분류");
-    return `<div class="admin-row"><span class="admin-product-info"><input class="admin-product-check" type="checkbox" value="${product.id}" aria-label="${escapeHtml(product.name)} 선택"><span><b>${escapeHtml(product.name)}</b><br>${escapeHtml(categoryPath)} · ${money(product.price)}${options.length ? `<br><small>${escapeHtml(product.option_label)}: ${options.map(escapeHtml).join(", ")}</small>` : ""}</span></span><span class="admin-actions"><button class="text-button" data-edit-product="${product.id}">수정</button><button class="remove" data-del-product="${product.id}">삭제</button></span></div>`;
+    const optionSummary = optionGroups.map(group => `${escapeHtml(group.label)}: ${group.options.map(escapeHtml).join(", ")}`).join("<br>");
+    return `<div class="admin-row"><span class="admin-product-info"><input class="admin-product-check" type="checkbox" value="${product.id}" aria-label="${escapeHtml(product.name)} 선택"><span><b>${escapeHtml(product.name)}</b><br>${escapeHtml(categoryPath)} · ${money(product.price)}${optionSummary ? `<br><small>${optionSummary}</small>` : ""}</span></span><span class="admin-actions"><button class="text-button" data-edit-product="${product.id}">수정</button><button class="remove" data-del-product="${product.id}">삭제</button></span></div>`;
   }).join("");
   $("#product-admin").innerHTML = `<div class="admin-bulk-actions">
     <label><input id="select-all-products" type="checkbox" ${state.adminProducts.length ? "" : "disabled"}> 전체 선택</label>
@@ -1020,13 +1061,9 @@ function openEditor(type, item = {}) {
       <label>판매 가격
         <input name="price" type="number" inputmode="numeric" min="0" step="1" placeholder="직접 판매할 가격을 입력해 주세요" required>
       </label>
-      <label>옵션 종류
-        <select name="option_label"><option value="없음">없음</option><option value="옵션">옵션</option><option value="색상">색상</option><option value="맛">맛</option><option value="패키지">패키지</option></select>
-      </label>
-      <label data-option-list>옵션 목록
-        <textarea name="options" placeholder="예: 기본 패키지&#10;선물 패키지 (+2000)&#10;여러 값은 한 줄씩 또는 쉼표로 입력"></textarea>
-      </label>
-      <small data-option-help>옵션명에 (+2000)을 붙이면 선택 시 개당 2,000원이 추가됩니다.</small>
+      <h3>선택 항목 <small>최대 3개</small></h3>
+      ${optionGroupEditors({})}
+      <small>사용하지 않는 선택 항목은 없음으로 두세요. 항목값에 (+2000)을 붙이면 선택 시 개당 2,000원이 추가됩니다.</small>
       <small>비비빈스와 일렉샵 링크를 지원합니다. 입력한 가격은 자동 동기화 후에도 유지됩니다. 목록 링크를 사용하면 가져온 모든 상품에 같은 가격과 옵션이 적용됩니다.</small>`;
   } else {
     fields.innerHTML = `<input type="hidden" name="id" value="${item.id || ""}">
@@ -1041,32 +1078,28 @@ function openEditor(type, item = {}) {
       <label>이미지 파일<input id="product-image-file" type="file" accept="image/*"></label>
       <label>설명<textarea name="description">${escapeHtml(item.description || "")}</textarea></label>
       <label>가격<input name="price" type="number" min="0" value="${item.price || 0}" required></label>
-      <label>옵션 종류
-        <select name="option_label" required><option value="없음" ${item.option_label === "없음" ? "selected" : ""}>없음</option><option value="옵션" ${item.option_label === "옵션" ? "selected" : ""}>옵션</option><option value="색상" ${item.option_label === "색상" || !item.option_label ? "selected" : ""}>색상</option><option value="맛" ${item.option_label === "맛" ? "selected" : ""}>맛</option><option value="패키지" ${item.option_label === "패키지" ? "selected" : ""}>패키지</option></select>
-      </label>
-      <label data-option-list>옵션 목록<textarea name="options" placeholder="예: 기본 옵션&#10;추가 옵션 (+2000)" required>${escapeHtml(productOptions(item).join("\n"))}</textarea></label>
-      <small data-option-help>옵션명에 (+2000)을 붙이면 선택 시 개당 2,000원이 추가됩니다.</small>
+      <h3>선택 항목 <small>최대 3개</small></h3>
+      ${optionGroupEditors(item)}
+      <small>사용하지 않는 선택 항목은 없음으로 두세요. 항목값에 (+2000)을 붙이면 선택 시 개당 2,000원이 추가됩니다.</small>
       <label class="check"><input name="is_active" type="checkbox" ${item.is_active !== false ? "checked" : ""}> 판매 활성화</label>`;
   }
   $("#editor-form button[type='submit']").textContent = isLinkImport ? "링크에서 가져오기" : "저장";
   $("#editor").hidden = false;
   document.body.classList.add("modal-open");
   if (type === "product") {
-    const optionType = fields.querySelector('[name="option_label"]');
-    const optionList = fields.querySelector("[data-option-list]");
-    const optionInput = optionList?.querySelector('[name="options"]');
-    const optionHelp = fields.querySelector("[data-option-help]");
-    const syncOptionFields = () => {
-      const hasNoOptions = optionType?.value === "없음";
-      if (optionList) optionList.hidden = hasNoOptions;
-      if (optionHelp) optionHelp.hidden = hasNoOptions;
-      if (optionInput) {
-        optionInput.disabled = hasNoOptions;
-        optionInput.required = !isLinkImport && !hasNoOptions;
-      }
-    };
-    optionType?.addEventListener("change", syncOptionFields);
-    syncOptionFields();
+    $$('[data-option-group]', fields).forEach(group => {
+      const typeSelect = $('[data-group-label]', group);
+      const optionsField = $('[data-group-options]', group);
+      const optionsInput = $('[data-group-values]', group);
+      const syncOptionField = () => {
+        const disabled = typeSelect.value === "없음";
+        optionsField.hidden = disabled;
+        optionsInput.disabled = disabled;
+        optionsInput.required = !disabled;
+      };
+      typeSelect.addEventListener("change", syncOptionField);
+      syncOptionField();
+    });
   }
   if (type === "product" && !isLinkImport) {
     $("#product-image-file").onchange = event => {
@@ -1086,6 +1119,12 @@ function openEditor(type, item = {}) {
   $("#editor-form").onsubmit = async event => {
     event.preventDefault();
     const data = Object.fromEntries(new FormData(event.target));
+    if (type === "product") {
+      data.option_groups = $$('[data-option-group]', fields).map(group => ({
+        label: $('[data-group-label]', group).value,
+        options: $('[data-group-values]', group).disabled ? "" : $('[data-group-values]', group).value,
+      }));
+    }
     if (type === "product" && !isLinkImport) data.is_active = Boolean(data.is_active);
     const submit = event.target.querySelector('button[type="submit"]');
     const originalLabel = submit.textContent;
