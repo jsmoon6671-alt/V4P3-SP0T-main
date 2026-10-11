@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@500;600;700;800&family=Noto+Sans+KR:wght@500;600;700;800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/static/styles.css?v=20261011-48">
+  <link rel="stylesheet" href="/static/styles.css?v=20261011-49">
 </head>
 <body>
   <div class="grain"></div>
@@ -22,7 +22,7 @@
     <button type="button" id="shipping-banner-close" aria-label="배송비 안내 닫기">×</button>
   </aside>
   <header class="site-header">
-    <a class="brand" href="#home"><span>V4P3</span> SP0T</a>
+    <a class="brand" href="#home"><span class="brand-logo-mark"><img src="/static/brand-mark.png" alt=""></span><span>V4P3</span> SP0T</a>
     <nav id="nav">
       <a href="#home">스토어</a><a href="#events" class="nav-alert-link">이벤트<span id="events-nav-dot" class="nav-alert-dot" aria-label="새 이벤트" hidden></span></a><a href="#notices" class="nav-alert-link">공지사항<span id="notices-nav-dot" class="nav-alert-dot" aria-label="새 공지" hidden></span></a><a href="#support">문의하기</a><a href="#account">정보등록</a><a href="#review-write">후기작성</a><a href="#ranking">구매랭킹</a><a href="#tiers">등급표</a><a href="#terms">이용약관</a><a href="#tracking">배송조회</a>
       <a href="#admin" id="admin-link" hidden>관리자</a>
@@ -297,8 +297,8 @@
       </div>
       <div class="admin-section" data-admin-section="notices">
         <div class="blacklist-tools">
-          <form class="panel form-panel notice-admin-form" data-notice-type="NOTICE"><h2>공지</h2><label>내용<textarea name="content" maxlength="2000"></textarea></label><label class="check"><input name="is_active" type="checkbox"><span>사이트 접속 시 표시</span></label><button class="button" type="submit">공지 저장</button></form>
-          <form class="panel form-panel notice-admin-form" data-notice-type="EVENT"><h2>이벤트</h2><label>내용<textarea name="content" maxlength="2000"></textarea></label><label class="check"><input name="is_active" type="checkbox"><span>공지 다음에 표시</span></label><button class="button" type="submit">이벤트 저장</button></form>
+          <form class="panel form-panel notice-admin-form" data-notice-type="NOTICE"><h2>공지</h2><label>내용<textarea name="content" maxlength="2000"></textarea></label><label>이미지 · 선택사항<input name="image" type="file" accept="image/png,image/jpeg,image/webp"></label><img class="notice-image-preview" alt="공지 이미지 미리보기" hidden><label class="check"><input name="remove_image" type="checkbox"><span>등록된 이미지 삭제</span></label><label class="check"><input name="is_active" type="checkbox"><span>사이트 접속 시 표시</span></label><button class="button" type="submit">공지 저장</button></form>
+          <form class="panel form-panel notice-admin-form" data-notice-type="EVENT"><h2>이벤트</h2><label>내용<textarea name="content" maxlength="2000"></textarea></label><label>이미지 · 선택사항<input name="image" type="file" accept="image/png,image/jpeg,image/webp"></label><img class="notice-image-preview" alt="이벤트 이미지 미리보기" hidden><label class="check"><input name="remove_image" type="checkbox"><span>등록된 이미지 삭제</span></label><label class="check"><input name="is_active" type="checkbox"><span>공지 다음에 표시</span></label><button class="button" type="submit">이벤트 저장</button></form>
         </div>
         <form id="coupon-admin-form" class="panel form-panel admin-subpanel"><h2>구매 쿠폰 지급</h2><label>사용자 ID<input name="user_id" inputmode="numeric" placeholder="전체 지급이면 비워두세요"></label><label>할인 금액<input name="discount_amount" type="number" min="1" required></label><label>사용 기한(일)<input name="days" type="number" min="1" max="365" value="30" required></label><label class="check"><input name="all_users" type="checkbox"><span>등록된 모든 유저에게 지급</span></label><button class="button" type="submit">쿠폰 지급</button></form>
         <form id="coupon-event-admin-form" class="panel form-panel admin-subpanel"><h2>이벤트 쿠폰 등록</h2><p>등록한 쿠폰은 사이트 이벤트 페이지에서 유저가 직접 받을 수 있습니다.</p><label>쿠폰명<input name="title" maxlength="80" required placeholder="예: 주말 3,000원 쿠폰"></label><label>설명<textarea name="description" maxlength="500" placeholder="쿠폰 이벤트 안내"></textarea></label><label>할인 금액<input name="discount_amount" type="number" min="1" required></label><label>수령 후 사용 기한(일)<input name="valid_days" type="number" min="1" max="365" value="30" required></label><label>쿠폰 이미지<input name="image" type="file" accept="image/png,image/jpeg,image/webp" required></label><img id="coupon-event-image-preview" class="coupon-event-image-preview" alt="쿠폰 이미지 미리보기" hidden><button class="button" type="submit">이벤트 쿠폰 등록</button></form>
@@ -362,9 +362,9 @@
       </div>
     </div>
   </div>
-  <div id="site-message" class="modal-backdrop" hidden><div class="modal-card notice-card"><div class="notice-content"><p id="site-message-type" class="eyebrow">NOTICE</p><h2 id="site-message-title">안내</h2><p id="site-message-content"></p><div class="notice-actions"><button type="button" id="site-message-close" class="button secondary">닫기</button><button type="button" id="site-message-day" class="button">24시간 동안 안 보기</button></div></div></div></div>
+  <div id="site-message" class="modal-backdrop" hidden><div class="modal-card notice-card"><div class="notice-content"><p id="site-message-type" class="eyebrow">NOTICE</p><h2 id="site-message-title">안내</h2><img id="site-message-image" class="site-message-image" alt="공지 이미지" hidden><p id="site-message-content"></p><div class="notice-actions"><button type="button" id="site-message-close" class="button secondary">닫기</button><button type="button" id="site-message-day" class="button">24시간 동안 안 보기</button></div></div></div></div>
   <div id="blocked-screen" class="blocked-screen" hidden><div class="panel"><p class="eyebrow">ACCESS BLOCKED</p><h1>블랙리스트에 등록되었습니다.</h1><p id="blocked-reason"></p><p>오류라고 생각되면 Discord 서버에서 문의 티켓을 열어 주세요.</p><a class="button" href="https://discord.gg/v4p3sp0t" target="_blank" rel="noopener">Discord에서 티켓 열기</a></div></div>
   <div id="welcome-coupon-modal" class="modal-backdrop welcome-coupon-modal" hidden><div class="modal-card welcome-coupon-card"><img src="/static/welcome-coupon.png" width="567" height="265" alt="V4P3 SP0T 웰컴 2,000원 할인쿠폰"><div><h2>WELCOME 쿠폰</h2><p>첫 구매 전용 · 1인 1회</p><button type="button" id="claim-welcome-coupon" class="button wide">쿠폰 받기</button></div></div></div>
-  <script src="/static/app.js?v=20261011-40"></script>
+  <script src="/static/app.js?v=20261011-41"></script>
 </body>
 </html>

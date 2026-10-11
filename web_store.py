@@ -261,9 +261,12 @@ async def initialize_web_store_schema(conn):
         );
         CREATE TABLE IF NOT EXISTS web_notices (
             guild_id BIGINT NOT NULL, notice_type TEXT NOT NULL, content TEXT NOT NULL DEFAULT '',
-            is_active BOOLEAN NOT NULL DEFAULT FALSE, updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            is_active BOOLEAN NOT NULL DEFAULT FALSE, image_mime TEXT, image_data BYTEA,
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
             PRIMARY KEY (guild_id, notice_type)
         );
+        ALTER TABLE web_notices ADD COLUMN IF NOT EXISTS image_mime TEXT;
+        ALTER TABLE web_notices ADD COLUMN IF NOT EXISTS image_data BYTEA;
         CREATE TABLE IF NOT EXISTS web_coupons (
             id BIGSERIAL PRIMARY KEY, guild_id BIGINT NOT NULL, code TEXT NOT NULL,
             user_id BIGINT, discount_amount BIGINT NOT NULL CHECK (discount_amount > 0),
@@ -525,6 +528,7 @@ class StoreServer:
             web.get("/api/admin/users", self.admin_users),
             web.post("/api/admin/points", self.admin_points),
             web.get("/api/notices", self.notices),
+            web.get(r"/api/notices/{notice_type:[A-Za-z]+}/image", self.notice_image),
             web.get("/api/admin/notices", self.admin_notices),
             web.put("/api/admin/notices", self.admin_save_notice),
             web.get("/api/coupons", self.coupons),
@@ -1279,14 +1283,46 @@ class StoreServer:
 
     async def notices(self, request):
         async with self.bot.db_pool.acquire() as conn:
-            rows = await conn.fetch("SELECT notice_type,content,updated_at FROM web_notices WHERE guild_id=$1 AND is_active=TRUE", self.guild_id)
-        return web.json_response({"notices": [dict(row) for row in rows]}, dumps=lambda v: json.dumps(v, ensure_ascii=False, default=str))
+            rows = await conn.fetch(
+                "SELECT notice_type,content,updated_at,(image_data IS NOT NULL) has_image FROM web_notices WHERE guild_id=$1 AND is_active=TRUE",
+                self.guild_id,
+            )
+        notices = []
+        for row in rows:
+            item = dict(row)
+            item["image_url"] = f"/api/notices/{item['notice_type']}/image" if item.pop("has_image") else ""
+            notices.append(item)
+        return web.json_response({"notices": notices}, dumps=lambda v: json.dumps(v, ensure_ascii=False, default=str))
+
+    async def notice_image(self, request):
+        notice_type = str(request.match_info["notice_type"] or "").upper()
+        if notice_type not in {"NOTICE", "EVENT"}:
+            raise web.HTTPNotFound()
+        async with self.bot.db_pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT image_mime,image_data FROM web_notices WHERE guild_id=$1 AND notice_type=$2 AND image_data IS NOT NULL",
+                self.guild_id, notice_type,
+            )
+        if not row:
+            raise web.HTTPNotFound()
+        return web.Response(
+            body=bytes(row["image_data"]), content_type=row["image_mime"],
+            headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
+        )
 
     async def admin_notices(self, request):
         await self._admin(request)
         async with self.bot.db_pool.acquire() as conn:
-            rows = await conn.fetch("SELECT notice_type,content,is_active,updated_at FROM web_notices WHERE guild_id=$1", self.guild_id)
-        return web.json_response({"notices": [dict(row) for row in rows]}, dumps=lambda v: json.dumps(v, ensure_ascii=False, default=str))
+            rows = await conn.fetch(
+                "SELECT notice_type,content,is_active,updated_at,(image_data IS NOT NULL) has_image FROM web_notices WHERE guild_id=$1",
+                self.guild_id,
+            )
+        notices = []
+        for row in rows:
+            item = dict(row)
+            item["image_url"] = f"/api/notices/{item['notice_type']}/image" if item.pop("has_image") else ""
+            notices.append(item)
+        return web.json_response({"notices": notices}, dumps=lambda v: json.dumps(v, ensure_ascii=False, default=str))
 
     async def admin_save_notice(self, request):
         await self._admin(request); data = await self._body(request)
@@ -1297,11 +1333,32 @@ class StoreServer:
         active = bool(data.get("is_active"))
         if active and len(content) < 2:
             raise StoreError("내용을 2자 이상 입력해 주세요.")
+        image_mime = None
+        image_data = None
+        image_value = str(data.get("image_data_url") or "")
+        replace_image = bool(data.get("remove_image"))
+        if image_value:
+            match = re.fullmatch(r"data:(image/(?:png|jpeg|webp));base64,(.+)", image_value, re.DOTALL)
+            if not match:
+                raise StoreError("공지 이미지는 PNG, JPG 또는 WEBP 파일만 사용할 수 있습니다.")
+            try:
+                image_data = base64.b64decode(match.group(2), validate=True)
+            except (ValueError, TypeError) as exc:
+                raise StoreError("공지 이미지 데이터를 읽을 수 없습니다.") from exc
+            if not image_data or len(image_data) > 5 * 1024 * 1024:
+                raise StoreError("공지 이미지는 5MB 이하로 업로드해 주세요.")
+            image_mime = match.group(1)
+            replace_image = True
         async with self.bot.db_pool.acquire() as conn:
             await conn.execute(
-                """INSERT INTO web_notices (guild_id,notice_type,content,is_active) VALUES ($1,$2,$3,$4)
-                   ON CONFLICT (guild_id,notice_type) DO UPDATE SET content=EXCLUDED.content,is_active=EXCLUDED.is_active,updated_at=CURRENT_TIMESTAMP""",
-                self.guild_id, notice_type, content, active,
+                """INSERT INTO web_notices (guild_id,notice_type,content,is_active,image_mime,image_data)
+                   VALUES ($1,$2,$3,$4,$5,$6)
+                   ON CONFLICT (guild_id,notice_type) DO UPDATE SET
+                     content=EXCLUDED.content,is_active=EXCLUDED.is_active,
+                     image_mime=CASE WHEN $7 THEN EXCLUDED.image_mime ELSE web_notices.image_mime END,
+                     image_data=CASE WHEN $7 THEN EXCLUDED.image_data ELSE web_notices.image_data END,
+                     updated_at=CURRENT_TIMESTAMP""",
+                self.guild_id, notice_type, content, active, image_mime, image_data, replace_image,
             )
         return web.json_response({"ok": True})
 

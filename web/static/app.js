@@ -980,6 +980,14 @@ function bindForms() {
   });
   $("#support-form").onsubmit = createSupportTicket;
   $$(".notice-admin-form").forEach(form => { form.onsubmit = saveNotice; });
+  $$('.notice-admin-form input[name="image"]').forEach(input => { input.onchange = previewNoticeImage; });
+  $$('.notice-admin-form input[name="remove_image"]').forEach(input => {
+    input.onchange = () => {
+      const preview = input.closest("form").querySelector(".notice-image-preview");
+      if (input.checked) preview.hidden = true;
+      else if (preview.dataset.existingSrc) { preview.src = preview.dataset.existingSrc; preview.hidden = false; }
+    };
+  });
   $("#product-search").oninput = event => { state.productSearch = event.target.value; renderProducts(); };
   $("#site-message-close").onclick = showNextSiteMessage;
   $("#site-message-day").onclick = dismissSiteMessageDay;
@@ -1254,6 +1262,12 @@ async function loadAdmin(period = "week") {
       const item = (noticesResult.value.notices || []).find(row => row.notice_type === form.dataset.noticeType);
       form.elements.content.value = item?.content || "";
       form.elements.is_active.checked = Boolean(item?.is_active);
+      form.elements.image.value = "";
+      form.elements.remove_image.checked = false;
+      const preview = form.querySelector(".notice-image-preview");
+      preview.dataset.existingSrc = item?.image_url || "";
+      if (item?.image_url) { preview.src = item.image_url; preview.hidden = false; }
+      else { preview.removeAttribute("src"); preview.hidden = true; }
     });
   }
   if (failures.length) toast(failures[0].reason?.message || "관리자 정보를 일부 불러오지 못했습니다.");
@@ -1348,13 +1362,60 @@ async function saveAdminPoints(event) {
 
 async function saveNotice(event) {
   event.preventDefault();
-  const data = Object.fromEntries(new FormData(event.target));
-  data.notice_type = event.target.dataset.noticeType;
-  data.is_active = Boolean(data.is_active);
+  const form = event.target;
+  const file = form.elements.image.files?.[0];
+  if (file && file.size > 5 * 1024 * 1024) return toast("공지 이미지는 5MB 이하로 업로드해 주세요.");
+  const data = Object.fromEntries(new FormData(form));
+  delete data.image;
+  data.notice_type = form.dataset.noticeType;
+  data.is_active = form.elements.is_active.checked;
+  data.remove_image = form.elements.remove_image.checked;
+  if (file) {
+    data.image_data_url = await new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    });
+  }
   try {
     await api("/api/admin/notices", { method: "PUT", body: JSON.stringify(data) });
+    form.elements.image.value = "";
+    form.elements.remove_image.checked = false;
+    const preview = form.querySelector(".notice-image-preview");
+    if (data.remove_image) {
+      preview.dataset.existingSrc = "";
+      preview.removeAttribute("src");
+      preview.hidden = true;
+    } else if (data.image_data_url) {
+      preview.dataset.existingSrc = data.image_data_url;
+      preview.src = data.image_data_url;
+      preview.hidden = false;
+    }
+    await refreshNoticeIndicators();
     toast(`${data.notice_type === "NOTICE" ? "공지" : "이벤트"}를 저장했습니다.`);
   } catch (error) { toast(error.message); }
+}
+
+function previewNoticeImage(event) {
+  const input = event.target;
+  const form = input.closest("form");
+  const preview = form.querySelector(".notice-image-preview");
+  const file = input.files?.[0];
+  if (!file) {
+    if (preview.dataset.existingSrc) { preview.src = preview.dataset.existingSrc; preview.hidden = false; }
+    else preview.hidden = true;
+    return;
+  }
+  if (file.size > 5 * 1024 * 1024) {
+    toast("공지 이미지는 5MB 이하로 업로드해 주세요.");
+    input.value = "";
+    return;
+  }
+  form.elements.remove_image.checked = false;
+  const reader = new FileReader();
+  reader.onload = () => { preview.src = reader.result; preview.hidden = false; };
+  reader.readAsDataURL(file);
 }
 
 async function issueCoupon(event) {
@@ -1435,7 +1496,7 @@ function renderCouponEvents() {
     announcements.hidden = !state.eventNotices.length;
     announcements.innerHTML = state.eventNotices.map(item => `
       <article class="event-announcement-card">
-        <div class="event-announcement-mark" aria-hidden="true">EVENT</div>
+        ${item.image_url ? `<img class="announcement-image" src="${escapeHtml(item.image_url)}" alt="이벤트 이미지">` : '<div class="event-announcement-mark" aria-hidden="true">EVENT</div>'}
         <div><p class="eyebrow">NOW ON V4P3 SP0T</p><h2>진행 중인 이벤트</h2><p>${escapeHtml(item.content)}</p></div>
       </article>`).join("");
   }
@@ -1482,7 +1543,7 @@ async function loadNoticesPage() {
     const notices = state.notices.filter(item => item.notice_type === "NOTICE");
     target.innerHTML = notices.length ? notices.map(item => `
       <article class="notice-page-card">
-        <div class="notice-page-mark" aria-hidden="true">NOTICE</div>
+        ${item.image_url ? `<img class="announcement-image" src="${escapeHtml(item.image_url)}" alt="공지 이미지">` : '<div class="notice-page-mark" aria-hidden="true">NOTICE</div>'}
         <div><p class="eyebrow">OFFICIAL NOTICE</p><h2>공지사항</h2><p>${escapeHtml(item.content)}</p><time>${new Date(item.updated_at).toLocaleString("ko-KR")}</time></div>
       </article>`).join("") : '<div class="empty">현재 등록된 공지사항이 없습니다.</div>';
     const latest = latestUpdate(notices, "updated_at");
@@ -1526,6 +1587,10 @@ function showNextSiteMessage() {
   $("#site-message-type").textContent = item.notice_type;
   $("#site-message-title").textContent = item.notice_type === "NOTICE" ? "공지사항" : "진행 중인 이벤트";
   $("#site-message-content").textContent = item.content;
+  const image = $("#site-message-image");
+  image.hidden = !item.image_url;
+  if (item.image_url) { image.src = item.image_url; image.alt = item.notice_type === "NOTICE" ? "공지 이미지" : "이벤트 이미지"; }
+  else image.removeAttribute("src");
   modal.hidden = false; document.body.classList.add("modal-open");
 }
 
