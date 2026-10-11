@@ -23,6 +23,7 @@ const state = {
   productSearch: "",
   siteMessages: [],
   coupons: [],
+  supportType: "general",
 };
 
 const $ = (selector, parent = document) => parent.querySelector(selector);
@@ -111,7 +112,7 @@ async function api(path, options = {}) {
 
 function route() {
   const id = location.hash.slice(1) || "home";
-  if (["account", "review-write"].includes(id) && !state.me) {
+  if (["account", "review-write", "support"].includes(id) && !state.me) {
     try { sessionStorage.setItem("v4p3PostLoginHash", `#${id}`); } catch {}
     location.href = "/auth/login";
     return;
@@ -126,6 +127,7 @@ function route() {
   if (id === "tracking" && state.me) loadCarriers().then(applyTrackingPreset);
   if (id === "tiers") renderTiers();
   if (id === "ranking") loadPurchaseRanking();
+  if (id === "support") renderSupportForm();
   if (id === "admin") openAdminGate();
   scrollTo(0, 0);
 }
@@ -920,6 +922,13 @@ function bindForms() {
   $("#refresh-admin-users").onclick = loadAdminUsers;
   $("#point-admin-form").onsubmit = saveAdminPoints;
   $("#coupon-admin-form").onsubmit = issueCoupon;
+  $$("[data-support-type]").forEach(button => {
+    button.onclick = () => {
+      state.supportType = button.dataset.supportType;
+      renderSupportForm();
+    };
+  });
+  $("#support-form").onsubmit = createSupportTicket;
   $$(".notice-admin-form").forEach(form => { form.onsubmit = saveNotice; });
   $("#product-search").oninput = event => { state.productSearch = event.target.value; renderProducts(); };
   $("#site-message-close").onclick = showNextSiteMessage;
@@ -934,6 +943,67 @@ function bindForms() {
     if (event.key === "Escape" && !$("#editor").hidden) closeEditor();
   });
   updateShippingMode();
+  renderSupportForm();
+}
+
+const SUPPORT_TYPES = {
+  general: { title: "일반문의 작성", icon: "💌", fields: [
+    { name: "문의내용", label: "문의내용", type: "textarea", placeholder: "문의하실 내용을 자세히 작성해 주세요." },
+  ] },
+  payment: { title: "입금문의 작성", icon: "💳", fields: [
+    { name: "주문번호", label: "주문번호", placeholder: "주문번호가 없다면 없음이라고 입력해 주세요." },
+    { name: "문의내용", label: "문의내용", type: "textarea", placeholder: "입금 또는 결제 관련 문의를 작성해 주세요." },
+  ] },
+  shipping: { title: "배송문의 작성", icon: "🚚", fields: [
+    { name: "주문번호", label: "주문번호", placeholder: "확인할 주문번호를 입력해 주세요." },
+    { name: "문의내용", label: "문의내용", type: "textarea", placeholder: "배송 또는 운송장 관련 문의를 작성해 주세요." },
+  ] },
+  partner: { title: "제휴문의 작성", icon: "🤝", fields: [
+    { name: "서버링크", label: "서버링크", placeholder: "Discord 서버 초대 링크를 입력해 주세요." },
+    { name: "배너명", label: "배너명", placeholder: "제휴에 사용할 배너명을 입력해 주세요." },
+  ] },
+};
+
+function renderSupportForm() {
+  const form = $("#support-form");
+  if (!form) return;
+  const config = SUPPORT_TYPES[state.supportType] || SUPPORT_TYPES.general;
+  form.elements.ticket_type.value = state.supportType;
+  $("#support-form-icon").textContent = config.icon;
+  $("#support-form-title").textContent = config.title;
+  $("#support-fields").innerHTML = config.fields.map(field => `<label>${escapeHtml(field.label)}${field.type === "textarea"
+    ? `<textarea name="${escapeHtml(field.name)}" maxlength="1500" placeholder="${escapeHtml(field.placeholder)}" required></textarea>`
+    : `<input name="${escapeHtml(field.name)}" maxlength="1500" placeholder="${escapeHtml(field.placeholder)}" required>`}</label>`).join("");
+  $$("[data-support-type]").forEach(button => button.classList.toggle("active", button.dataset.supportType === state.supportType));
+  $("#support-complete").hidden = true;
+}
+
+async function createSupportTicket(event) {
+  event.preventDefault();
+  if (!state.me) {
+    try { sessionStorage.setItem("v4p3PostLoginHash", "#support"); } catch {}
+    location.href = "/auth/login";
+    return;
+  }
+  const submit = event.submitter || event.currentTarget.querySelector('button[type="submit"]');
+  const original = submit.textContent;
+  submit.disabled = true;
+  submit.textContent = "Discord 티켓 생성 중...";
+  try {
+    const result = await api("/api/tickets", { method: "POST", body: JSON.stringify(Object.fromEntries(new FormData(event.currentTarget))) });
+    $("#support-channel-name").textContent = `#${result.channel_name}`;
+    $("#support-channel-link").href = result.channel_url;
+    $("#support-complete").hidden = false;
+    $("#support-complete").scrollIntoView({ behavior: "smooth", block: "center" });
+    event.currentTarget.reset();
+    event.currentTarget.elements.ticket_type.value = state.supportType;
+    toast("Discord 문의 티켓을 생성했습니다.");
+  } catch (error) {
+    toast(error.message);
+  } finally {
+    submit.disabled = false;
+    submit.textContent = original;
+  }
 }
 
 function setAdminSection(section) {
