@@ -95,7 +95,7 @@ h3,strong { font-weight: 800; }
 .catalog-toolbar { align-items: flex-start; justify-content: flex-start; gap: 14px; }
 .catalog-toolbar h2 { flex: 0 0 auto; margin: 8px 0 0; white-space: nowrap; }
 .catalog-heading { display: flex; flex: 0 0 140px; width: 140px; min-width: 140px; align-items: center; justify-content: space-between; gap: 13px; }
-.catalog-heading h2 { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.catalog-heading h2 { min-width: 0; margin-right: auto; overflow: hidden; white-space: normal; word-break: keep-all; overflow-wrap: normal; line-height: 1.35; }
 .catalog-heading>span { display: inline-flex; width: 10px; height: 30px; margin-top: 7px; align-items: stretch; gap: 4px; overflow: hidden; color: transparent; font-size: 0; }
 .catalog-heading>span::before,.catalog-heading>span::after { content: ""; width: 3px; height: 100%; border-radius: 999px; background: #4b6657; box-shadow: 0 0 8px rgba(40,207,124,.08); }
 .category-navigation { display: grid; min-width: 0; flex: 1; gap: 9px; justify-items: stretch; }
@@ -107,6 +107,7 @@ h3,strong { font-weight: 800; }
 .subcategory-tabs[hidden] { display: none; }
 .tabs { display: flex; gap: 7px; flex-wrap: wrap; }
 .tabs button { flex: 0 0 auto; min-height: 38px; border: 1px solid var(--line); border-radius: 999px; padding: 9px 17px; background: var(--surface); color: var(--muted); cursor: pointer; font-size: 13px; font-weight: 700; line-height: 1; white-space: nowrap; transition: color .15s ease,background .15s ease,border-color .15s ease,transform .15s ease; }
+.category-navigation .tabs button { white-space: nowrap; word-break: keep-all; overflow-wrap: normal; }
 .tabs button:hover { border-color: #3b6d52; background: #15241b; color: var(--text); transform: translateY(-1px); }
 .tabs button.active { background: linear-gradient(135deg,#164329,#12301f); border-color: #32955e; color: #77efa9; box-shadow: 0 4px 15px rgba(40,207,124,.1); }
 .subcategory-tabs button { min-height: 34px; padding: 8px 14px; background: #0b120e; font-size: 12px; }
@@ -379,7 +380,7 @@ h3,strong { font-weight: 800; }
   .catalog-toolbar { display: grid; grid-template-columns: 1fr; gap: 13px; }
   .catalog-toolbar h2 { margin-top: 0; }
   .catalog-heading { width: 100%; min-width: 0; justify-content: flex-start; }
-  .catalog-heading h2 { overflow: visible; text-overflow: clip; }
+  .catalog-heading h2 { overflow: visible; white-space: normal; word-break: keep-all; overflow-wrap: normal; }
   .catalog-heading>span { margin-top: 0; }
   .category-navigation { width: 100%; justify-items: stretch; }
   .parent-tabs,.subcategory-tabs { justify-content: flex-start; }
