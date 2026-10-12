@@ -61,6 +61,8 @@ async def initialize_database(conn):
             depositor_name TEXT,
             purchase_log_channel_id BIGINT,
             purchase_log_message_id BIGINT,
+            approval_channel_id BIGINT,
+            approval_message_id BIGINT,
             processed_at TIMESTAMPTZ,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
@@ -112,6 +114,8 @@ async def initialize_database(conn):
         'ALTER TABLE orders ADD COLUMN created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP;',
         'ALTER TABLE orders ADD COLUMN purchase_log_channel_id BIGINT;',
         'ALTER TABLE orders ADD COLUMN purchase_log_message_id BIGINT;',
+        'ALTER TABLE orders ADD COLUMN approval_channel_id BIGINT;',
+        'ALTER TABLE orders ADD COLUMN approval_message_id BIGINT;',
         'ALTER TABLE orders ADD COLUMN processed_at TIMESTAMPTZ;',
         'ALTER TABLE guild_settings ADD COLUMN ticket_cat_general BIGINT;',
         'ALTER TABLE guild_settings ADD COLUMN ticket_cat_payment BIGINT;',
@@ -145,6 +149,7 @@ async def initialize_database(conn):
         'ALTER TABLE guild_settings ADD COLUMN leaderboard_first_user_id BIGINT;',
         'ALTER TABLE guild_settings ADD COLUMN anonymous_role_id BIGINT;',
         'ALTER TABLE guild_settings ADD COLUMN join_log_channel_id BIGINT;',
+        'ALTER TABLE guild_settings ADD COLUMN purchase_verified_role_id BIGINT;',
     ]
     for query in updates:
         try:

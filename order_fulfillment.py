@@ -91,6 +91,16 @@ async def finalize_approved_order(bot, order: dict, *, processor: str = "Pushbul
         )
         settings_row = await conn.fetchrow("SELECT * FROM guild_settings WHERE guild_id = $1", guild_id)
         user_info = await conn.fetchrow("SELECT * FROM user_info WHERE user_id = $1", buyer_id)
+        category_rows = await conn.fetch(
+            """SELECT DISTINCT COALESCE(parent.name || ' › ' || category.name, category.name) category_name
+               FROM web_order_items item
+               JOIN web_products product ON product.id=item.product_id AND product.guild_id=$2
+               LEFT JOIN web_categories category ON category.id=product.category_id
+               LEFT JOIN web_categories parent ON parent.id=category.parent_id
+               WHERE item.order_id=$1 AND category.name IS NOT NULL
+               ORDER BY category_name""",
+            order["order_id"], guild_id,
+        )
     settings = dict(settings_row) if settings_row else {}
 
     await notify_product_subadmins(bot, order)
@@ -115,8 +125,10 @@ async def finalize_approved_order(bot, order: dict, *, processor: str = "Pushbul
         shipping_cvs = order.get("shipping_cvs") or info.get("cvs") or "X"
         shipping_method = order.get("shipping_method") or "미등록"
         products = "\n".join(f"`{part.strip()}`" for part in str(order["product"]).split(",") if part.strip())
+        categories = ", ".join(str(row["category_name"]) for row in category_rows) or "미분류"
         content = (
             "## 📋 구매자 상세 배송 정보\n\n"
+            f"<@{STORE_ADMIN_USER_ID}>\n\n"
             f"`👤` **구매자:** <@{buyer_id}>\n"
             f"`🕒` **구매일시:** `{datetime.datetime.now(KST):%Y-%m-%d %H:%M:%S}`\n"
             f"`🧾` **주문번호:** `{order['order_id']}`\n"
@@ -126,11 +138,12 @@ async def finalize_approved_order(bot, order: dict, *, processor: str = "Pushbul
             f"`🏠` **주소:** `{shipping_address}`\n"
             f"`🏪` **편의점:** `{shipping_cvs}`\n"
             f"`📝` **배송메모:** `{order.get('shipping_memo') or '없음'}`\n"
+            f"`🗂️` **상품 카테고리:** `{categories}`\n"
             f"`📦` **상품:**\n{products}\n\n"
             f"`💰` **금액:** `{order['amount']}`"
         )
         try:
-            await _send_channel(bot, settings["buyer_info_channel_id"], _v2(content, users=[buyer_id]))
+            await _send_channel(bot, settings["buyer_info_channel_id"], _v2(content, users=[STORE_ADMIN_USER_ID, buyer_id]))
         except Exception:
             LOGGER.exception("자동승인 구매자 정보 전송 실패: order=%s", order["order_id"])
 
@@ -162,7 +175,16 @@ async def finalize_approved_order(bot, order: dict, *, processor: str = "Pushbul
         f"`⚡` **처리방식**\n`{processor}`"
     )
     try:
-        await _send_channel(bot, settings.get("approval_channel_id"), _v2(approval_text, users=[buyer_id]))
+        approval_payload = _v2(approval_text, users=[buyer_id])
+        approval_channel_id = order.get("approval_channel_id") or settings.get("approval_channel_id")
+        approval_message_id = order.get("approval_message_id")
+        if approval_channel_id and approval_message_id:
+            await bot.http.request(
+                discord.http.Route("PATCH", f"/channels/{int(approval_channel_id)}/messages/{int(approval_message_id)}"),
+                json=approval_payload,
+            )
+        else:
+            await _send_channel(bot, approval_channel_id, approval_payload)
     except Exception:
         LOGGER.exception("자동승인 로그 전송 실패: order=%s", order["order_id"])
 

@@ -84,6 +84,27 @@ button,a { -webkit-tap-highlight-color: transparent; }
 .subadmin-product-row { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 14px 0; border-bottom: 1px solid var(--line); }
 .subadmin-product-row:last-child { border-bottom: 0; }
 .subadmin-product-row small { display: block; margin-top: 5px; color: var(--muted); }
+.direct-dm-layout { display: grid; grid-template-columns: minmax(250px,320px) minmax(0,1fr); gap: 18px; }
+.direct-dm-sidebar,.direct-dm-chat { min-height: 650px; }
+.direct-dm-open { display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 8px; margin-bottom: 14px; }
+.direct-dm-sessions { display: grid; gap: 7px; max-height: 540px; overflow-y: auto; }
+.direct-dm-session { display: flex; align-items: center; gap: 10px; width: 100%; padding: 10px; border: 1px solid var(--line); border-radius: 10px; background: #0b120e; color: var(--text); text-align: left; cursor: pointer; }
+.direct-dm-session.active { border-color: var(--accent); background: #10251a; }
+.direct-dm-session img,.direct-dm-user img { width: 42px; height: 42px; border-radius: 50%; object-fit: cover; }
+.direct-dm-session span { min-width: 0; }
+.direct-dm-session b,.direct-dm-session small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.direct-dm-session small { margin-top: 3px; color: var(--muted); }
+.direct-dm-chat { display: grid; grid-template-rows: auto minmax(0,1fr) auto; }
+.direct-dm-user { display: flex; align-items: center; gap: 12px; }
+.direct-dm-user h2,.direct-dm-user p { margin: 0; }
+.direct-dm-messages { display: flex; flex-direction: column; gap: 10px; min-height: 380px; max-height: 520px; margin: 16px 0; padding: 14px; overflow-y: auto; border: 1px solid var(--line); border-radius: 14px; background: #070c09; }
+.direct-dm-message { max-width: min(78%,620px); padding: 10px 12px; border-radius: 14px 14px 14px 4px; background: #17201b; }
+.direct-dm-message.admin { align-self: flex-end; border-radius: 14px 14px 4px 14px; background: #195f3b; }
+.direct-dm-message p { margin: 5px 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.direct-dm-message small { color: #9baca2; font-size: 10px; }
+.direct-dm-compose { display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 10px; align-items: end; }
+.direct-dm-compose textarea { min-height: 64px; resize: vertical; }
+@media (max-width:800px) { .direct-dm-layout { grid-template-columns:1fr; } .direct-dm-sidebar,.direct-dm-chat { min-height:auto; } }
 .chat-launcher { position: fixed; z-index: 110; right: 22px; bottom: 22px; display: flex; align-items: center; gap: 9px; padding: 10px 15px 10px 10px; border: 1px solid #35d982; border-radius: 999px; background: #10231a; color: #fff; box-shadow: 0 14px 38px #0009; cursor: pointer; font-weight: 800; }
 .chat-launcher img { width: 34px; height: 34px; border-radius: 50%; object-fit: cover; }
 .chat-panel { position: fixed; z-index: 109; right: 22px; bottom: 84px; width: min(390px,calc(100vw - 28px)); height: min(680px,calc(100vh - 115px)); overflow: hidden; border: 1px solid #2c7750; border-radius: 26px; background: #09100c; box-shadow: 0 24px 80px #000c; }

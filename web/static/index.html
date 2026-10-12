@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@500;600;700;800&family=Noto+Sans+KR:wght@500;600;700;800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/static/styles.css?v=20261011-65">
+  <link rel="stylesheet" href="/static/styles.css?v=20261012-66">
 </head>
 <body>
   <div class="grain"></div>
@@ -273,6 +273,7 @@
         <button type="button" data-admin-section-target="blacklist">블랙리스트</button>
         <button type="button" data-admin-section-target="users">유저정보</button>
         <button type="button" data-admin-section-target="inquiries">문의관리</button>
+        <button type="button" data-admin-section-target="direct-dm">유저단독DM</button>
         <button type="button" data-admin-section-target="subadmins">부관리자 관리</button>
         <button type="button" data-admin-section-target="notices">공지·이벤트</button>
         <button type="button" data-admin-section-target="policies">약관관리</button>
@@ -292,7 +293,7 @@
         <div class="panel"><div class="panel-head"><h2>웹 주문 관리</h2><button type="button" id="refresh-admin-orders" class="button secondary compact">새로고침</button></div><div id="admin-order-filters" class="order-filter-tabs"></div><div id="admin-orders"></div></div>
       </div>
       <div class="admin-section" data-admin-section="channels">
-        <form id="channel-form" class="panel form-panel channels"><h2>Discord 채널 설정</h2><label>결제 승인 채널 ID<input name="approval_channel_id" inputmode="numeric" autocomplete="off"></label><label>구매로그 채널 ID<input name="log_channel_id" inputmode="numeric" autocomplete="off"></label><label>구매자정보 채널 ID<input name="buyer_info_channel_id" inputmode="numeric" autocomplete="off"></label><label>구매후기 채널 ID<input name="review_channel_id" inputmode="numeric" autocomplete="off"></label><label>문의알림 채널 ID<input name="inquiry_alert_channel_id" inputmode="numeric" autocomplete="off"></label><label>실시간 채팅상담 채널 ID<input name="live_chat_channel_id" inputmode="numeric" autocomplete="off"></label><div class="two-field"><label>상담 시작시간<input name="live_chat_start" type="time" value="10:00"></label><label>상담 종료시간<input name="live_chat_end" type="time" value="22:00"></label></div><button class="button" type="submit">채널 저장</button></form>
+        <form id="channel-form" class="panel form-panel channels"><h2>Discord 채널·역할 설정</h2><label>결제 승인 채널 ID<input name="approval_channel_id" inputmode="numeric" autocomplete="off"></label><label>구매로그 채널 ID<input name="log_channel_id" inputmode="numeric" autocomplete="off"></label><label>구매자정보 채널 ID<input name="buyer_info_channel_id" inputmode="numeric" autocomplete="off"></label><label>구매후기 채널 ID<input name="review_channel_id" inputmode="numeric" autocomplete="off"></label><label>문의알림 채널 ID<input name="inquiry_alert_channel_id" inputmode="numeric" autocomplete="off"></label><label>실시간 채팅상담 채널 ID<input name="live_chat_channel_id" inputmode="numeric" autocomplete="off"></label><label>구매 인증 역할 ID<input name="purchase_verified_role_id" inputmode="numeric" autocomplete="off" placeholder="이 역할이 있는 유저만 결제 가능"><small>비워두면 인증 역할 검사를 사용하지 않습니다.</small></label><div class="two-field"><label>상담 시작시간<input name="live_chat_start" type="time" value="10:00"></label><label>상담 종료시간<input name="live_chat_end" type="time" value="22:00"></label></div><button class="button" type="submit">채널·역할 저장</button></form>
       </div>
       <div class="admin-section" data-admin-section="blacklist">
         <div class="blacklist-tools">
@@ -325,6 +326,12 @@
       </div>
       <div class="admin-section" data-admin-section="inquiries">
         <div class="panel"><div class="panel-head"><div><p class="eyebrow">CUSTOMER INQUIRIES</p><h2>문의관리</h2></div><button type="button" id="refresh-admin-inquiries" class="button secondary compact">새로고침</button></div><div id="admin-inquiries"><p class="admin-empty">문의를 불러오는 중입니다.</p></div></div>
+      </div>
+      <div class="admin-section" data-admin-section="direct-dm">
+        <div class="direct-dm-layout">
+          <aside class="panel direct-dm-sidebar"><div class="panel-head"><div><p class="eyebrow">DIRECT MESSAGE</p><h2>유저단독DM</h2></div><button type="button" id="refresh-direct-dm" class="button secondary compact">새로고침</button></div><form id="direct-dm-open-form" class="direct-dm-open"><input name="user_id" inputmode="numeric" pattern="[0-9]{15,20}" placeholder="Discord 사용자 ID" required><button class="button compact" type="submit">대화 열기</button></form><div id="direct-dm-sessions" class="direct-dm-sessions"><p class="admin-empty">DM 기록을 불러오는 중입니다.</p></div></aside>
+          <section class="panel direct-dm-chat"><header id="direct-dm-header"><h2>유저를 선택해 주세요</h2><p>사용자 ID로 원하는 유저에게 봇 DM을 보낼 수 있습니다.</p></header><div id="direct-dm-messages" class="direct-dm-messages"><p class="admin-empty">왼쪽에서 대화를 선택하거나 사용자 ID를 입력해 주세요.</p></div><form id="direct-dm-send-form" class="direct-dm-compose"><input type="hidden" name="user_id"><textarea name="content" maxlength="2000" rows="2" placeholder="보낼 DM 내용을 입력해 주세요." required></textarea><button class="button" type="submit">전송</button></form></section>
+        </div>
       </div>
       <div class="admin-section" data-admin-section="subadmins">
         <form id="subadmin-form" class="panel form-panel"><p class="eyebrow">PRODUCT MANAGERS</p><h2>부관리자 등록</h2><label>Discord 사용자 ID<input name="user_id" inputmode="numeric" pattern="[0-9]{15,20}" required></label><fieldset><legend>담당 상품</legend><div id="subadmin-products" class="subadmin-products"></div></fieldset><button class="button" type="submit">부관리자 저장</button></form>
@@ -405,6 +412,6 @@
     <div id="chat-home"><button type="button" id="chat-start" class="chat-start">채팅 상담</button><label id="chat-initial-wrap" hidden><span class="chat-compose-title"><b><i>✦</i> 문의 내용</b><small><span id="chat-initial-count">0</span>/1000</small></span><textarea id="chat-initial-content" maxlength="1000" placeholder="궁금한 내용을 편하게 작성해 주세요."></textarea><span class="chat-compose-hint">상담사가 확인한 뒤 실시간으로 답변해 드립니다.</span><button type="button" id="chat-create" class="button wide">상담 연결하기 <span>→</span></button></label><div><h3>상담 기록</h3><div id="chat-history" class="chat-history"></div></div></div>
     <div id="chat-room" hidden><button type="button" id="chat-back" class="text-button">← 상담 기록</button><div id="chat-messages" class="chat-messages"></div><form id="chat-message-form" class="chat-message-form"><div id="chat-upload-preview" class="chat-upload-preview" hidden><img alt="전송할 사진 미리보기"><span>사진 전송 중...</span></div><textarea name="content" maxlength="2000" rows="1" aria-label="채팅 메시지" placeholder="메시지를 입력해 주세요."></textarea><label class="chat-file" title="사진 첨부" aria-label="사진 첨부"><span aria-hidden="true">🖼️</span><input name="image" type="file" accept="image/png,image/jpeg,image/webp,image/gif"></label><button class="button chat-send" type="submit" title="메시지 보내기" aria-label="메시지 보내기"><i aria-hidden="true">↑</i></button><small class="chat-enter-hint">사진은 선택 즉시 전송 · Enter 전송 · Shift+Enter 줄바꿈</small></form></div>
   </section>
-<script src="/static/app.js?v=20261011-54"></script>
+<script src="/static/app.js?v=20261012-55"></script>
 </body>
 </html>

@@ -40,6 +40,8 @@ const state = {
   subadminOrders: [],
   subadminOrderFilter: "all",
   productEditorScope: "admin",
+  directDmUserId: null,
+  directDmPoll: null,
 };
 
 const $ = (selector, parent = document) => parent.querySelector(selector);
@@ -1167,6 +1169,12 @@ function bindForms() {
   $("#blacklist-duration").onchange = updateBlacklistDuration;
   $("#refresh-admin-users").onclick = loadAdminUsers;
   $("#refresh-admin-inquiries").onclick = loadAdminInquiries;
+  $("#refresh-direct-dm").onclick = () => loadDirectDm(state.directDmUserId, false);
+  $("#direct-dm-open-form").onsubmit = event => {
+    event.preventDefault();
+    openDirectDm(String(new FormData(event.currentTarget).get("user_id") || "").trim());
+  };
+  $("#direct-dm-send-form").onsubmit = sendDirectDm;
   $("#refresh-subadmins").onclick = loadSubadmins;
   $("#subadmin-form").onsubmit = saveSubadmin;
   $("#refresh-subadmin-panel").onclick = loadSubadminPanel;
@@ -1344,6 +1352,54 @@ async function deleteInquiry(inquiryId) {
   } catch (error) { toast(error.message); }
 }
 
+async function openDirectDm(userId = null) {
+  if (userId) state.directDmUserId = String(userId);
+  await loadDirectDm(state.directDmUserId, false);
+  if (state.directDmPoll) clearInterval(state.directDmPoll);
+  state.directDmPoll = setInterval(() => loadDirectDm(state.directDmUserId, true), 3000);
+}
+
+async function loadDirectDm(userId = null, silent = false) {
+  try {
+    const data = await api(`/api/admin/direct-dm${userId ? `?user_id=${encodeURIComponent(userId)}` : ""}`);
+    const sessions = $("#direct-dm-sessions");
+    sessions.innerHTML = (data.sessions || []).map(session => `<button type="button" class="direct-dm-session ${String(session.user_id) === String(state.directDmUserId) ? "active" : ""}" data-direct-dm-user="${escapeHtml(session.user_id)}">${session.avatar_url ? `<img src="${escapeHtml(session.avatar_url)}" alt="">` : ""}<span><b>${escapeHtml(session.nickname || session.username)}</b><small>${escapeHtml(session.user_id)}</small></span></button>`).join("") || '<p class="admin-empty">아직 단독 DM 기록이 없습니다.</p>';
+    $$('[data-direct-dm-user]', sessions).forEach(button => { button.onclick = () => openDirectDm(button.dataset.directDmUser); });
+    const header = $("#direct-dm-header");
+    const messageBox = $("#direct-dm-messages");
+    const form = $("#direct-dm-send-form");
+    if (!data.selected_user) {
+      header.innerHTML = "<h2>유저를 선택해 주세요</h2><p>사용자 ID로 원하는 유저에게 봇 DM을 보낼 수 있습니다.</p>";
+      messageBox.innerHTML = '<p class="admin-empty">왼쪽에서 대화를 선택하거나 사용자 ID를 입력해 주세요.</p>';
+      form.elements.user_id.value = "";
+      return;
+    }
+    state.directDmUserId = String(data.selected_user.user_id);
+    form.elements.user_id.value = state.directDmUserId;
+    header.innerHTML = `<div class="direct-dm-user">${data.selected_user.avatar_url ? `<img src="${escapeHtml(data.selected_user.avatar_url)}" alt="">` : ""}<span><h2>${escapeHtml(data.selected_user.nickname || data.selected_user.username)}</h2><p>${escapeHtml(state.directDmUserId)} · ${escapeHtml(data.selected_user.username || "")}</p></span></div>`;
+    messageBox.innerHTML = (data.messages || []).map(message => `<div class="direct-dm-message ${message.sender_type === "ADMIN" ? "admin" : "user"}"><b>${escapeHtml(message.sender_name || (message.sender_type === "ADMIN" ? "관리자" : "유저"))}</b><p>${escapeHtml(message.content)}</p><small>${String(message.created_at || "").slice(0, 16).replace("T", " ")}</small></div>`).join("") || '<p class="admin-empty">아직 주고받은 메시지가 없습니다.</p>';
+    messageBox.scrollTop = messageBox.scrollHeight;
+  } catch (error) {
+    if (!silent) toast(error.message);
+  }
+}
+
+async function sendDirectDm(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const data = Object.fromEntries(new FormData(form));
+  if (!data.user_id) return toast("DM을 보낼 유저를 먼저 선택해 주세요.");
+  const submit = form.querySelector('[type="submit"]');
+  submit.disabled = true;
+  try {
+    await api("/api/admin/direct-dm", { method: "POST", body: JSON.stringify(data) });
+    form.elements.content.value = "";
+    await loadDirectDm(data.user_id, false);
+    toast("유저에게 DM을 보냈습니다.");
+  } catch (error) { toast(error.message); }
+  finally { submit.disabled = false; }
+}
+
 async function loadSubadmins() {
   try {
     const data = await api("/api/admin/subadmins");
@@ -1486,6 +1542,8 @@ function setAdminSection(section) {
   if (section === "policies") loadAdminPolicies();
   if (section === "coupons") loadAdminCouponEvents();
   if (section === "inquiries") loadAdminInquiries();
+  if (section === "direct-dm") openDirectDm(state.directDmUserId);
+  else if (state.directDmPoll) { clearInterval(state.directDmPoll); state.directDmPoll = null; }
   if (section === "subadmins") loadSubadmins();
 }
 

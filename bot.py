@@ -1001,9 +1001,15 @@ class DepositModal(discord.ui.Modal):
         }])
         admin_payload['allowed_mentions'] = {"parse": []}
         try:
-            await interaction.client.http.request(
+            approval_message = await interaction.client.http.request(
                 discord.http.Route("POST", f"/channels/{self.settings_data['approval_channel_id']}/messages"), json=admin_payload,
             )
+            if approval_message and approval_message.get("id"):
+                async with bot.db_pool.acquire() as conn:
+                    await conn.execute(
+                        "UPDATE orders SET approval_channel_id=$3,approval_message_id=$4 WHERE order_id=$1 AND guild_id=$2",
+                        self.order_id, interaction.guild.id, int(self.settings_data["approval_channel_id"]), int(approval_message["id"]),
+                    )
         except discord.HTTPException:
             async with bot.db_pool.acquire() as conn:
                 await reset_failed_payment(conn, self.order_id, interaction.guild.id)
@@ -1584,6 +1590,71 @@ async def create_ticket_channel(interaction: discord.Interaction, t_type: str, t
         )
         
         await interaction.followup.send(f"✅ 티켓이 정상적으로 생성되었습니다: {ticket_channel.mention}", ephemeral=True)
+
+
+@bot.tree.command(name="강제티켓", description="관리자가 지정한 유저의 문의 티켓을 강제로 생성합니다.")
+@app_commands.describe(유저="티켓을 열 유저", 티켓유형="생성할 티켓 유형", 사유="강제로 티켓을 여는 사유", 내용="티켓에 기록할 문의 내용")
+@app_commands.choices(티켓유형=[
+    app_commands.Choice(name="일반문의", value="general"),
+    app_commands.Choice(name="입금문의", value="payment"),
+    app_commands.Choice(name="배송문의", value="shipping"),
+    app_commands.Choice(name="제휴문의", value="partner"),
+])
+async def force_ticket(interaction: discord.Interaction, 유저: discord.Member, 티켓유형: app_commands.Choice[str], 사유: str, 내용: str):
+    if not interaction.user.guild_permissions.administrator:
+        await interaction.response.send_message("❌ 관리자만 강제 티켓을 생성할 수 있습니다.", ephemeral=True)
+        return
+    if not bot.db_pool:
+        await interaction.response.send_message("❌ DB 오류가 발생했습니다.", ephemeral=True)
+        return
+    reason, content = 사유.strip(), 내용.strip()
+    if not reason or not content:
+        await interaction.response.send_message("❌ 사유와 내용을 모두 입력해 주세요.", ephemeral=True)
+        return
+    await interaction.response.defer(ephemeral=True)
+    type_labels = {"general": "일반문의", "payment": "입금문의", "shipping": "배송문의", "partner": "제휴문의"}
+    ticket_type = 티켓유형.value
+    async with bot.db_pool.acquire() as conn:
+        settings = await conn.fetchrow("SELECT * FROM guild_settings WHERE guild_id=$1", interaction.guild.id)
+        category_id = settings.get(f"ticket_cat_{ticket_type}") if settings else None
+        category = interaction.guild.get_channel(category_id) if category_id else None
+        if not isinstance(category, discord.CategoryChannel):
+            await interaction.followup.send(f"❌ {type_labels[ticket_type]} 카테고리가 설정되지 않았습니다.", ephemeral=True)
+            return
+        ticket_count = await conn.fetchval("SELECT COUNT(*) FROM tickets")
+        overwrites = dict(category.overwrites)
+        overwrites[유저] = discord.PermissionOverwrite(view_channel=True, read_messages=True, send_messages=True)
+        try:
+            ticket_channel = await interaction.guild.create_text_channel(
+                name=f"{type_labels[ticket_type]}-{유저.name}-{int(ticket_count or 0) + 1:04d}",
+                category=category,
+                overwrites=overwrites,
+            )
+        except (discord.Forbidden, discord.HTTPException):
+            await interaction.followup.send("❌ 티켓 채널을 생성하지 못했습니다. 봇 권한을 확인해 주세요.", ephemeral=True)
+            return
+        await conn.execute(
+            "INSERT INTO tickets (channel_id,user_id,ticket_type) VALUES ($1,$2,$3)",
+            ticket_channel.id, 유저.id, ticket_type,
+        )
+    ticket_payload = create_v2_payload(
+        f"## 🎫 관리자가 {type_labels[ticket_type]} 티켓을 생성했습니다\n\n"
+        f"**대상 유저:** {유저.mention} (`{유저.id}`)\n"
+        f"**생성 관리자:** {interaction.user.mention}\n"
+        f"**사유:** {discord.utils.escape_markdown(reason[:500])}\n\n"
+        f"### 문의 내용\n{discord.utils.escape_markdown(content[:2500])}",
+        extra_components=[{"type": 1, "components": [{"type": 2, "style": 4, "label": "티켓 닫기", "custom_id": "ticket_close"}]}],
+    )
+    ticket_payload["allowed_mentions"] = {"parse": [], "users": [str(유저.id), str(interaction.user.id)]}
+    await interaction.client.http.request(discord.http.Route("POST", f"/channels/{ticket_channel.id}/messages"), json=ticket_payload)
+    try:
+        await 유저.send(
+            f"V4P3 SP0T 관리자가 {type_labels[ticket_type]} 티켓을 생성했습니다.\n사유: {reason}\n티켓: https://discord.com/channels/{interaction.guild.id}/{ticket_channel.id}",
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+    except (discord.Forbidden, discord.HTTPException):
+        pass
+    await interaction.followup.send(f"✅ {유저.mention}님의 티켓을 생성했습니다: {ticket_channel.mention}", ephemeral=True)
 
 
 class GeneralTicketModal(discord.ui.Modal, title="💌 일반 문의 작성"):
@@ -3533,6 +3604,16 @@ async def on_interaction(interaction: discord.Interaction):
                     buyer_info_ch = interaction.guild.get_channel(settings['buyer_info_channel_id'])
                     if buyer_info_ch:
                         buyer_user_data = await conn.fetchrow('SELECT * FROM user_info WHERE user_id = $1', order['buyer_id'])
+                        category_rows = await conn.fetch(
+                            """SELECT DISTINCT COALESCE(parent.name || ' › ' || category.name, category.name) category_name
+                               FROM web_order_items item
+                               JOIN web_products product ON product.id=item.product_id AND product.guild_id=$2
+                               LEFT JOIN web_categories category ON category.id=product.category_id
+                               LEFT JOIN web_categories parent ON parent.id=category.parent_id
+                               WHERE item.order_id=$1 AND category.name IS NOT NULL
+                               ORDER BY category_name""",
+                            order_id, interaction.guild.id,
+                        )
                         
                         b_name = buyer_user_data['name'] if buyer_user_data and buyer_user_data['name'] else "미등록"
                         b_contact = buyer_user_data['contact'] if buyer_user_data and buyer_user_data['contact'] else "미등록"
@@ -3540,6 +3621,7 @@ async def on_interaction(interaction: discord.Interaction):
                         b_cvs = buyer_user_data['cvs'] if buyer_user_data and buyer_user_data['cvs'] else "X"
                         
                         formatted_prod_info = "\n".join([f"`{p.strip()}`" for p in order['product'].split(",") if p.strip()])
+                        formatted_categories = ", ".join(str(row["category_name"]) for row in category_rows) or "미분류"
                         now_kst_str = datetime.datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S")
                         
                         buyer_info_txt = (
@@ -3552,6 +3634,7 @@ async def on_interaction(interaction: discord.Interaction):
                             f"`📞` **연락처:** `{b_contact}`\n"
                             f"`🏠` **주소:** `{b_address}`\n"
                             f"`🏪` **편의점:** `{b_cvs}`\n"
+                            f"`🗂️` **상품 카테고리:** `{formatted_categories}`\n"
                             f"`📦` **상품:**\n{formatted_prod_info}\n\n"
                             f"`💰` **금액:** `{order['amount']}`"
                         )
@@ -3627,8 +3710,8 @@ async def on_interaction(interaction: discord.Interaction):
         }
         
         await interaction.client.http.request(
-            discord.http.Route("PATCH", f"/webhooks/{interaction.application_id}/{interaction.token}/messages/@original"),
-            json=update_payload
+            discord.http.Route("PATCH", f"/channels/{interaction.channel_id}/messages/{interaction.message.id}"),
+            json=update_payload,
         )
 
         if action == 'approve':

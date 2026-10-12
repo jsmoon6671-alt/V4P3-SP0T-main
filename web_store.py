@@ -380,6 +380,17 @@ async def initialize_web_store_schema(conn):
             content TEXT NOT NULL DEFAULT '', image_mime TEXT, image_data BYTEA,
             created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
+        CREATE TABLE IF NOT EXISTS web_direct_dm_sessions (
+            guild_id BIGINT NOT NULL, user_id BIGINT NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (guild_id, user_id)
+        );
+        CREATE TABLE IF NOT EXISTS web_direct_dm_messages (
+            id BIGSERIAL PRIMARY KEY, guild_id BIGINT NOT NULL, user_id BIGINT NOT NULL,
+            sender_type TEXT NOT NULL, sender_name TEXT NOT NULL DEFAULT '', content TEXT NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
         CREATE TABLE IF NOT EXISTS web_subadmins (
             guild_id BIGINT NOT NULL, user_id BIGINT NOT NULL, added_by BIGINT,
             created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -443,6 +454,9 @@ async def initialize_web_store_schema(conn):
         ALTER TABLE guild_settings ADD COLUMN IF NOT EXISTS live_chat_channel_id BIGINT;
         ALTER TABLE guild_settings ADD COLUMN IF NOT EXISTS live_chat_start TEXT NOT NULL DEFAULT '10:00';
         ALTER TABLE guild_settings ADD COLUMN IF NOT EXISTS live_chat_end TEXT NOT NULL DEFAULT '22:00';
+        ALTER TABLE guild_settings ADD COLUMN IF NOT EXISTS purchase_verified_role_id BIGINT;
+        ALTER TABLE orders ADD COLUMN IF NOT EXISTS approval_channel_id BIGINT;
+        ALTER TABLE orders ADD COLUMN IF NOT EXISTS approval_message_id BIGINT;
 
         UPDATE web_products
         SET option_groups_json = json_build_array(
@@ -642,6 +656,8 @@ class StoreServer:
             web.get("/api/admin/inquiries", self.admin_inquiries),
             web.post(r"/api/admin/inquiries/{inquiry_id:\d+}/answer", self.admin_answer_inquiry),
             web.delete(r"/api/admin/inquiries/{inquiry_id:\d+}", self.admin_delete_inquiry),
+            web.get("/api/admin/direct-dm", self.admin_direct_dm),
+            web.post("/api/admin/direct-dm", self.admin_send_direct_dm),
             web.get("/api/admin/subadmins", self.admin_subadmins),
             web.post("/api/admin/subadmins", self.admin_save_subadmin),
             web.delete(r"/api/admin/subadmins/{user_id:\d+}", self.admin_delete_subadmin),
@@ -2105,6 +2121,57 @@ class StoreServer:
             raise StoreError("문의 상태가 변경되어 삭제하지 못했습니다.", 409)
         return web.json_response({"ok": True})
 
+    async def admin_direct_dm(self, request):
+        await self._admin(request)
+        raw_user_id = str(request.query.get("user_id") or "").strip()
+        selected_user_id = self._parse_discord_user_id(raw_user_id) if raw_user_id else None
+        async with self.bot.db_pool.acquire() as conn:
+            sessions = await conn.fetch(
+                "SELECT user_id,created_at,updated_at FROM web_direct_dm_sessions WHERE guild_id=$1 ORDER BY updated_at DESC LIMIT 100",
+                self.guild_id,
+            )
+            messages = await conn.fetch(
+                "SELECT id,sender_type,sender_name,content,created_at FROM web_direct_dm_messages WHERE guild_id=$1 AND user_id=$2 ORDER BY id DESC LIMIT 200",
+                self.guild_id, selected_user_id,
+            ) if selected_user_id else []
+        session_items = []
+        for row in sessions:
+            profile = await self._blacklist_profile(int(row["user_id"]))
+            session_items.append({**dict(row), **profile, "user_id": str(row["user_id"])})
+        selected_profile = await self._blacklist_profile(selected_user_id) if selected_user_id else None
+        return web.json_response(
+            {"sessions": session_items, "selected_user": ({**selected_profile, "user_id": str(selected_user_id)} if selected_user_id else None), "messages": [dict(row) for row in reversed(messages)]},
+            dumps=lambda value: json.dumps(value, ensure_ascii=False, default=str),
+        )
+
+    async def admin_send_direct_dm(self, request):
+        admin, data = await self._admin(request), await self._body(request)
+        user_id = self._parse_discord_user_id(data.get("user_id"))
+        content = str(data.get("content") or "").strip()
+        if not 1 <= len(content) <= 2000:
+            raise StoreError("DM 내용은 1자 이상 2,000자 이하로 입력해 주세요.")
+        try:
+            target = self.bot.get_user(user_id) or await self.bot.fetch_user(user_id)
+            dm = await target.create_dm()
+            payload = {
+                "flags": 1 << 15,
+                "components": [{"type": 17, "accent_color": 0x5865F2, "components": [{"type": 10, "content": f"## V4P3 SP0T\n\n{discord.utils.escape_markdown(content)}"}]}],
+                "allowed_mentions": {"parse": []},
+            }
+            await self.bot.http.request(discord.http.Route("POST", f"/channels/{dm.id}/messages"), json=payload)
+        except (discord.Forbidden, discord.NotFound, discord.HTTPException) as exc:
+            raise StoreError("해당 유저에게 DM을 보낼 수 없습니다. 유저 ID와 DM 허용 설정을 확인해 주세요.", 422) from exc
+        async with self.bot.db_pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO web_direct_dm_sessions (guild_id,user_id) VALUES ($1,$2) ON CONFLICT (guild_id,user_id) DO UPDATE SET updated_at=CURRENT_TIMESTAMP",
+                self.guild_id, user_id,
+            )
+            await conn.execute(
+                "INSERT INTO web_direct_dm_messages (guild_id,user_id,sender_type,sender_name,content) VALUES ($1,$2,'ADMIN',$3,$4)",
+                self.guild_id, user_id, str(admin.get("username") or "관리자"), content,
+            )
+        return web.json_response({"ok": True})
+
     async def _chat_availability(self, conn) -> dict:
         row = await conn.fetchrow("SELECT live_chat_start,live_chat_end FROM guild_settings WHERE guild_id=$1", self.guild_id)
         start = str(row["live_chat_start"] if row else "10:00")
@@ -2241,7 +2308,31 @@ class StoreServer:
         return True
 
     async def handle_discord_chat_message(self, message) -> bool:
-        if message.author.bot or not isinstance(message.channel, discord.Thread):
+        if message.author.bot:
+            return False
+        if message.guild is None:
+            content_parts = [str(message.content or "").strip()]
+            content_parts.extend(str(attachment.url) for attachment in message.attachments)
+            content = "\n".join(part for part in content_parts if part).strip()
+            if not content:
+                return False
+            async with self.bot.db_pool.acquire() as conn:
+                exists = await conn.fetchval(
+                    "SELECT EXISTS(SELECT 1 FROM web_direct_dm_sessions WHERE guild_id=$1 AND user_id=$2)",
+                    self.guild_id, message.author.id,
+                )
+                if not exists:
+                    return False
+                await conn.execute(
+                    "INSERT INTO web_direct_dm_messages (guild_id,user_id,sender_type,sender_name,content) VALUES ($1,$2,'USER',$3,$4)",
+                    self.guild_id, message.author.id, str(message.author.display_name), content,
+                )
+                await conn.execute(
+                    "UPDATE web_direct_dm_sessions SET updated_at=CURRENT_TIMESTAMP WHERE guild_id=$1 AND user_id=$2",
+                    self.guild_id, message.author.id,
+                )
+            return True
+        if not isinstance(message.channel, discord.Thread):
             return False
         async with self.bot.db_pool.acquire() as conn:
             session = await conn.fetchrow("SELECT * FROM web_chat_sessions WHERE thread_id=$1", message.channel.id)
@@ -2281,6 +2372,20 @@ class StoreServer:
     async def checkout(self, request):
         user, data = await self._user(request), await self._body(request)
         async with self.bot.db_pool.acquire() as conn:
+            verified_role_id = await conn.fetchval(
+                "SELECT purchase_verified_role_id FROM guild_settings WHERE guild_id=$1",
+                self.guild_id,
+            )
+            if verified_role_id:
+                guild = self._guild()
+                member = guild.get_member(int(user["id"])) if guild else None
+                if member is None and guild:
+                    try:
+                        member = await guild.fetch_member(int(user["id"]))
+                    except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                        member = None
+                if member is None or all(role.id != int(verified_role_id) for role in member.roles):
+                    raise StoreError("서버 인증 역할이 있는 유저만 구매할 수 있습니다. Discord 서버에서 인증을 완료해 주세요.", 403)
             blacklist_reason = await conn.fetchval(
                 """SELECT reason FROM web_blacklist WHERE guild_id=$1 AND user_id=$2
                    AND (expires_at IS NULL OR expires_at>CURRENT_TIMESTAMP)""",
@@ -2502,7 +2607,13 @@ class StoreServer:
             "allowed_mentions": {"parse": []},
         }
         try:
-            await self.bot.http.request(discord.http.Route("POST", f"/channels/{int(channel_id)}/messages"), json=payload)
+            response = await self.bot.http.request(discord.http.Route("POST", f"/channels/{int(channel_id)}/messages"), json=payload)
+            if response and response.get("id"):
+                async with self.bot.db_pool.acquire() as conn:
+                    await conn.execute(
+                        "UPDATE orders SET approval_channel_id=$3,approval_message_id=$4 WHERE order_id=$1 AND guild_id=$2",
+                        order["order_id"], self.guild_id, int(channel_id), int(response["id"]),
+                    )
         except discord.HTTPException:
             LOGGER.exception("웹 결제 확인 요청 전송 실패: order=%s", order["order_id"])
 
@@ -3088,7 +3199,7 @@ class StoreServer:
     async def admin_channels(self, request):
         await self._admin(request)
         async with self.bot.db_pool.acquire() as conn:
-            row = await conn.fetchrow("SELECT approval_channel_id,log_channel_id,buyer_info_channel_id,review_channel_id,inquiry_alert_channel_id,live_chat_channel_id,live_chat_start,live_chat_end FROM guild_settings WHERE guild_id=$1", self.guild_id)
+            row = await conn.fetchrow("SELECT approval_channel_id,log_channel_id,buyer_info_channel_id,review_channel_id,inquiry_alert_channel_id,live_chat_channel_id,purchase_verified_role_id,live_chat_start,live_chat_end FROM guild_settings WHERE guild_id=$1", self.guild_id)
         channels = {
             key: str(value) if value is not None else ""
             for key, value in (dict(row).items() if row else [])
@@ -3097,18 +3208,22 @@ class StoreServer:
 
     async def admin_save_channels(self, request):
         await self._admin(request); data = await self._body(request)
-        keys = ("approval_channel_id", "log_channel_id", "buyer_info_channel_id", "review_channel_id", "inquiry_alert_channel_id", "live_chat_channel_id")
+        keys = ("approval_channel_id", "log_channel_id", "buyer_info_channel_id", "review_channel_id", "inquiry_alert_channel_id", "live_chat_channel_id", "purchase_verified_role_id")
         raw_values = [str(data.get(key, "")).strip() for key in keys]
         if any(value and (not value.isdigit() or len(value) > 20) for value in raw_values):
-            raise StoreError("Discord 채널 ID는 숫자만 입력해 주세요.")
+            raise StoreError("Discord 채널·역할 ID는 숫자만 입력해 주세요.")
         values = [int(value) if value else None for value in raw_values]
+        verified_role_id = values[-1]
+        guild = self._guild()
+        if verified_role_id and (guild is None or guild.get_role(verified_role_id) is None):
+            raise StoreError("구매 인증 역할을 서버에서 찾을 수 없습니다. 역할 ID를 확인해 주세요.")
         chat_start = str(data.get("live_chat_start") or "10:00").strip()
         chat_end = str(data.get("live_chat_end") or "22:00").strip()
         if not re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", chat_start) or not re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", chat_end):
             raise StoreError("상담시간을 HH:MM 형식으로 입력해 주세요.")
         async with self.bot.db_pool.acquire() as conn:
             await conn.execute("INSERT INTO guild_settings (guild_id) VALUES ($1) ON CONFLICT DO NOTHING", self.guild_id)
-            await conn.execute("UPDATE guild_settings SET approval_channel_id=$2,log_channel_id=$3,buyer_info_channel_id=$4,review_channel_id=$5,inquiry_alert_channel_id=$6,live_chat_channel_id=$7,live_chat_start=$8,live_chat_end=$9 WHERE guild_id=$1", self.guild_id, *values, chat_start, chat_end)
+            await conn.execute("UPDATE guild_settings SET approval_channel_id=$2,log_channel_id=$3,buyer_info_channel_id=$4,review_channel_id=$5,inquiry_alert_channel_id=$6,live_chat_channel_id=$7,purchase_verified_role_id=$8,live_chat_start=$9,live_chat_end=$10 WHERE guild_id=$1", self.guild_id, *values, chat_start, chat_end)
         return web.json_response({
             "ok": True,
             "channels": {**{key: str(value) if value is not None else "" for key, value in zip(keys, values)}, "live_chat_start": chat_start, "live_chat_end": chat_end},
