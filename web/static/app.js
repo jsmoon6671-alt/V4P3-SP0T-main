@@ -44,6 +44,11 @@ const state = {
   directDmPoll: null,
   reviewOrderId: null,
   reviewOrderProduct: "",
+  routeLoadToken: 0,
+  cartLoadedAt: 0,
+  cartPromise: null,
+  productRenderFrame: null,
+  productSearchTimer: null,
 };
 
 const $ = (selector, parent = document) => parent.querySelector(selector);
@@ -145,21 +150,26 @@ function route() {
   }
   $$(".page").forEach(page => page.classList.toggle("active", page.id === id));
   $$("#nav a").forEach(link => link.classList.toggle("active", link.getAttribute("href") === `#${id}`));
-  if (id === "account" && state.me) loadAccount();
-  if (id === "cart" && state.me) {
-    loadCart();
-    loadCheckoutCustomer();
-  }
-  if (id === "tracking" && state.me) loadCarriers().then(applyTrackingPreset);
-  if (id === "tiers") renderTiers();
-  if (id === "terms") loadPolicies();
-  if (id === "ranking") loadPurchaseRanking();
-  if (id === "support") { renderSupportForm(); loadInquiries(); }
-  if (id === "events" && state.me) loadCouponEvents(false);
-  if (id === "notices") loadNoticesPage();
-  if (id === "subadmin-panel") openSubadminPanel();
-  if (id === "admin") openAdminPanel();
-  scrollTo(0, 0);
+  document.documentElement.scrollTop = 0;
+  document.body.scrollTop = 0;
+  const loadToken = ++state.routeLoadToken;
+  requestAnimationFrame(() => {
+    if (loadToken !== state.routeLoadToken || (location.hash.slice(1) || "home") !== id) return;
+    if (id === "account" && state.me) loadAccount();
+    if (id === "cart" && state.me) {
+      loadCart(false);
+      loadCheckoutCustomer();
+    }
+    if (id === "tracking" && state.me) loadCarriers().then(applyTrackingPreset);
+    if (id === "tiers") renderTiers();
+    if (id === "terms") loadPolicies();
+    if (id === "ranking") loadPurchaseRanking();
+    if (id === "support") { renderSupportForm(); loadInquiries(); }
+    if (id === "events" && state.me) loadCouponEvents(false);
+    if (id === "notices") loadNoticesPage();
+    if (id === "subadmin-panel") openSubadminPanel();
+    if (id === "admin") openAdminPanel();
+  });
 }
 
 async function boot() {
@@ -341,7 +351,7 @@ function renderTabs() {
       state.activeParentCategory = button.dataset.parentCat;
       state.activeCategory = "all";
       renderTabs();
-      renderProducts();
+      scheduleProductRender();
     };
   });
 
@@ -358,7 +368,7 @@ function renderTabs() {
     button.onclick = () => {
       state.activeCategory = button.dataset.cat;
       renderTabs();
-      renderProducts();
+      scheduleProductRender();
     };
   });
 }
@@ -389,7 +399,7 @@ function renderProducts() {
         </select>
       </label>`).join("");
     return `<article class="product">
-      <div class="product-media">${product.image_url ? `<img src="${escapeHtml(product.image_url)}" alt="${escapeHtml(product.name)}">` : "<span>V</span>"}</div>
+      <div class="product-media">${product.image_url ? `<img src="${escapeHtml(product.image_url)}" alt="${escapeHtml(product.name)}" loading="lazy" decoding="async">` : "<span>V</span>"}</div>
       <div class="product-body">
         <small>${escapeHtml(product.parent_category_name ? `${product.parent_category_name} · ${product.category_name}` : (product.category_name || "미분류"))}</small>
         <h3>${escapeHtml(product.name)}</h3>
@@ -426,6 +436,14 @@ function renderProducts() {
   });
 }
 
+function scheduleProductRender() {
+  if (state.productRenderFrame) cancelAnimationFrame(state.productRenderFrame);
+  state.productRenderFrame = requestAnimationFrame(() => {
+    state.productRenderFrame = null;
+    renderProducts();
+  });
+}
+
 async function addCart(productId) {
   if (!state.me) {
     location.href = "/auth/login";
@@ -451,13 +469,26 @@ async function addCart(productId) {
   }
 }
 
-async function loadCart() {
+async function loadCart(force = true) {
   if (!state.me) return;
-  const data = await api("/api/cart");
-  state.cart = data.items;
-  state.selected = new Set(data.items.map(item => Number(item.product_id)));
-  $("#cart-count").textContent = data.items.length;
-  renderCart();
+  if (!force && state.cartLoadedAt && Date.now() - state.cartLoadedAt < 5000) {
+    renderCart();
+    return;
+  }
+  if (state.cartPromise) return state.cartPromise;
+  state.cartPromise = (async () => {
+    const data = await api("/api/cart");
+    state.cart = data.items;
+    state.selected = new Set(data.items.map(item => Number(item.product_id)));
+    state.cartLoadedAt = Date.now();
+    $("#cart-count").textContent = data.items.length;
+    renderCart();
+  })();
+  try {
+    await state.cartPromise;
+  } finally {
+    state.cartPromise = null;
+  }
 }
 
 function renderCart() {
@@ -1246,7 +1277,11 @@ function bindForms() {
       else if (preview.dataset.existingSrc) { preview.src = preview.dataset.existingSrc; preview.hidden = false; }
     };
   });
-  $("#product-search").oninput = event => { state.productSearch = event.target.value; renderProducts(); };
+  $("#product-search").oninput = event => {
+    state.productSearch = event.target.value;
+    clearTimeout(state.productSearchTimer);
+    state.productSearchTimer = setTimeout(scheduleProductRender, 120);
+  };
   $("#site-message-close").onclick = showNextSiteMessage;
   $("#site-message-day").onclick = dismissSiteMessageDay;
   document.addEventListener("keydown", event => {

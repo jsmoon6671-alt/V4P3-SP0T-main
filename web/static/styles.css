@@ -5,7 +5,7 @@
   --danger: #e07470; --shadow: 0 14px 38px rgba(0,0,0,.32);
 }
 * { box-sizing: border-box; }
-html { scroll-behavior: smooth; }
+html { scroll-behavior: auto; }
 body { margin: 0; min-height: 100vh; background: var(--bg); color: var(--text); font-family: "Manrope","Noto Sans KR",sans-serif; font-weight: 600; }
 body.modal-open { overflow: hidden; }
 button,input,textarea,select { font: inherit; }
@@ -675,7 +675,7 @@ body {
   border-color: rgba(73,112,89,.28);
   background: rgba(6,11,8,.88);
   box-shadow: 0 10px 32px rgba(0,0,0,.16);
-  backdrop-filter: blur(20px) saturate(125%);
+  backdrop-filter: none;
 }
 .site-header nav a { padding: 10px 15px; transition: color .18s ease,background .18s ease,border-color .18s ease,transform .18s ease; }
 .site-header nav a:hover { transform: translateY(-1px); }
@@ -696,6 +696,7 @@ body {
 .panel { border-radius: 18px; }
 .order { border-radius: 16px; padding: 19px; }
 .product { border-radius: 18px; transition: transform .2s ease,border-color .2s ease,box-shadow .2s ease,background .2s ease; }
+.product { content-visibility: auto; contain-intrinsic-size: auto 520px; }
 .product:hover { transform: translateY(-4px); border-color: rgba(70,183,119,.72); box-shadow: 0 20px 45px rgba(0,0,0,.24); }
 .product-media { border-color: rgba(62,91,73,.45); }
 .product-body { padding: 20px; gap: 10px; }
