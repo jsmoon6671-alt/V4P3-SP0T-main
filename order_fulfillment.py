@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime
+import json
 import logging
 import os
 
@@ -15,6 +16,37 @@ from order_editing import build_purchase_log_payload, sync_buyer_roles
 LOGGER = logging.getLogger(__name__)
 KST = datetime.timezone(datetime.timedelta(hours=9))
 STORE_ADMIN_USER_ID = int(os.getenv("WEB_ADMIN_USER_ID", "259758966043574272"))
+
+
+def _json_list(value) -> list:
+    if isinstance(value, list):
+        return value
+    if not value:
+        return []
+    try:
+        parsed = json.loads(value)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return []
+    return parsed if isinstance(parsed, list) else []
+
+
+def format_buyer_order_items(rows) -> str:
+    """구매자정보 메시지에서 상품별 선택 옵션을 각각 독립된 줄로 표시한다."""
+    lines: list[str] = []
+    for row in rows:
+        name = str(row["product_name"] or "상품").replace("`", "ˋ")
+        quantity = int(row["quantity"] or 0)
+        lines.append(f"`• {name} × {quantity}`")
+        selections = _json_list(row["product_options_json"])
+        groups = _json_list(row["option_groups_json"])
+        for index, selection in enumerate(selections):
+            if not str(selection).strip():
+                continue
+            group = groups[index] if index < len(groups) and isinstance(groups[index], dict) else {}
+            label = str(group.get("label") or f"옵션 {index + 1}").strip().replace("`", "ˋ")
+            value = str(selection).strip().replace("`", "ˋ")
+            lines.append(f"　`└ {label}: {value}`")
+    return "\n".join(lines)
 
 
 def _v2(content: str, color: int = 0x32CD32, users: list[int] | None = None) -> dict:
@@ -101,6 +133,15 @@ async def finalize_approved_order(bot, order: dict, *, processor: str = "Pushbul
                ORDER BY category_name""",
             order["order_id"], guild_id,
         )
+        item_rows = await conn.fetch(
+            """SELECT item.product_name,item.quantity,item.product_options_json,
+                      COALESCE(product.option_groups_json, '[]') option_groups_json
+               FROM web_order_items item
+               LEFT JOIN web_products product ON product.id=item.product_id AND product.guild_id=$2
+               WHERE item.order_id=$1
+               ORDER BY item.product_name""",
+            order["order_id"], guild_id,
+        )
     settings = dict(settings_row) if settings_row else {}
 
     await notify_product_subadmins(bot, order)
@@ -124,7 +165,9 @@ async def finalize_approved_order(bot, order: dict, *, processor: str = "Pushbul
         shipping_address = order.get("shipping_address") or info.get("address") or "미등록"
         shipping_cvs = order.get("shipping_cvs") or info.get("cvs") or "X"
         shipping_method = order.get("shipping_method") or "미등록"
-        products = "\n".join(f"`{part.strip()}`" for part in str(order["product"]).split(",") if part.strip())
+        products = format_buyer_order_items(item_rows) or "\n".join(
+            f"`{part.strip()}`" for part in str(order["product"]).split(",") if part.strip()
+        )
         categories = ", ".join(str(row["category_name"]) for row in category_rows) or "미분류"
         content = (
             "## 📋 구매자 상세 배송 정보\n\n"

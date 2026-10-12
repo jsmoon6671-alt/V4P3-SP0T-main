@@ -43,7 +43,7 @@ from chat_ranking import (
 )
 from database import initialize_database
 from order_editing import build_purchase_log_payload, register_order_edit_command
-from order_fulfillment import notify_product_subadmins
+from order_fulfillment import format_buyer_order_items, notify_product_subadmins
 from web_store import save_web_review, start_web_store
 from web_order_progress import (
     WebOrderProgressCog,
@@ -3614,13 +3614,24 @@ async def on_interaction(interaction: discord.Interaction):
                                ORDER BY category_name""",
                             order_id, interaction.guild.id,
                         )
+                        item_rows = await conn.fetch(
+                            """SELECT item.product_name,item.quantity,item.product_options_json,
+                                      COALESCE(product.option_groups_json, '[]') option_groups_json
+                               FROM web_order_items item
+                               LEFT JOIN web_products product ON product.id=item.product_id AND product.guild_id=$2
+                               WHERE item.order_id=$1
+                               ORDER BY item.product_name""",
+                            order_id, interaction.guild.id,
+                        )
                         
                         b_name = buyer_user_data['name'] if buyer_user_data and buyer_user_data['name'] else "미등록"
                         b_contact = buyer_user_data['contact'] if buyer_user_data and buyer_user_data['contact'] else "미등록"
                         b_address = buyer_user_data['address'] if buyer_user_data and buyer_user_data['address'] else "미등록"
                         b_cvs = buyer_user_data['cvs'] if buyer_user_data and buyer_user_data['cvs'] else "X"
                         
-                        formatted_prod_info = "\n".join([f"`{p.strip()}`" for p in order['product'].split(",") if p.strip()])
+                        formatted_prod_info = format_buyer_order_items(item_rows) or "\n".join(
+                            f"`{p.strip()}`" for p in order['product'].split(",") if p.strip()
+                        )
                         formatted_categories = ", ".join(str(row["category_name"]) for row in category_rows) or "미분류"
                         now_kst_str = datetime.datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S")
                         
