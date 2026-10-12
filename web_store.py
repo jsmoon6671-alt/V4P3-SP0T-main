@@ -646,6 +646,7 @@ class StoreServer:
             web.get("/api/admin/channels", self.admin_channels),
             web.put("/api/admin/channels", self.admin_save_channels),
             web.get("/api/admin/orders", self.admin_orders),
+            web.post(r"/api/admin/orders/{order_id}/status", self.admin_set_order_status),
             web.post(r"/api/admin/orders/{order_id}/cancel", self.admin_cancel_order),
             web.post(r"/api/admin/orders/{order_id}/waybill", self.admin_set_waybill),
             web.delete(r"/api/admin/orders/{order_id}", self.admin_delete_order),
@@ -3248,6 +3249,32 @@ class StoreServer:
             item["buyer_name"] = member.display_name if member else str(row["buyer_id"])
             result.append(item)
         return web.json_response({"orders": result}, dumps=lambda value: json.dumps(value, ensure_ascii=False, default=str))
+
+    async def admin_set_order_status(self, request):
+        await self._admin(request)
+        order_id = request.match_info["order_id"]
+        data = await self._body(request)
+        fulfillment_status = str(data.get("fulfillment_status") or "").strip().upper()
+        allowed_statuses = {
+            "PAYMENT_APPROVED",
+            "PRODUCT_PREPARING",
+            "SHIPPING_PREPARING",
+            "SHIPPING",
+            "DELIVERED",
+        }
+        if fulfillment_status not in allowed_statuses:
+            raise StoreError("변경할 수 없는 주문 상태입니다.")
+        async with self.bot.db_pool.acquire() as conn:
+            updated = await conn.fetchrow(
+                """UPDATE orders
+                   SET fulfillment_status=$3, fulfillment_updated_at=CURRENT_TIMESTAMP
+                   WHERE order_id=$1 AND guild_id=$2 AND source='WEB' AND status='APPROVED'
+                   RETURNING order_id,fulfillment_status,fulfillment_updated_at""",
+                order_id, self.guild_id, fulfillment_status,
+            )
+        if not updated:
+            raise StoreError("상태를 변경할 수 있는 승인 주문을 찾지 못했습니다.", 404)
+        return web.json_response({"ok": True, "order": dict(updated)}, dumps=lambda value: json.dumps(value, ensure_ascii=False, default=str))
 
     async def admin_cancel_order(self, request):
         order_id = request.match_info["order_id"]

@@ -2179,10 +2179,36 @@ function renderAdminOrders() {
       <div class="admin-order-actions">
         ${cancelled
           ? `<button type="button" class="button danger compact" data-admin-delete-order="${escapeHtml(order.order_id)}">기록삭제</button>`
-          : `${order.status === "APPROVED" ? `<button type="button" class="button secondary compact" data-admin-waybill="${escapeHtml(order.order_id)}">운송장 발송</button>` : ""}<button type="button" class="button danger compact" data-admin-cancel="${escapeHtml(order.order_id)}">주문취소</button>`}
+          : `${order.status === "APPROVED" ? `<button type="button" class="button compact" data-admin-prepare="${escapeHtml(order.order_id)}" ${progress === "PRODUCT_PREPARING" ? "disabled" : ""}>상품준비</button><label class="admin-order-status"><span>주문 상태</span><select data-admin-order-status="${escapeHtml(order.order_id)}"><option value="PAYMENT_APPROVED" ${progress === "PAYMENT_APPROVED" ? "selected" : ""}>승인</option><option value="PRODUCT_PREPARING" ${progress === "PRODUCT_PREPARING" ? "selected" : ""}>상품준비중</option><option value="SHIPPING_PREPARING" ${progress === "SHIPPING_PREPARING" ? "selected" : ""}>배송준비중</option><option value="SHIPPING" ${progress === "SHIPPING" ? "selected" : ""}>배송중</option><option value="DELIVERED" ${progress === "DELIVERED" ? "selected" : ""}>배송완료</option></select></label><button type="button" class="button secondary compact" data-admin-waybill="${escapeHtml(order.order_id)}">운송장 발송</button>` : ""}<button type="button" class="button danger compact" data-admin-cancel="${escapeHtml(order.order_id)}">주문취소</button>`}
       </div>
     </article>
   `; }).join("") : '<p class="admin-empty">선택한 상태의 주문이 없습니다.</p>';
+  $$('[data-admin-prepare]', target).forEach(button => {
+    button.onclick = async () => {
+      button.disabled = true;
+      try {
+        await updateAdminOrderStatus(button.dataset.adminPrepare, "PRODUCT_PREPARING");
+        toast("주문을 상품준비중으로 변경했습니다.");
+      } catch (error) {
+        button.disabled = false;
+        toast(error.message);
+      }
+    };
+  });
+  $$('[data-admin-order-status]', target).forEach(select => {
+    select.onchange = async () => {
+      const previous = state.adminOrders.find(order => String(order.order_id) === String(select.dataset.adminOrderStatus))?.fulfillment_status || "PAYMENT_APPROVED";
+      select.disabled = true;
+      try {
+        await updateAdminOrderStatus(select.dataset.adminOrderStatus, select.value);
+        toast(`주문 상태를 ${select.options[select.selectedIndex].text}으로 변경했습니다.`);
+      } catch (error) {
+        select.value = previous;
+        select.disabled = false;
+        toast(error.message);
+      }
+    };
+  });
   $$('[data-admin-cancel]', target).forEach(button => {
     button.onclick = async () => {
       const reason = prompt("구매자에게 전달할 주문취소 사유를 입력해 주세요.");
@@ -2230,6 +2256,14 @@ function renderAdminOrders() {
       }
     };
   });
+}
+
+async function updateAdminOrderStatus(orderId, fulfillmentStatus) {
+  await api(`/api/admin/orders/${encodeURIComponent(orderId)}/status`, {
+    method: "POST",
+    body: JSON.stringify({ fulfillment_status: fulfillmentStatus }),
+  });
+  await loadAdminOrders();
 }
 
 function fillChannelForm(channels) {

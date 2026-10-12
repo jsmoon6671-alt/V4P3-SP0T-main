@@ -500,7 +500,11 @@ h3,strong { font-weight: 800; }
 .admin-order-main p { margin: 0; color: #dce6e0; }
 .admin-order-main small { color: var(--muted); overflow-wrap: anywhere; }
 .admin-order-main .cancel-reason { color: #f1a09c; }
-.admin-order-actions { display: flex; flex: 0 0 auto; gap: 7px; }
+.admin-order-actions { display: flex; flex: 0 0 auto; align-items: flex-end; gap: 7px; }
+.admin-order-status { display: grid; gap: 4px; min-width: 128px; }
+.admin-order-status span { color: var(--muted); font-size: 10px; font-weight: 800; }
+.admin-order-status select { min-height: 36px; border: 1px solid var(--line-strong); border-radius: 8px; padding: 7px 30px 7px 10px; background: #0d1712; color: var(--text); font-size: 12px; font-weight: 800; cursor: pointer; }
+.admin-order-status select:focus { border-color: var(--accent); outline: none; }
 .button.danger { border-color: #71353b; background: #32191d; color: #ff9ba3; }
 .button.danger:hover:not(:disabled) { border-color: #a84c55; background: #492026; color: #ffd7da; }
 .channels { display: grid; grid-template-columns: repeat(2,1fr); margin-top: 20px; }
@@ -635,8 +639,9 @@ h3,strong { font-weight: 800; }
   .review-card { width: 260px; }
   .ranking-row { grid-template-columns: 38px minmax(0,1fr) auto; padding: 11px 12px; font-size: 12px; }
   .admin-order { align-items: flex-start; flex-direction: column; }
-  .admin-order-actions { width: 100%; }
+  .admin-order-actions { width: 100%; flex-wrap: wrap; }
   .admin-order-actions .button { flex: 1; }
+  .admin-order-status { flex: 1 1 100%; }
   .admin-coupon-event-row { grid-template-columns: 1fr; }
   .admin-coupon-event-row .button { width: 100%; }
   .admin-section-nav button { min-height: 38px; padding: 8px 15px; }
