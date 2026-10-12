@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@500;600;700;800&family=Noto+Sans+KR:wght@500;600;700;800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/static/styles.css?v=20261012-67">
+  <link rel="stylesheet" href="/static/styles.css?v=20261012-68">
 </head>
 <body>
   <div class="grain"></div>
@@ -89,6 +89,8 @@
       <form id="review-form" class="panel form-panel review-form">
         <h2>구매후기를 남겨주세요</h2>
         <p class="review-reward-notice">후기를 작성하면 랜덤으로 <strong>200P ~ 500P</strong>가 적립됩니다.</p>
+        <div id="review-order-context" class="review-order-context" hidden><span>배송완료 주문</span><strong id="review-order-product"></strong></div>
+        <input type="hidden" name="order_id">
         <fieldset><legend>별점</legend><div class="star-picker" id="star-picker">★★★★★</div><input type="hidden" name="rating" value="5"></fieldset>
         <label>후기<textarea name="content" minlength="5" placeholder="후기를 5자 이상 작성해 주세요." required></textarea></label>
         <label>사진 <small>최대 4장 · 등록 시 V4P3 SP0T 워터마크가 적용됩니다.</small><input name="images" type="file" accept="image/*" multiple></label>
@@ -406,12 +408,13 @@
   <div id="site-message" class="modal-backdrop" hidden><div class="modal-card notice-card"><div class="notice-content"><p id="site-message-type" class="eyebrow">NOTICE</p><h2 id="site-message-title">안내</h2><img id="site-message-image" class="site-message-image" alt="공지 이미지" hidden><p id="site-message-content"></p><div class="notice-actions"><button type="button" id="site-message-close" class="button secondary">닫기</button><button type="button" id="site-message-day" class="button">24시간 동안 안 보기</button></div></div></div></div>
   <div id="blocked-screen" class="blocked-screen" hidden><div class="panel"><p class="eyebrow">ACCESS BLOCKED</p><h1>블랙리스트에 등록되었습니다.</h1><p id="blocked-reason"></p><p>오류라고 생각되면 Discord 서버에서 문의 티켓을 열어 주세요.</p><a class="button" href="https://discord.gg/v4p3sp0t" target="_blank" rel="noopener">Discord에서 티켓 열기</a></div></div>
   <div id="welcome-coupon-modal" class="modal-backdrop welcome-coupon-modal" hidden><div class="modal-card welcome-coupon-card"><img src="/static/welcome-coupon.png" width="567" height="265" alt="V4P3 SP0T 웰컴 2,000원 할인쿠폰"><div><h2>WELCOME 쿠폰</h2><p>첫 구매 전용 · 1인 1회</p><button type="button" id="claim-welcome-coupon" class="button wide">쿠폰 받기</button></div></div></div>
+  <div id="delivery-review-modal" class="modal-backdrop delivery-review-modal" hidden><div class="modal-card delivery-review-card"><div class="delivery-review-icon" aria-hidden="true">✓</div><p class="eyebrow">DELIVERY COMPLETE</p><h2 id="delivery-review-title">배송받으신 상품이 어떠신가요?</h2><p id="delivery-review-product"></p><p class="delivery-review-reward">후기를 작성하면 <strong>200P ~ 500P</strong>를 드려요.</p><div><button type="button" id="delivery-review-later" class="button secondary">나중에</button><button type="button" id="delivery-review-write" class="button">후기작성</button></div></div></div>
   <button type="button" id="chat-launcher" class="chat-launcher" aria-label="실시간 채팅상담"><img src="/static/brand-mark.png" alt=""><span>상담</span></button>
   <section id="chat-panel" class="chat-panel" hidden aria-label="실시간 채팅상담">
     <header><div><small>V4P3 SP0T SUPPORT</small><h2>언제나 즐거운 베이핑,<br>V4P3 SP0T</h2><p id="chat-availability">상담시간을 확인하는 중입니다.</p></div><button type="button" id="chat-panel-close" aria-label="닫기">×</button></header>
     <div id="chat-home"><button type="button" id="chat-start" class="chat-start">채팅 상담</button><label id="chat-initial-wrap" hidden><span class="chat-compose-title"><b><i>✦</i> 문의 내용</b><small><span id="chat-initial-count">0</span>/1000</small></span><textarea id="chat-initial-content" maxlength="1000" placeholder="궁금한 내용을 편하게 작성해 주세요."></textarea><span class="chat-compose-hint">상담사가 확인한 뒤 실시간으로 답변해 드립니다.</span><button type="button" id="chat-create" class="button wide">상담 연결하기 <span>→</span></button></label><div><h3>상담 기록</h3><div id="chat-history" class="chat-history"></div></div></div>
     <div id="chat-room" hidden><button type="button" id="chat-back" class="text-button">← 상담 기록</button><div id="chat-messages" class="chat-messages"></div><form id="chat-message-form" class="chat-message-form"><div id="chat-upload-preview" class="chat-upload-preview" hidden><img alt="전송할 사진 미리보기"><span>사진 전송 중...</span></div><textarea name="content" maxlength="2000" rows="1" aria-label="채팅 메시지" placeholder="메시지를 입력해 주세요."></textarea><label class="chat-file" title="사진 첨부" aria-label="사진 첨부"><span aria-hidden="true">🖼️</span><input name="image" type="file" accept="image/png,image/jpeg,image/webp,image/gif"></label><button class="button chat-send" type="submit" title="메시지 보내기" aria-label="메시지 보내기"><i aria-hidden="true">↑</i></button><small class="chat-enter-hint">사진은 선택 즉시 전송 · Enter 전송 · Shift+Enter 줄바꿈</small></form></div>
   </section>
-<script src="/static/app.js?v=20261012-56"></script>
+<script src="/static/app.js?v=20261012-57"></script>
 </body>
 </html>

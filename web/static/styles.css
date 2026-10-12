@@ -661,3 +661,79 @@ h3,strong { font-weight: 800; }
 @media(prefers-reduced-motion:reduce) {
   .review-track { animation-play-state: paused; }
 }
+
+/* 2026 visual refresh */
+body {
+  background:
+    radial-gradient(circle at 12% -10%,rgba(40,207,124,.09),transparent 30rem),
+    radial-gradient(circle at 92% 22%,rgba(53,103,255,.045),transparent 28rem),
+    var(--bg);
+  -webkit-font-smoothing: antialiased;
+}
+.site-header {
+  min-height: 76px;
+  border-color: rgba(73,112,89,.28);
+  background: rgba(6,11,8,.88);
+  box-shadow: 0 10px 32px rgba(0,0,0,.16);
+  backdrop-filter: blur(20px) saturate(125%);
+}
+.site-header nav a { padding: 10px 15px; transition: color .18s ease,background .18s ease,border-color .18s ease,transform .18s ease; }
+.site-header nav a:hover { transform: translateY(-1px); }
+.page { padding-top: 48px; }
+.page-title h1 { letter-spacing: -.055em; }
+.hero {
+  border-color: rgba(76,144,103,.5);
+  border-left-width: 1px;
+  border-radius: 24px;
+  background: linear-gradient(145deg,rgba(18,38,27,.96),rgba(9,17,12,.98) 66%);
+  box-shadow: 0 24px 70px rgba(0,0,0,.22),inset 0 1px rgba(255,255,255,.025);
+}
+.hero-card { border-radius: 16px; background: rgba(18,36,25,.88); box-shadow: 0 14px 36px rgba(0,0,0,.2); }
+.panel,.order,.product,.coupon-event-card,.event-announcement-card,.notice-page-card {
+  border-color: rgba(68,107,83,.5);
+  box-shadow: 0 12px 34px rgba(0,0,0,.13),inset 0 1px rgba(255,255,255,.018);
+}
+.panel { border-radius: 18px; }
+.order { border-radius: 16px; padding: 19px; }
+.product { border-radius: 18px; transition: transform .2s ease,border-color .2s ease,box-shadow .2s ease,background .2s ease; }
+.product:hover { transform: translateY(-4px); border-color: rgba(70,183,119,.72); box-shadow: 0 20px 45px rgba(0,0,0,.24); }
+.product-media { border-color: rgba(62,91,73,.45); }
+.product-body { padding: 20px; gap: 10px; }
+.product-foot button { border-radius: 11px; }
+.button { border-radius: 13px; transition: transform .16s ease,background .16s ease,border-color .16s ease,box-shadow .16s ease; }
+.button:hover:not(:disabled) { transform: translateY(-1px); box-shadow: 0 8px 22px rgba(40,207,124,.13); }
+.button:active:not(:disabled) { transform: translateY(0); }
+.form-panel input,.form-panel textarea,.form-panel select,.cart-row input,.product-option select,.product-option textarea,.admin-row select {
+  border-color: rgba(68,103,81,.62);
+  border-radius: 12px;
+  background: rgba(10,17,13,.86);
+  transition: border-color .16s ease,box-shadow .16s ease,background .16s ease;
+}
+.form-panel input:focus,.form-panel textarea:focus,.form-panel select:focus,.cart-row input:focus,.product-option select:focus,.product-option textarea:focus {
+  border-color: var(--accent);
+  background: #0d1711;
+  box-shadow: 0 0 0 3px rgba(40,207,124,.11);
+}
+.modal-card { border-radius: 22px; border-top-width: 1px; overflow: hidden; }
+.order-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
+.order-review-button { margin-left: auto; }
+.review-order-context { display: grid; gap: 5px; padding: 15px 17px; border: 1px solid rgba(40,207,124,.38); border-radius: 14px; background: linear-gradient(135deg,rgba(40,207,124,.11),rgba(40,207,124,.035)); }
+.review-order-context span { color: var(--accent-hover); font-size: 11px; font-weight: 900; letter-spacing: .08em; }
+.review-order-context strong { overflow-wrap: anywhere; }
+.delivery-review-modal { z-index: 440; }
+.delivery-review-card { width: min(460px,calc(100vw - 28px)); padding: 34px; text-align: center; }
+.delivery-review-icon { display: grid; place-items: center; width: 54px; height: 54px; margin: 0 auto 18px; border-radius: 18px; background: linear-gradient(145deg,#39df8c,#1cab65); color: #04120a; box-shadow: 0 12px 30px rgba(40,207,124,.22); font-size: 26px; font-weight: 900; }
+.delivery-review-card h2 { margin: 8px 0 12px; font-size: clamp(23px,4vw,31px); line-height: 1.3; letter-spacing: -.045em; word-break: keep-all; }
+.delivery-review-card>p { word-break: keep-all; }
+.delivery-review-card>#delivery-review-product { margin: 0; color: #dfe9e3; line-height: 1.65; }
+.delivery-review-reward { margin: 16px 0 22px; color: var(--muted); font-size: 13px; }
+.delivery-review-reward strong { color: var(--accent-hover); }
+.delivery-review-card>div:last-child { display: grid; grid-template-columns: .75fr 1.25fr; gap: 10px; }
+
+@media(max-width:640px) {
+  .page { padding-top: 32px; }
+  .hero { border-radius: 19px; }
+  .panel { border-radius: 16px; }
+  .delivery-review-card { padding: 27px 21px 21px; }
+  .order-review-button { width: 100%; margin-left: 0; }
+}

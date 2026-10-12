@@ -42,6 +42,8 @@ const state = {
   productEditorScope: "admin",
   directDmUserId: null,
   directDmPoll: null,
+  reviewOrderId: null,
+  reviewOrderProduct: "",
 };
 
 const $ = (selector, parent = document) => parent.querySelector(selector);
@@ -861,10 +863,12 @@ async function submitReview(event) {
         rating: Number(form.elements.rating.value),
         content: form.elements.content.value,
         images,
+        order_id: form.elements.order_id.value,
       }),
     });
     form.reset();
     form.elements.rating.value = "5";
+    clearOrderReviewContext();
     bindStarPicker();
     await loadReviews();
     toast(data.reward ? `후기가 등록되어 ${Number(data.reward).toLocaleString()}P가 지급되었습니다.` : "후기가 등록되었습니다.");
@@ -912,11 +916,14 @@ async function loadAccount() {
       <p>${escapeHtml(order.product)}</p>
       <small>${escapeHtml(order.amount)} · ${String(order.created_at).slice(0, 16).replace("T", " ")}</small>
       <div class="order-progress"><div><span>${escapeHtml(progress.label)}</span><b>${progress.percent}%</b></div><div class="progress-track"><i style="width:${progress.percent}%"></i></div></div>
-      ${order.waybill_number ? `<div class="order-actions"><span>운송장 ${escapeHtml(order.waybill_number)}</span><button type="button" class="text-button" data-order-detail="${escapeHtml(order.order_id)}">상세조회</button></div><div class="order-detail" data-order-detail-box="${escapeHtml(order.order_id)}" hidden></div>` : ""}
+      ${(order.waybill_number || (order.fulfillment_status === "DELIVERED" && !order.reviewed)) ? `<div class="order-actions">${order.waybill_number ? `<span>운송장 ${escapeHtml(order.waybill_number)}</span><button type="button" class="text-button" data-order-detail="${escapeHtml(order.order_id)}">상세조회</button>` : ""}${order.fulfillment_status === "DELIVERED" && !order.reviewed ? `<button type="button" class="button compact order-review-button" data-order-review="${escapeHtml(order.order_id)}" data-order-product="${escapeHtml(order.product)}">후기작성</button>` : ""}</div>${order.waybill_number ? `<div class="order-detail" data-order-detail-box="${escapeHtml(order.order_id)}" hidden></div>` : ""}` : ""}
     </article>`;
     }).join("") : '<div class="empty">아직 주문내역이 없습니다.</div>';
     $$("[data-order-detail]").forEach(button => {
       button.onclick = () => toggleOrderTracking(button);
+    });
+    $$("[data-order-review]").forEach(button => {
+      button.onclick = () => beginOrderReview(button.dataset.orderReview, button.dataset.orderProduct);
     });
   } catch (error) {
     if (error.message.includes("로그인")) location.href = "/auth/login";
@@ -1186,6 +1193,14 @@ function bindForms() {
   $("#policy-admin-form").onsubmit = saveAdminPolicies;
   $('#coupon-event-admin-form [name="image"]').onchange = previewCouponEventImage;
   $("#claim-welcome-coupon").onclick = () => claimCouponEvent("WELCOME", true);
+  $("#delivery-review-later").onclick = closeDeliveredReviewPrompt;
+  $("#delivery-review-write").onclick = () => {
+    const modal = $("#delivery-review-modal");
+    const orderId = modal.dataset.orderId;
+    const product = modal.dataset.product;
+    closeDeliveredReviewPrompt();
+    beginOrderReview(orderId, product);
+  };
   $$("[data-support-type]").forEach(button => {
     button.onclick = () => {
       state.supportType = button.dataset.supportType;
@@ -2062,6 +2077,48 @@ async function claimCouponEvent(eventKey, welcome) {
   }
 }
 
+async function checkDeliveredReviewPrompt() {
+  if (!state.me || state.welcomePending) return false;
+  const data = await api("/api/orders");
+  const order = (data.orders || []).find(item => (
+    item.status === "APPROVED" && item.fulfillment_status === "DELIVERED" && !item.reviewed
+  ));
+  if (!order || sessionStorage.getItem(`v4p3ReviewLater:${order.order_id}`) === "1") return false;
+  const modal = $("#delivery-review-modal");
+  modal.dataset.orderId = order.order_id;
+  modal.dataset.product = order.product || "";
+  $("#delivery-review-title").textContent = `${state.me.username}님! 배송받으신 상품이 어떠신가요?`;
+  $("#delivery-review-product").textContent = order.product || "배송완료 상품";
+  modal.hidden = false;
+  document.body.classList.add("modal-open");
+  return true;
+}
+
+function closeDeliveredReviewPrompt() {
+  const modal = $("#delivery-review-modal");
+  if (modal.dataset.orderId) sessionStorage.setItem(`v4p3ReviewLater:${modal.dataset.orderId}`, "1");
+  modal.hidden = true;
+  document.body.classList.remove("modal-open");
+}
+
+function beginOrderReview(orderId, product) {
+  state.reviewOrderId = String(orderId || "");
+  state.reviewOrderProduct = String(product || "");
+  const form = $("#review-form");
+  form.elements.order_id.value = state.reviewOrderId;
+  $("#review-order-product").textContent = state.reviewOrderProduct;
+  $("#review-order-context").hidden = !state.reviewOrderId;
+  location.hash = "review-write";
+}
+
+function clearOrderReviewContext() {
+  state.reviewOrderId = null;
+  state.reviewOrderProduct = "";
+  const form = $("#review-form");
+  form.elements.order_id.value = "";
+  $("#review-order-context").hidden = true;
+}
+
 async function loadSiteMessages() {
   const data = await api("/api/notices");
   state.siteMessages = (data.notices || []).sort((a, b) => (a.notice_type === "NOTICE" ? -1 : 1)).filter(item => Number(localStorage.getItem(`siteMessage:${item.notice_type}:${item.updated_at}`) || 0) < Date.now());
@@ -2071,7 +2128,12 @@ async function loadSiteMessages() {
 function showNextSiteMessage() {
   const item = state.siteMessages.shift();
   const modal = $("#site-message");
-  if (!item) { modal.hidden = true; document.body.classList.remove("modal-open"); showDiscordNotice(); return; }
+  if (!item) {
+    modal.hidden = true;
+    document.body.classList.remove("modal-open");
+    checkDeliveredReviewPrompt().then(shown => { if (!shown) showDiscordNotice(); }).catch(() => showDiscordNotice());
+    return;
+  }
   modal.dataset.key = `siteMessage:${item.notice_type}:${item.updated_at}`;
   $("#site-message-type").textContent = item.notice_type;
   $("#site-message-title").textContent = item.notice_type === "NOTICE" ? "공지사항" : "진행 중인 이벤트";

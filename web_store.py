@@ -271,6 +271,7 @@ async def initialize_web_store_schema(conn):
             guild_id BIGINT NOT NULL,
             discord_message_id BIGINT NOT NULL,
             user_id BIGINT,
+            order_id TEXT,
             rating SMALLINT NOT NULL CHECK (rating BETWEEN 1 AND 5),
             content TEXT NOT NULL,
             image_url TEXT NOT NULL DEFAULT '',
@@ -430,6 +431,9 @@ async def initialize_web_store_schema(conn):
         ALTER TABLE web_product_sources ADD COLUMN IF NOT EXISTS disabled_by_admin BOOLEAN NOT NULL DEFAULT FALSE;
         ALTER TABLE web_product_sources ADD COLUMN IF NOT EXISTS price_locked BOOLEAN NOT NULL DEFAULT FALSE;
         ALTER TABLE web_reviews ADD COLUMN IF NOT EXISTS watermark_version SMALLINT NOT NULL DEFAULT 0;
+        ALTER TABLE web_reviews ADD COLUMN IF NOT EXISTS order_id TEXT;
+        CREATE UNIQUE INDEX IF NOT EXISTS web_reviews_order_unique
+            ON web_reviews(guild_id,order_id) WHERE order_id IS NOT NULL;
         ALTER TABLE orders ADD COLUMN IF NOT EXISTS shipping_name TEXT;
         ALTER TABLE orders ADD COLUMN IF NOT EXISTS shipping_contact TEXT;
         ALTER TABLE orders ADD COLUMN IF NOT EXISTS shipping_address TEXT;
@@ -479,22 +483,24 @@ async def initialize_web_store_schema(conn):
 async def save_web_review(
     conn, guild_id: int, message_id: int, user_id: int | None,
     rating: int, content: str, image_url: str = "", created_at=None,
+    order_id: str | None = None,
 ):
     await conn.execute(
         """
         INSERT INTO web_reviews
-            (guild_id, discord_message_id, user_id, rating, content, image_url, created_at)
-        VALUES ($1, $2, $3, $4, $5, $6, COALESCE($7::timestamptz, CURRENT_TIMESTAMP))
+            (guild_id, discord_message_id, user_id, rating, content, image_url, created_at, order_id)
+        VALUES ($1, $2, $3, $4, $5, $6, COALESCE($7::timestamptz, CURRENT_TIMESTAMP), $8)
         ON CONFLICT (guild_id, discord_message_id) DO UPDATE SET
             user_id=EXCLUDED.user_id, rating=EXCLUDED.rating,
             content=EXCLUDED.content,
+            order_id=COALESCE(EXCLUDED.order_id,web_reviews.order_id),
             image_url=CASE
                 WHEN web_reviews.image_url LIKE '/api/reviews/%' THEN web_reviews.image_url
                 WHEN BTRIM(EXCLUDED.image_url) <> '' THEN EXCLUDED.image_url
                 ELSE web_reviews.image_url
             END
         """,
-        guild_id, message_id, user_id, rating, content.strip(), image_url.strip(), created_at,
+        guild_id, message_id, user_id, rating, content.strip(), image_url.strip(), created_at, order_id,
     )
 
 
@@ -1216,6 +1222,7 @@ class StoreServer:
     async def submit_review(self, request):
         user, data = await self._user(request), await self._body(request)
         content = str(data.get("content", "")).strip()
+        order_id = str(data.get("order_id") or "").strip() or None
         rating = int(data.get("rating", 0) or 0)
         images = data.get("images", [])
         if rating not in range(1, 6):
@@ -1233,6 +1240,23 @@ class StoreServer:
                 raise StoreError(str(exc)) from exc
         review_id = int(time.time() * 1000) * 1000 + secrets.randbelow(1000)
         async with self.bot.db_pool.acquire() as conn:
+            if order_id:
+                delivered_order = await conn.fetchval(
+                    """SELECT EXISTS(
+                           SELECT 1 FROM orders
+                           WHERE order_id=$1 AND guild_id=$2 AND buyer_id=$3 AND source='WEB'
+                             AND status='APPROVED' AND fulfillment_status='DELIVERED'
+                       )""",
+                    order_id, self.guild_id, int(user["id"]),
+                )
+                if not delivered_order:
+                    raise StoreError("배송완료된 본인 주문을 찾을 수 없습니다.", 404)
+                already_reviewed = await conn.fetchval(
+                    "SELECT EXISTS(SELECT 1 FROM web_reviews WHERE guild_id=$1 AND order_id=$2)",
+                    self.guild_id, order_id,
+                )
+                if already_reviewed:
+                    raise StoreError("이미 후기를 작성한 주문입니다.")
             has_order = await conn.fetchval(
                 "SELECT EXISTS(SELECT 1 FROM orders WHERE guild_id=$1 AND buyer_id=$2 AND source='WEB' AND status='APPROVED')",
                 self.guild_id, int(user["id"]),
@@ -1240,7 +1264,10 @@ class StoreServer:
             if not has_order:
                 raise StoreError("구매가 승인된 고객만 후기를 작성할 수 있습니다.", 403)
             image_url = f"/api/reviews/{review_id}/image/0" if processed else ""
-            await save_web_review(conn, self.guild_id, review_id, int(user["id"]), rating, content, image_url)
+            await save_web_review(
+                conn, self.guild_id, review_id, int(user["id"]), rating, content, image_url,
+                order_id=order_id,
+            )
             for index, image in enumerate(processed):
                 await conn.execute(
                     "INSERT INTO web_review_images (guild_id,review_id,image_index,image_data) VALUES ($1,$2,$3,$4)",
@@ -2623,11 +2650,12 @@ class StoreServer:
         async with self.bot.db_pool.acquire() as conn:
             rows = await conn.fetch(
                 """
-                SELECT order_id, product, quantity, amount, status, points_used, cash_amount,
+                SELECT o.order_id, o.product, o.quantity, o.amount, o.status, o.points_used, o.cash_amount,
                        created_at, processed_at, payment_deadline, cancel_reason,
                        shipping_method, waybill_number, carrier_id,
-                       fulfillment_status, fulfillment_updated_at
-                FROM orders WHERE guild_id = $1 AND buyer_id = $2 AND source = 'WEB'
+                       fulfillment_status, fulfillment_updated_at,
+                       EXISTS(SELECT 1 FROM web_reviews r WHERE r.guild_id=o.guild_id AND r.order_id=o.order_id) reviewed
+                FROM orders o WHERE o.guild_id = $1 AND o.buyer_id = $2 AND o.source = 'WEB'
                 ORDER BY created_at DESC LIMIT 100
                 """, self.guild_id, int(user["id"]),
             )
