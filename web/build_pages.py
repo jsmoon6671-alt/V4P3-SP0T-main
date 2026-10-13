@@ -27,19 +27,19 @@ PAGES = {
 
 PATHS = {
     "home": "/",
-    "events": "/events.html",
-    "notices": "/notices.html",
-    "support": "/support.html",
-    "account": "/account.html",
-    "review-write": "/review-write.html",
-    "ranking": "/ranking.html",
-    "tiers": "/tiers.html",
-    "terms": "/terms.html",
-    "tracking": "/tracking.html",
-    "cart": "/cart.html",
-    "complete": "/cart.html#complete",
-    "admin": "/admin.html",
-    "subadmin-panel": "/subadmin-panel.html",
+    "events": "/events",
+    "notices": "/notices",
+    "support": "/support",
+    "account": "/account",
+    "review-write": "/review-write",
+    "ranking": "/ranking",
+    "tiers": "/tiers",
+    "terms": "/terms",
+    "tracking": "/tracking",
+    "cart": "/cart",
+    "complete": "/cart#complete",
+    "admin": "/admin",
+    "subadmin-panel": "/subadmin-panel",
 }
 
 

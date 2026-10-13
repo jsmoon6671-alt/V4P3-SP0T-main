@@ -9,12 +9,12 @@
 <link href="https://fonts.googleapis.com" rel="preconnect"/>
 <link crossorigin="" href="https://fonts.gstatic.com" rel="preconnect"/>
 <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@500;600;700;800&amp;family=Noto+Sans+KR:wght@500;600;700;800&amp;display=swap" rel="stylesheet"/>
-<link href="/static/styles.css?v=20261013-70" rel="stylesheet"/>
+<link href="/static/styles.css?v=20261013-71" rel="stylesheet"/>
 </head>
 <body data-page="support">
 <div class="grain"></div>
 <aside class="action-banner" id="action-banner">
-<a hidden="" href="/account.html" id="register-prompt">배송 정보를 등록해 주세요</a>
+<a hidden="" href="/account" id="register-prompt">배송 정보를 등록해 주세요</a>
 <span>📩 배송 알림은 Discord DM으로 전송됩니다. <a href="https://discord.gg/v4p3sp0t" rel="noopener" target="_blank">서버 입장</a></span>
 <button aria-label="안내 닫기" id="action-banner-close" type="button">×</button>
 </aside>
@@ -25,10 +25,10 @@
 <header class="site-header">
 <a class="brand" href="/"><span class="brand-logo-mark"><img alt="" src="/static/brand-mark.png"/></span><span>V4P3</span> SP0T</a>
 <nav id="nav">
-<a href="/">스토어</a><a class="nav-alert-link" href="/events.html">이벤트<span aria-label="새 이벤트" class="nav-alert-dot" hidden="" id="events-nav-dot"></span></a><a class="nav-alert-link" href="/notices.html">공지사항<span aria-label="새 공지" class="nav-alert-dot" hidden="" id="notices-nav-dot"></span></a><a href="/support.html">문의하기</a><a href="/account.html">정보등록</a><a href="/review-write.html">후기작성</a><a href="/ranking.html">구매랭킹</a><a href="/tiers.html">등급표</a><a href="/terms.html">이용약관</a><a href="/tracking.html">배송조회</a>
-<a hidden="" href="/subadmin-panel.html" id="subadmin-panel-link">부관리자</a><a hidden="" href="/admin.html" id="admin-link">관리자</a>
+<a href="/">스토어</a><a class="nav-alert-link" href="/events">이벤트<span aria-label="새 이벤트" class="nav-alert-dot" hidden="" id="events-nav-dot"></span></a><a class="nav-alert-link" href="/notices">공지사항<span aria-label="새 공지" class="nav-alert-dot" hidden="" id="notices-nav-dot"></span></a><a href="/support">문의하기</a><a href="/account">정보등록</a><a href="/review-write">후기작성</a><a href="/ranking">구매랭킹</a><a href="/tiers">등급표</a><a href="/terms">이용약관</a><a href="/tracking">배송조회</a>
+<a hidden="" href="/subadmin-panel" id="subadmin-panel-link">부관리자</a><a hidden="" href="/admin" id="admin-link">관리자</a>
 </nav>
-<div class="header-actions"><a class="button secondary small" href="/cart.html">장바구니 <b id="cart-count">0</b></a><button class="button small" id="login-button">Discord 로그인</button></div>
+<div class="header-actions"><a class="button secondary small" href="/cart">장바구니 <b id="cart-count">0</b></a><button class="button small" id="login-button">Discord 로그인</button></div>
 </header>
 <main>
 
@@ -118,6 +118,6 @@
 <div id="chat-home"><button class="chat-start" id="chat-start" type="button">채팅 상담</button><label hidden="" id="chat-initial-wrap"><span class="chat-compose-title"><b><i>✦</i> 문의 내용</b><small><span id="chat-initial-count">0</span>/1000</small></span><textarea id="chat-initial-content" maxlength="1000" placeholder="궁금한 내용을 편하게 작성해 주세요."></textarea><span class="chat-compose-hint">상담사가 확인한 뒤 실시간으로 답변해 드립니다.</span><button class="button wide" id="chat-create" type="button">상담 연결하기 <span>→</span></button></label><div><h3>상담 기록</h3><div class="chat-history" id="chat-history"></div></div></div>
 <div hidden="" id="chat-room"><button class="text-button" id="chat-back" type="button">← 상담 기록</button><div class="chat-messages" id="chat-messages"></div><form class="chat-message-form" id="chat-message-form"><div class="chat-upload-preview" hidden="" id="chat-upload-preview"><img alt="전송할 사진 미리보기"/><span>사진 전송 중...</span></div><textarea aria-label="채팅 메시지" maxlength="2000" name="content" placeholder="메시지를 입력해 주세요." rows="1"></textarea><label aria-label="사진 첨부" class="chat-file" title="사진 첨부"><span aria-hidden="true">🖼️</span><input accept="image/png,image/jpeg,image/webp,image/gif" name="image" type="file"/></label><button aria-label="메시지 보내기" class="button chat-send" title="메시지 보내기" type="submit"><i aria-hidden="true">↑</i></button><small class="chat-enter-hint">사진은 선택 즉시 전송 · Enter 전송 · Shift+Enter 줄바꿈</small></form></div>
 </section>
-<script src="/static/app.js?v=20261013-59"></script>
+<script src="/static/app.js?v=20261013-60"></script>
 </body>
 </html>

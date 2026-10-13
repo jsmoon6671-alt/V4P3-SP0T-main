@@ -48,10 +48,21 @@ from review_watermark import ReviewImageError, watermark_review_image
 
 ROOT = Path(__file__).resolve().parent
 STATIC = ROOT / "web" / "static"
-WEB_PAGE_FILES = {
-    "index.html", "events.html", "notices.html", "support.html", "account.html",
-    "review-write.html", "ranking.html", "tiers.html", "terms.html", "tracking.html",
-    "cart.html", "admin.html", "subadmin-panel.html",
+WEB_PAGE_ROUTES = {
+    "": "index.html",
+    "index": "index.html",
+    "events": "events.html",
+    "notices": "notices.html",
+    "support": "support.html",
+    "account": "account.html",
+    "review-write": "review-write.html",
+    "ranking": "ranking.html",
+    "tiers": "tiers.html",
+    "terms": "terms.html",
+    "tracking": "tracking.html",
+    "cart": "cart.html",
+    "admin": "admin.html",
+    "subadmin-panel": "subadmin-panel.html",
 }
 COOKIE = "v4p3_session"
 ADMIN_USER_ID = 259758966043574272
@@ -966,9 +977,18 @@ class StoreServer:
         return web.json_response({"verified": bool(verified)})
 
     async def index(self, request):
-        page_name = request.path.strip("/") or "index.html"
-        if page_name not in WEB_PAGE_FILES:
-            page_name = "index.html"
+        route_name = request.path.strip("/")
+        if route_name.endswith(".html"):
+            clean_name = route_name[:-5]
+            if clean_name == "index":
+                clean_name = ""
+            if clean_name in WEB_PAGE_ROUTES:
+                raise web.HTTPMovedPermanently(location=f"/{clean_name}")
+        page_name = WEB_PAGE_ROUTES.get(route_name, "index.html")
+        if page_name == "admin.html":
+            session = request["session"]
+            if not session or str(session.get("id", "")) != str(ADMIN_USER_ID):
+                raise web.HTTPFound(location="/")
         return web.FileResponse(STATIC / page_name)
 
     async def login(self, request):

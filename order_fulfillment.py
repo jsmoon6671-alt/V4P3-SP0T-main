@@ -166,7 +166,9 @@ async def finalize_approved_order(bot, order: dict, *, processor: str = "Pushbul
     if settings.get("log_channel_id"):
         try:
             purchase_log_order = dict(order)
-            purchase_log_order["_formatted_items"] = format_buyer_order_items(item_rows)
+            purchase_log_order["_formatted_items"] = format_order_items_for_discord(
+                item_rows, include_text_answers=False,
+            )
             response = await _send_channel(
                 bot,
                 settings["log_channel_id"],

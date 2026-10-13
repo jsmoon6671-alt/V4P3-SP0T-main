@@ -1,7 +1,7 @@
 import unittest
 
 from order_fulfillment import format_buyer_order_items
-from order_editing import build_purchase_log_payload
+from order_editing import build_purchase_log_payload, format_order_items_for_discord
 
 
 class BuyerOrderItemFormattingTests(unittest.TestCase):
@@ -19,12 +19,12 @@ class BuyerOrderItemFormattingTests(unittest.TestCase):
         self.assertIn("└ 요청사항: 문 앞에 놓아주세요", text)
 
     def test_purchase_log_uses_the_separated_item_options(self):
-        formatted = format_buyer_order_items([{
+        formatted = format_order_items_for_discord([{
             "product_name": "테스트 상품",
             "quantity": 2,
-            "product_options_json": '["블랙", "멘솔"]',
-            "option_groups_json": '[{"label":"색상"},{"label":"맛"}]',
-        }])
+            "product_options_json": '["블랙", "멘솔", "문 앞에 놓아주세요"]',
+            "option_groups_json": '[{"label":"색상"},{"label":"맛"},{"type":"text","label":"요청사항"}]',
+        }], include_text_answers=False)
         payload = build_purchase_log_payload({
             "order_id": "WEB-TEST",
             "product": "기존 합쳐진 상품명",
@@ -38,6 +38,8 @@ class BuyerOrderItemFormattingTests(unittest.TestCase):
 
         self.assertIn("└ 색상: 블랙", content)
         self.assertIn("└ 맛: 멘솔", content)
+        self.assertNotIn("요청사항", content)
+        self.assertNotIn("문 앞에 놓아주세요", content)
         self.assertNotIn("기존 합쳐진 상품명", content)
 
 

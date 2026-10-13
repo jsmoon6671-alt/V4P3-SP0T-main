@@ -23,7 +23,7 @@ def _json_list(value) -> list:
     return parsed if isinstance(parsed, list) else []
 
 
-def format_order_items_for_discord(rows) -> str:
+def format_order_items_for_discord(rows, *, include_text_answers: bool = True) -> str:
     lines: list[str] = []
     for row in rows:
         name = str(row["product_name"] or "상품").replace("`", "ˋ")
@@ -35,6 +35,8 @@ def format_order_items_for_discord(rows) -> str:
             if not str(selection).strip():
                 continue
             group = groups[index] if index < len(groups) and isinstance(groups[index], dict) else {}
+            if not include_text_answers and group.get("type") == "text":
+                continue
             label = str(group.get("label") or f"옵션 {index + 1}").strip().replace("`", "ˋ")
             value = str(selection).strip().replace("`", "ˋ")
             lines.append(f"　`└ {label}: {value}`")
@@ -309,7 +311,7 @@ async def update_purchase_log(bot, guild_id: int, old_order: dict, order: dict) 
         order["purchase_log_message_id"] = int(message_id)
 
     payload_order = dict(order)
-    payload_order["_formatted_items"] = format_order_items_for_discord(item_rows)
+    payload_order["_formatted_items"] = format_order_items_for_discord(item_rows, include_text_answers=False)
     await bot.http.request(
         discord.http.Route("PATCH", f"/channels/{int(channel_id)}/messages/{int(message_id)}"),
         json=build_purchase_log_payload(payload_order, settings.get("anonymous_role_id")),

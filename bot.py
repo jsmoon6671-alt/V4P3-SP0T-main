@@ -42,7 +42,7 @@ from chat_ranking import (
     register_chat_ranking_commands,
 )
 from database import initialize_database
-from order_editing import build_purchase_log_payload, register_order_edit_command
+from order_editing import build_purchase_log_payload, format_order_items_for_discord, register_order_edit_command
 from order_fulfillment import format_buyer_order_items, notify_product_subadmins
 from web_store import save_web_review, start_web_store
 from web_order_progress import (
@@ -3738,7 +3738,9 @@ async def on_interaction(interaction: discord.Interaction):
                         order_id, interaction.guild.id,
                     )
                 purchase_log_order = dict(order)
-                purchase_log_order["_formatted_items"] = format_buyer_order_items(purchase_item_rows)
+                purchase_log_order["_formatted_items"] = format_order_items_for_discord(
+                    purchase_item_rows, include_text_answers=False,
+                )
                 log_payload = build_purchase_log_payload(purchase_log_order, anonymous_role_id)
                 log_response = await interaction.client.http.request(
                     discord.http.Route("POST", f"/channels/{settings['log_channel_id']}/messages"), 

@@ -113,19 +113,19 @@ const NOTICE_SEEN_KEY = "v4p3NoticeSeenAt";
 const EVENT_SEEN_KEY = "v4p3EventSeenAt";
 const PAGE_PATHS = {
   home: "/",
-  events: "/events.html",
-  notices: "/notices.html",
-  support: "/support.html",
-  account: "/account.html",
-  "review-write": "/review-write.html",
-  ranking: "/ranking.html",
-  tiers: "/tiers.html",
-  terms: "/terms.html",
-  tracking: "/tracking.html",
-  cart: "/cart.html",
-  complete: "/cart.html#complete",
-  admin: "/admin.html",
-  "subadmin-panel": "/subadmin-panel.html",
+  events: "/events",
+  notices: "/notices",
+  support: "/support",
+  account: "/account",
+  "review-write": "/review-write",
+  ranking: "/ranking",
+  tiers: "/tiers",
+  terms: "/terms",
+  tracking: "/tracking",
+  cart: "/cart",
+  complete: "/cart#complete",
+  admin: "/admin",
+  "subadmin-panel": "/subadmin-panel",
 };
 
 function currentPageId() {
@@ -229,6 +229,8 @@ async function boot() {
     $("#login-button").textContent = "내 정보";
     $("#admin-link").hidden = !data.is_admin;
     $("#subadmin-panel-link").hidden = !data.is_subadmin;
+    if ($("#admin")) $("#admin").hidden = !data.is_admin;
+    if ($("#subadmin-panel")) $("#subadmin-panel").hidden = !data.is_subadmin;
     $("#login-button").onclick = () => goToPage("account");
     await loadCart();
     await refreshRegistrationPrompt();

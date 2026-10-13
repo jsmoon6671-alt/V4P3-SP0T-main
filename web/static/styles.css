@@ -197,6 +197,7 @@ main { margin-left: 0; }
 
 .page { display: none; max-width: 1500px; margin: 0 auto; padding: 40px 42px 100px; }
 .page.active { display: block; }
+.page[hidden] { display: none !important; }
 .hero { min-height: 360px; border: 1px solid var(--line-strong); border-left: 4px solid var(--accent); border-radius: 7px; background: #0d1510; padding: 52px; display: flex; justify-content: space-between; align-items: end; overflow: hidden; position: relative; }
 .hero::after { content: "V4P3"; position: absolute; right: 34px; top: 16px; color: rgba(240,243,241,.025); font-size: clamp(90px,15vw,190px); font-weight: 800; letter-spacing: -.09em; line-height: 1; }
 .eyebrow { font-size: 11px; font-weight: 800; letter-spacing: .18em; }
