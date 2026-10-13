@@ -717,6 +717,13 @@ body {
   box-shadow: 0 0 0 3px rgba(40,207,124,.11);
 }
 .modal-card { border-radius: 22px; border-top-width: 1px; overflow: hidden; }
+#editor .modal-card {
+  max-height: calc(100dvh - 40px);
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
 .order-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
 .order-review-button { margin-left: auto; }
 .review-order-context { display: grid; gap: 5px; padding: 15px 17px; border: 1px solid rgba(40,207,124,.38); border-radius: 14px; background: linear-gradient(135deg,rgba(40,207,124,.11),rgba(40,207,124,.035)); }
@@ -736,6 +743,8 @@ body {
   .page { padding-top: 32px; }
   .hero { border-radius: 19px; }
   .panel { border-radius: 16px; }
+  #editor { padding: 8px; }
+  #editor .modal-card { max-height: calc(100dvh - 16px); }
   .delivery-review-card { padding: 27px 21px 21px; }
   .order-review-button { width: 100%; margin-left: 0; }
 }
