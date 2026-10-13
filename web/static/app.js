@@ -111,6 +111,34 @@ const CHANNEL_CACHE_KEY = "v4p3DiscordChannelIds";
 const SHIPPING_BANNER_KEY = "v4p3ShippingBannerClosed";
 const NOTICE_SEEN_KEY = "v4p3NoticeSeenAt";
 const EVENT_SEEN_KEY = "v4p3EventSeenAt";
+const PAGE_PATHS = {
+  home: "/",
+  events: "/events.html",
+  notices: "/notices.html",
+  support: "/support.html",
+  account: "/account.html",
+  "review-write": "/review-write.html",
+  ranking: "/ranking.html",
+  tiers: "/tiers.html",
+  terms: "/terms.html",
+  tracking: "/tracking.html",
+  cart: "/cart.html",
+  complete: "/cart.html#complete",
+  admin: "/admin.html",
+  "subadmin-panel": "/subadmin-panel.html",
+};
+
+function currentPageId() {
+  const hashId = location.hash.slice(1);
+  if (hashId && document.getElementById(hashId)?.classList.contains("page")) return hashId;
+  return document.body.dataset.page || "home";
+}
+
+function goToPage(pageId) {
+  const destination = PAGE_PATHS[pageId] || "/";
+  if (location.pathname + location.hash === destination) return route();
+  location.href = destination;
+}
 
 function toast(message) {
   const element = $("#toast");
@@ -142,19 +170,28 @@ async function api(path, options = {}) {
 }
 
 function route() {
-  const id = location.hash.slice(1) || "home";
-  if (["account", "review-write", "support", "events"].includes(id) && !state.me) {
-    try { sessionStorage.setItem("v4p3PostLoginHash", `#${id}`); } catch {}
+  const legacyHash = location.hash.slice(1);
+  if (legacyHash && !document.getElementById(legacyHash) && PAGE_PATHS[legacyHash]) {
+    location.replace(PAGE_PATHS[legacyHash]);
+    return;
+  }
+  const id = currentPageId();
+  if (["account", "review-write", "support", "events", "cart", "complete", "tracking", "admin", "subadmin-panel"].includes(id) && !state.me) {
+    try { sessionStorage.setItem("v4p3PostLoginHash", PAGE_PATHS[id]); } catch {}
     location.href = "/auth/login";
     return;
   }
   $$(".page").forEach(page => page.classList.toggle("active", page.id === id));
-  $$("#nav a").forEach(link => link.classList.toggle("active", link.getAttribute("href") === `#${id}`));
+  const currentPath = location.pathname === "/index.html" ? "/" : location.pathname;
+  $$("#nav a").forEach(link => {
+    const targetPath = new URL(link.href, location.origin).pathname;
+    link.classList.toggle("active", targetPath === currentPath);
+  });
   document.documentElement.scrollTop = 0;
   document.body.scrollTop = 0;
   const loadToken = ++state.routeLoadToken;
   requestAnimationFrame(() => {
-    if (loadToken !== state.routeLoadToken || (location.hash.slice(1) || "home") !== id) return;
+    if (loadToken !== state.routeLoadToken || currentPageId() !== id) return;
     if (id === "account" && state.me) loadAccount();
     if (id === "cart" && state.me) {
       loadCart(false);
@@ -166,6 +203,7 @@ function route() {
     if (id === "ranking") loadPurchaseRanking();
     if (id === "support") { renderSupportForm(); loadInquiries(); }
     if (id === "events" && state.me) loadCouponEvents(false);
+    if (id === "review-write" && state.me) restoreOrderReviewContext();
     if (id === "notices") loadNoticesPage();
     if (id === "subadmin-panel") openSubadminPanel();
     if (id === "admin") openAdminPanel();
@@ -191,7 +229,7 @@ async function boot() {
     $("#login-button").textContent = "내 정보";
     $("#admin-link").hidden = !data.is_admin;
     $("#subadmin-panel-link").hidden = !data.is_subadmin;
-    $("#login-button").onclick = () => { location.hash = "account"; };
+    $("#login-button").onclick = () => goToPage("account");
     await loadCart();
     await refreshRegistrationPrompt();
     try { await loadCouponEvents(true); } catch (error) { toast(error.message); }
@@ -199,26 +237,30 @@ async function boot() {
       const postLoginHash = sessionStorage.getItem("v4p3PostLoginHash");
       if (postLoginHash) {
         sessionStorage.removeItem("v4p3PostLoginHash");
-        location.hash = postLoginHash;
+        location.href = postLoginHash;
       }
     } catch {}
-    if ((location.hash.slice(1) || "home") === "cart") await loadCheckoutCustomer();
+    if (currentPageId() === "cart") await loadCheckoutCustomer();
   } catch {
     $("#login-button").onclick = () => { location.href = "/auth/login"; };
   }
-  try {
-    await loadCatalog();
-  } catch (error) {
-    toast(error.message);
+  if (currentPageId() === "home") {
+    try {
+      await loadCatalog();
+    } catch (error) {
+      toast(error.message);
+    }
   }
   try { await refreshNoticeIndicators(); } catch (error) { console.error("새 공지 표시를 확인하지 못했습니다.", error); }
   route();
   if (!state.welcomePending) loadSiteMessages().catch(() => showDiscordNotice());
-  loadReviews().catch(error => {
-    const track = $("#review-track");
-    if (track) track.innerHTML = '<p class="review-empty">구매 후기를 불러오지 못했습니다. 잠시 후 새로고침해 주세요.</p>';
-    console.error("구매후기를 불러오지 못했습니다.", error);
-  });
+  if (currentPageId() === "home") {
+    loadReviews().catch(error => {
+      const track = $("#review-track");
+      if (track) track.innerHTML = '<p class="review-empty">구매 후기를 불러오지 못했습니다. 잠시 후 새로고침해 주세요.</p>';
+      console.error("구매후기를 불러오지 못했습니다.", error);
+    });
+  }
 }
 
 async function ensureAgeVerified() {
@@ -338,6 +380,7 @@ async function loadReviews() {
 }
 
 function renderTabs() {
+  if (!$("#parent-category-tabs") || !$("#category-tabs")) return;
   const categories = state.catalogCategories;
   const roots = categories.filter(category => !category.parent_id);
   const rootIds = new Set(roots.map(category => Number(category.id)));
@@ -374,6 +417,7 @@ function renderTabs() {
 }
 
 function renderProducts() {
+  if (!$("#products")) return;
   const rows = state.products.filter(product => {
     const query = state.productSearch.trim().toLocaleLowerCase("ko");
     if (query && !`${product.name} ${product.description || ""} ${product.category_name || ""}`.toLocaleLowerCase("ko").includes(query)) return false;
@@ -903,7 +947,7 @@ async function submitReview(event) {
     bindStarPicker();
     await loadReviews();
     toast(data.reward ? `후기가 등록되어 ${Number(data.reward).toLocaleString()}P가 지급되었습니다.` : "후기가 등록되었습니다.");
-    location.hash = "home";
+    goToPage("home");
   } catch (error) {
     toast(error.message);
   } finally {
@@ -1158,7 +1202,8 @@ function bindForms() {
   $$("#channel-form input").forEach(input => {
     input.addEventListener("input", () => cacheChannelForm());
   });
-  $("#customer-form").onsubmit = async event => {
+  const customerForm = $("#customer-form");
+  if (customerForm) customerForm.onsubmit = async event => {
     event.preventDefault();
     try {
       const data = Object.fromEntries(new FormData(event.target));
@@ -1170,59 +1215,59 @@ function bindForms() {
       toast(error.message);
     }
   };
-  $("#account-logout").onclick = logout;
-  $("#checkout-form").onsubmit = checkout;
-  $("#use-all-points").onclick = useAllPoints;
-  $("#checkout-form [name=\"points\"]").oninput = cartTotal;
-  $("#checkout-coupon").onchange = cartTotal;
-  $("#tracking-form").onsubmit = trackDelivery;
-  $("#channel-form").onsubmit = saveChannels;
-  $("#shipping-method").onchange = updateShippingMode;
-  $("#store-search").onclick = searchStores;
-  $("#store-results").onchange = chooseStore;
-  $("#profile-store-search").onclick = searchProfileStores;
-  $("#profile-store-results").onchange = chooseProfileStore;
-  $("#profile-cvs-brand").onchange = () => {
+  if ($("#account-logout")) $("#account-logout").onclick = logout;
+  if ($("#checkout-form")) $("#checkout-form").onsubmit = checkout;
+  if ($("#use-all-points")) $("#use-all-points").onclick = useAllPoints;
+  if ($("#checkout-form [name=\"points\"]")) $("#checkout-form [name=\"points\"]").oninput = cartTotal;
+  if ($("#checkout-coupon")) $("#checkout-coupon").onchange = cartTotal;
+  if ($("#tracking-form")) $("#tracking-form").onsubmit = trackDelivery;
+  if ($("#channel-form")) $("#channel-form").onsubmit = saveChannels;
+  if ($("#shipping-method")) $("#shipping-method").onchange = updateShippingMode;
+  if ($("#store-search")) $("#store-search").onclick = searchStores;
+  if ($("#store-results")) $("#store-results").onchange = chooseStore;
+  if ($("#profile-store-search")) $("#profile-store-search").onclick = searchProfileStores;
+  if ($("#profile-store-results")) $("#profile-store-results").onchange = chooseProfileStore;
+  if ($("#profile-cvs-brand")) $("#profile-cvs-brand").onchange = () => {
     state.profileStoreResults = [];
     $("#profile-store-results").innerHTML = '<option value="">편의점을 조회해 주세요</option>';
     $('#customer-form [name="cvs_address"]').value = "";
   };
-  $("#review-form").onsubmit = submitReview;
+  if ($("#review-form")) $("#review-form").onsubmit = submitReview;
   bindStarPicker();
-  $("#add-parent-category").onclick = () => openEditor("category", { parentMode: true });
-  $("#add-category").onclick = () => openEditor("category", { childMode: true });
-  $("#add-manual-product").onclick = () => { state.productEditorScope = "admin"; openEditor("product", { manualCreate: true }); };
-  $("#add-product").onclick = () => { state.productEditorScope = "admin"; openEditor("product"); };
-  $("#sync-products").onclick = syncProducts;
+  if ($("#add-parent-category")) $("#add-parent-category").onclick = () => openEditor("category", { parentMode: true });
+  if ($("#add-category")) $("#add-category").onclick = () => openEditor("category", { childMode: true });
+  if ($("#add-manual-product")) $("#add-manual-product").onclick = () => { state.productEditorScope = "admin"; openEditor("product", { manualCreate: true }); };
+  if ($("#add-product")) $("#add-product").onclick = () => { state.productEditorScope = "admin"; openEditor("product"); };
+  if ($("#sync-products")) $("#sync-products").onclick = syncProducts;
   $("#editor-close").onclick = closeEditor;
   $("#editor").onclick = event => { if (event.target === $("#editor")) closeEditor(); };
   $("#notice-close").onclick = closeDiscordNotice;
   $("#notice-day").onclick = dismissDiscordNoticeForDay;
   $("#action-banner-close").onclick = () => { $("#action-banner").hidden = true; };
-  $("#refresh-admin-orders").onclick = loadAdminOrders;
-  $("#refresh-blacklist").onclick = loadBlacklist;
-  $("#blacklist-add-form").onsubmit = addBlacklist;
-  $("#blacklist-remove-form").onsubmit = removeBlacklist;
-  $("#blacklist-type").onchange = updateBlacklistDuration;
-  $("#blacklist-duration").onchange = updateBlacklistDuration;
-  $("#refresh-admin-users").onclick = loadAdminUsers;
-  $("#refresh-admin-inquiries").onclick = loadAdminInquiries;
-  $("#refresh-direct-dm").onclick = () => loadDirectDm(state.directDmUserId, false);
-  $("#direct-dm-open-form").onsubmit = event => {
+  if ($("#refresh-admin-orders")) $("#refresh-admin-orders").onclick = loadAdminOrders;
+  if ($("#refresh-blacklist")) $("#refresh-blacklist").onclick = loadBlacklist;
+  if ($("#blacklist-add-form")) $("#blacklist-add-form").onsubmit = addBlacklist;
+  if ($("#blacklist-remove-form")) $("#blacklist-remove-form").onsubmit = removeBlacklist;
+  if ($("#blacklist-type")) $("#blacklist-type").onchange = updateBlacklistDuration;
+  if ($("#blacklist-duration")) $("#blacklist-duration").onchange = updateBlacklistDuration;
+  if ($("#refresh-admin-users")) $("#refresh-admin-users").onclick = loadAdminUsers;
+  if ($("#refresh-admin-inquiries")) $("#refresh-admin-inquiries").onclick = loadAdminInquiries;
+  if ($("#refresh-direct-dm")) $("#refresh-direct-dm").onclick = () => loadDirectDm(state.directDmUserId, false);
+  if ($("#direct-dm-open-form")) $("#direct-dm-open-form").onsubmit = event => {
     event.preventDefault();
     openDirectDm(String(new FormData(event.currentTarget).get("user_id") || "").trim());
   };
-  $("#direct-dm-send-form").onsubmit = sendDirectDm;
-  $("#refresh-subadmins").onclick = loadSubadmins;
-  $("#subadmin-form").onsubmit = saveSubadmin;
-  $("#refresh-subadmin-panel").onclick = loadSubadminPanel;
-  $("#refresh-admin-coupon-events").onclick = loadAdminCouponEvents;
-  $("#point-admin-form").onsubmit = saveAdminPoints;
-  $("#coupon-admin-form").onsubmit = issueCoupon;
-  $('#coupon-admin-form [name="all_users"]').onchange = updateCouponRecipient;
-  $("#coupon-event-admin-form").onsubmit = createCouponEvent;
-  $("#policy-admin-form").onsubmit = saveAdminPolicies;
-  $('#coupon-event-admin-form [name="image"]').onchange = previewCouponEventImage;
+  if ($("#direct-dm-send-form")) $("#direct-dm-send-form").onsubmit = sendDirectDm;
+  if ($("#refresh-subadmins")) $("#refresh-subadmins").onclick = loadSubadmins;
+  if ($("#subadmin-form")) $("#subadmin-form").onsubmit = saveSubadmin;
+  if ($("#refresh-subadmin-panel")) $("#refresh-subadmin-panel").onclick = loadSubadminPanel;
+  if ($("#refresh-admin-coupon-events")) $("#refresh-admin-coupon-events").onclick = loadAdminCouponEvents;
+  if ($("#point-admin-form")) $("#point-admin-form").onsubmit = saveAdminPoints;
+  if ($("#coupon-admin-form")) $("#coupon-admin-form").onsubmit = issueCoupon;
+  if ($('#coupon-admin-form [name="all_users"]')) $('#coupon-admin-form [name="all_users"]').onchange = updateCouponRecipient;
+  if ($("#coupon-event-admin-form")) $("#coupon-event-admin-form").onsubmit = createCouponEvent;
+  if ($("#policy-admin-form")) $("#policy-admin-form").onsubmit = saveAdminPolicies;
+  if ($('#coupon-event-admin-form [name="image"]')) $('#coupon-event-admin-form [name="image"]').onchange = previewCouponEventImage;
   $("#claim-welcome-coupon").onclick = () => claimCouponEvent("WELCOME", true);
   $("#delivery-review-later").onclick = closeDeliveredReviewPrompt;
   $("#delivery-review-write").onclick = () => {
@@ -1238,7 +1283,7 @@ function bindForms() {
       renderSupportForm();
     };
   });
-  $("#support-form").onsubmit = createSupportTicket;
+  if ($("#support-form")) $("#support-form").onsubmit = createSupportTicket;
   $("#chat-launcher").onclick = openChatPanel;
   $("#chat-panel-close").onclick = closeChatPanel;
   $("#chat-start").onclick = () => { $("#chat-initial-wrap").hidden = false; $("#chat-initial-content").focus(); };
@@ -1277,7 +1322,7 @@ function bindForms() {
       else if (preview.dataset.existingSrc) { preview.src = preview.dataset.existingSrc; preview.hidden = false; }
     };
   });
-  $("#product-search").oninput = event => {
+  if ($("#product-search")) $("#product-search").oninput = event => {
     state.productSearch = event.target.value;
     clearTimeout(state.productSearchTimer);
     state.productSearchTimer = setTimeout(scheduleProductRender, 120);
@@ -1293,7 +1338,7 @@ function bindForms() {
   addEventListener("keydown", event => {
     if (event.key === "Escape" && !$("#editor").hidden) closeEditor();
   });
-  updateShippingMode();
+  if ($("#shipping-method")) updateShippingMode();
   renderSupportForm();
   updateCouponRecipient();
 }
@@ -1339,7 +1384,7 @@ function renderSupportForm() {
 async function createSupportTicket(event) {
   event.preventDefault();
   if (!state.me) {
-    try { sessionStorage.setItem("v4p3PostLoginHash", "#support"); } catch {}
+    try { sessionStorage.setItem("v4p3PostLoginHash", PAGE_PATHS.support); } catch {}
     location.href = "/auth/login";
     return;
   }
@@ -1482,7 +1527,7 @@ async function openSubadminPanel() {
   }
   if (!state.isSubadmin) {
     toast("등록된 부관리자만 접근할 수 있습니다.");
-    location.hash = "home";
+    goToPage("home");
     return;
   }
   await loadSubadminPanel();
@@ -1646,11 +1691,11 @@ async function checkout(event) {
     $("#bank-info").innerHTML = data.cash_amount
       ? `<small>입금해야 할 금액</small><b class="payment-amount">${money(data.cash_amount)}</b><strong>${escapeHtml(data.bank.bank_name || "은행 미설정")} ${escapeHtml(data.bank.account_number || "")}</strong><span>예금주 ${escapeHtml(data.bank.account_holder || "미설정")}</span>`
       : "포인트 전액결제로 승인되었습니다.";
-    location.hash = "complete";
+    goToPage("complete");
     startCountdown(data);
   } catch (error) {
     toast(error.message);
-    if (error.message.includes("정보등록")) location.hash = "account";
+    if (error.message.includes("정보등록")) goToPage("account");
   }
 }
 
@@ -1698,7 +1743,7 @@ async function openAdminPanel() {
   }
   if (!state.isAdmin) {
     toast("관리자 계정만 접근할 수 있습니다.");
-    location.hash = "home";
+    goToPage("home");
     return;
   }
   setAdminSection("dashboard");
@@ -2019,7 +2064,7 @@ async function loadCouponEvents(showWelcome = false) {
     $("#welcome-coupon-modal").hidden = false;
     document.body.classList.add("modal-open");
   }
-  if (!showWelcome && (location.hash.slice(1) || "home") === "events") {
+  if (!showWelcome && currentPageId() === "events") {
     const latest = Math.max(
       latestUpdate(state.eventNotices, "updated_at"),
       latestUpdate(state.couponEvents.filter(item => item.event_key !== "WELCOME"), "created_at"),
@@ -2140,10 +2185,29 @@ function beginOrderReview(orderId, product) {
   state.reviewOrderId = String(orderId || "");
   state.reviewOrderProduct = String(product || "");
   const form = $("#review-form");
-  form.elements.order_id.value = state.reviewOrderId;
-  $("#review-order-product").textContent = state.reviewOrderProduct;
-  $("#review-order-context").hidden = !state.reviewOrderId;
-  location.hash = "review-write";
+  if (form) {
+    form.elements.order_id.value = state.reviewOrderId;
+    $("#review-order-product").textContent = state.reviewOrderProduct;
+    $("#review-order-context").hidden = !state.reviewOrderId;
+  }
+  try {
+    sessionStorage.setItem("v4p3PendingReview", JSON.stringify({ orderId: state.reviewOrderId, product: state.reviewOrderProduct }));
+  } catch {}
+  goToPage("review-write");
+}
+
+function restoreOrderReviewContext() {
+  if (!$("#review-form")) return;
+  try {
+    const pending = JSON.parse(sessionStorage.getItem("v4p3PendingReview") || "null");
+    if (pending?.orderId) {
+      state.reviewOrderId = String(pending.orderId);
+      state.reviewOrderProduct = String(pending.product || "");
+      $("#review-form").elements.order_id.value = state.reviewOrderId;
+      $("#review-order-product").textContent = state.reviewOrderProduct;
+      $("#review-order-context").hidden = false;
+    }
+  } catch {}
 }
 
 function clearOrderReviewContext() {
@@ -2152,6 +2216,7 @@ function clearOrderReviewContext() {
   const form = $("#review-form");
   form.elements.order_id.value = "";
   $("#review-order-context").hidden = true;
+  try { sessionStorage.removeItem("v4p3PendingReview"); } catch {}
 }
 
 async function loadSiteMessages() {

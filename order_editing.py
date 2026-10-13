@@ -1,6 +1,7 @@
 """관리자가 주문과 연결된 구매로그·누적 구매액을 함께 수정하는 기능."""
 
 import datetime as dt
+import json
 import discord
 from discord import app_commands
 
@@ -8,6 +9,36 @@ from loyalty_points import PointsError, parse_amount, payment_summary
 
 
 KST = dt.timezone(dt.timedelta(hours=9))
+
+
+def _json_list(value) -> list:
+    if isinstance(value, list):
+        return value
+    if not value:
+        return []
+    try:
+        parsed = json.loads(value)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return []
+    return parsed if isinstance(parsed, list) else []
+
+
+def format_order_items_for_discord(rows) -> str:
+    lines: list[str] = []
+    for row in rows:
+        name = str(row["product_name"] or "상품").replace("`", "ˋ")
+        quantity = int(row["quantity"] or 0)
+        lines.append(f"`• {name} × {quantity}`")
+        selections = _json_list(row["product_options_json"])
+        groups = _json_list(row["option_groups_json"])
+        for index, selection in enumerate(selections):
+            if not str(selection).strip():
+                continue
+            group = groups[index] if index < len(groups) and isinstance(groups[index], dict) else {}
+            label = str(group.get("label") or f"옵션 {index + 1}").strip().replace("`", "ˋ")
+            value = str(selection).strip().replace("`", "ˋ")
+            lines.append(f"　`└ {label}: {value}`")
+    return "\n".join(lines)
 
 
 class OrderEditError(Exception):
@@ -148,7 +179,7 @@ def _as_datetime(value) -> dt.datetime | None:
 
 def build_purchase_log_payload(order: dict, anonymous_role_id: int | None) -> dict:
     buyer = f"<@&{anonymous_role_id}>" if anonymous_role_id else "**익명**"
-    products = "\n".join(
+    products = str(order.get("_formatted_items") or "").strip() or "\n".join(
         f"`{_display(product.strip())}`"
         for product in str(order["product"]).split(",")
         if product.strip()
@@ -248,6 +279,15 @@ async def update_purchase_log(bot, guild_id: int, old_order: dict, order: dict) 
             "SELECT log_channel_id, anonymous_role_id FROM guild_settings WHERE guild_id = $1",
             guild_id,
         )
+        item_rows = await conn.fetch(
+            """SELECT item.product_name,item.quantity,item.product_options_json,
+                      COALESCE(product.option_groups_json, '[]') option_groups_json
+               FROM web_order_items item
+               LEFT JOIN web_products product ON product.id=item.product_id AND product.guild_id=$2
+               WHERE item.order_id=$1
+               ORDER BY item.product_name""",
+            order["order_id"], guild_id,
+        )
     settings = dict(settings) if settings else {}
     channel_id = order.get("purchase_log_channel_id") or settings.get("log_channel_id")
     if not channel_id:
@@ -268,9 +308,11 @@ async def update_purchase_log(bot, guild_id: int, old_order: dict, order: dict) 
         order["purchase_log_channel_id"] = int(channel_id)
         order["purchase_log_message_id"] = int(message_id)
 
+    payload_order = dict(order)
+    payload_order["_formatted_items"] = format_order_items_for_discord(item_rows)
     await bot.http.request(
         discord.http.Route("PATCH", f"/channels/{int(channel_id)}/messages/{int(message_id)}"),
-        json=build_purchase_log_payload(order, settings.get("anonymous_role_id")),
+        json=build_purchase_log_payload(payload_order, settings.get("anonymous_role_id")),
     )
     return True
 

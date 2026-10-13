@@ -3,14 +3,13 @@
 from __future__ import annotations
 
 import datetime
-import json
 import logging
 import os
 
 import discord
 
 from loyalty_points import payment_summary
-from order_editing import build_purchase_log_payload, sync_buyer_roles
+from order_editing import build_purchase_log_payload, format_order_items_for_discord, sync_buyer_roles
 
 
 LOGGER = logging.getLogger(__name__)
@@ -18,35 +17,9 @@ KST = datetime.timezone(datetime.timedelta(hours=9))
 STORE_ADMIN_USER_ID = int(os.getenv("WEB_ADMIN_USER_ID", "259758966043574272"))
 
 
-def _json_list(value) -> list:
-    if isinstance(value, list):
-        return value
-    if not value:
-        return []
-    try:
-        parsed = json.loads(value)
-    except (TypeError, ValueError, json.JSONDecodeError):
-        return []
-    return parsed if isinstance(parsed, list) else []
-
-
 def format_buyer_order_items(rows) -> str:
     """구매자정보 메시지에서 상품별 선택 옵션을 각각 독립된 줄로 표시한다."""
-    lines: list[str] = []
-    for row in rows:
-        name = str(row["product_name"] or "상품").replace("`", "ˋ")
-        quantity = int(row["quantity"] or 0)
-        lines.append(f"`• {name} × {quantity}`")
-        selections = _json_list(row["product_options_json"])
-        groups = _json_list(row["option_groups_json"])
-        for index, selection in enumerate(selections):
-            if not str(selection).strip():
-                continue
-            group = groups[index] if index < len(groups) and isinstance(groups[index], dict) else {}
-            label = str(group.get("label") or f"옵션 {index + 1}").strip().replace("`", "ˋ")
-            value = str(selection).strip().replace("`", "ˋ")
-            lines.append(f"　`└ {label}: {value}`")
-    return "\n".join(lines)
+    return format_order_items_for_discord(rows)
 
 
 def _v2(content: str, color: int = 0x32CD32, users: list[int] | None = None) -> dict:
@@ -192,10 +165,12 @@ async def finalize_approved_order(bot, order: dict, *, processor: str = "Pushbul
 
     if settings.get("log_channel_id"):
         try:
+            purchase_log_order = dict(order)
+            purchase_log_order["_formatted_items"] = format_buyer_order_items(item_rows)
             response = await _send_channel(
                 bot,
                 settings["log_channel_id"],
-                build_purchase_log_payload(order, settings.get("anonymous_role_id")),
+                build_purchase_log_payload(purchase_log_order, settings.get("anonymous_role_id")),
             )
             if response and response.get("id"):
                 async with bot.db_pool.acquire() as conn:

@@ -3727,7 +3727,19 @@ async def on_interaction(interaction: discord.Interaction):
 
         if action == 'approve':
             if settings and settings['log_channel_id']:
-                log_payload = build_purchase_log_payload(order, anonymous_role_id)
+                async with bot.db_pool.acquire() as conn:
+                    purchase_item_rows = await conn.fetch(
+                        """SELECT item.product_name,item.quantity,item.product_options_json,
+                                  COALESCE(product.option_groups_json, '[]') option_groups_json
+                           FROM web_order_items item
+                           LEFT JOIN web_products product ON product.id=item.product_id AND product.guild_id=$2
+                           WHERE item.order_id=$1
+                           ORDER BY item.product_name""",
+                        order_id, interaction.guild.id,
+                    )
+                purchase_log_order = dict(order)
+                purchase_log_order["_formatted_items"] = format_buyer_order_items(purchase_item_rows)
+                log_payload = build_purchase_log_payload(purchase_log_order, anonymous_role_id)
                 log_response = await interaction.client.http.request(
                     discord.http.Route("POST", f"/channels/{settings['log_channel_id']}/messages"), 
                     json=log_payload

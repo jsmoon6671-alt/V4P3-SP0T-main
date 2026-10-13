@@ -48,6 +48,11 @@ from review_watermark import ReviewImageError, watermark_review_image
 
 ROOT = Path(__file__).resolve().parent
 STATIC = ROOT / "web" / "static"
+WEB_PAGE_FILES = {
+    "index.html", "events.html", "notices.html", "support.html", "account.html",
+    "review-write.html", "ranking.html", "tiers.html", "terms.html", "tracking.html",
+    "cart.html", "admin.html", "subadmin-panel.html",
+}
 COOKIE = "v4p3_session"
 ADMIN_USER_ID = 259758966043574272
 BASE_SHIPPING_FEE = 3_000
@@ -961,7 +966,10 @@ class StoreServer:
         return web.json_response({"verified": bool(verified)})
 
     async def index(self, request):
-        return web.FileResponse(STATIC / "index.html")
+        page_name = request.path.strip("/") or "index.html"
+        if page_name not in WEB_PAGE_FILES:
+            page_name = "index.html"
+        return web.FileResponse(STATIC / page_name)
 
     async def login(self, request):
         if not all((self.client_id, self.client_secret, self.redirect_uri, self.secret)):
