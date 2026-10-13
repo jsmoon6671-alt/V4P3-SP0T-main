@@ -27,7 +27,7 @@ from delivery_tracking import (
     normalize_waybill,
     track_shipment,
 )
-from loyalty_points import PointsError, adjust_points, award_review_points, get_balance, maximum_points, parse_amount, request_payment, resolve_payment
+from loyalty_points import PointsError, adjust_points, award_review_points, get_balance, maximum_points, parse_amount, refund_order_benefits, request_payment, resolve_payment
 from order_editing import sync_buyer_roles
 from order_fulfillment import finalize_approved_order, notify_expired_order
 from payment_automation import (
@@ -3347,17 +3347,11 @@ class StoreServer:
                 )
                 if not order or order["status"] in {"CANCELLED", "REJECTED"}:
                     raise StoreError("취소할 수 있는 주문을 찾을 수 없습니다.", 404)
-                points = int(order.get("points_used") or 0)
-                if points and not order.get("points_refunded"):
-                    await conn.execute(
-                        "INSERT INTO point_balances (guild_id,user_id,balance) VALUES ($1,$2,$3) ON CONFLICT (guild_id,user_id) DO UPDATE SET balance=point_balances.balance+$3",
-                        self.guild_id, int(order["buyer_id"]), points,
-                    )
+                await refund_order_benefits(conn, dict(order))
                 await conn.execute(
                     "UPDATE orders SET status='CANCELLED',cancel_reason=$2,points_refunded=CASE WHEN points_used>0 THEN TRUE ELSE points_refunded END,processed_at=CURRENT_TIMESTAMP WHERE order_id=$1",
                     order_id, reason,
                 )
-                await conn.execute("UPDATE web_coupons SET used_order_id=NULL WHERE guild_id=$1 AND used_order_id=$2", self.guild_id, order_id)
                 if order["status"] == "APPROVED":
                     await conn.execute(
                         "UPDATE user_info SET total_spent=GREATEST(COALESCE(total_spent,0)-$2,0) WHERE user_id=$1",
@@ -3367,7 +3361,7 @@ class StoreServer:
         payload = {
             "flags": 1 << 15,
             "components": [{"type": 17, "accent_color": 0xE74C3C, "components": [
-                {"type": 10, "content": f"## 주문이 취소되었습니다\n\n`주문번호` {order_id}\n`취소 사유` {reason}\n\n결제하신 금액은 확인 후 환불됩니다."},
+                {"type": 10, "content": f"## 주문이 취소되었습니다\n\n`주문번호` {order_id}\n`취소 사유` {reason}\n\n사용한 쿠폰과 포인트가 있다면 자동으로 복구되었습니다.\n결제하신 금액은 확인 후 환불됩니다."},
                 *([] if refund_account else [{"type": 1, "components": [{"type": 2, "style": 1, "label": "환불계좌 등록", "custom_id": f"web_refund_account:{order_id}"}]}]),
             ]}],
         }
@@ -3461,8 +3455,6 @@ class StoreServer:
         await finalize_approved_order(self.bot, order, processor=f"Pushbullet · {notice.application_name or notice.package_name}")
 
     async def _payment_expired(self, order: dict):
-        async with self.bot.db_pool.acquire() as conn:
-            await conn.execute("UPDATE web_coupons SET used_order_id=NULL WHERE guild_id=$1 AND used_order_id=$2", int(order["guild_id"]), order["order_id"])
         await notify_expired_order(self.bot, order)
 
 

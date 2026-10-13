@@ -1507,7 +1507,7 @@ async def cancel_order(interaction: discord.Interaction, 주문번호: str):
         
     await update_leaderboard(interaction.guild.id)
     
-    await interaction.followup.send(f"✅ `{주문번호}` 주문이 삭제(취소)되었으며, 해당 유저의 누적 금액 및 역할이 정상적으로 롤백되었습니다.", ephemeral=True)
+    await interaction.followup.send(f"✅ `{주문번호}` 주문이 삭제(취소)되었으며, 사용한 쿠폰·포인트와 해당 유저의 누적 금액 및 역할이 정상적으로 롤백되었습니다.", ephemeral=True)
 
 
 # ==========================================

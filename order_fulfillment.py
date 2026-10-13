@@ -236,7 +236,7 @@ async def notify_expired_order(bot, order: dict):
         f"`👤` **구매자**\n<@{buyer_id}>\n\n"
         f"`◾` **주문번호**\n`{order['order_id']}`\n\n"
         "신청 후 5분 안에 일치하는 입금이 확인되지 않아 주문을 취소했습니다.\n"
-        "사용한 포인트는 자동으로 복구되었습니다."
+        "사용한 쿠폰과 포인트는 자동으로 복구되었습니다."
     )
     try:
         await _send_channel(
@@ -254,7 +254,7 @@ async def notify_expired_order(bot, order: dict):
                 "## ❌ 웹 주문 자동취소\n\n"
                 "주문 신청 후 5분 안에 입금이 확인되지 않아 자동 취소되었습니다.\n"
                 f"`◼️` **주문번호** : `{order['order_id']}`\n\n"
-                "사용한 포인트가 있다면 잔액으로 복구되었습니다.",
+                "사용한 쿠폰과 포인트가 있다면 자동으로 복구되었습니다.",
                 color=0xE74C3C,
             ),
         )

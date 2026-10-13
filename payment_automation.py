@@ -22,7 +22,7 @@ from urllib.parse import quote
 
 import aiohttp
 
-from loyalty_points import PointsError, resolve_payment
+from loyalty_points import PointsError, refund_order_benefits, resolve_payment
 
 
 LOGGER = logging.getLogger(__name__)
@@ -303,26 +303,7 @@ async def _expire_order(conn, order_id: str) -> dict | None:
         ):
             return None
 
-        points = int(order.get("points_used") or 0)
-        if points and not order.get("points_refunded"):
-            await conn.execute(
-                """
-                INSERT INTO point_balances (guild_id, user_id, balance)
-                VALUES ($1, $2, 0)
-                ON CONFLICT (guild_id, user_id) DO NOTHING
-                """,
-                order["guild_id"],
-                order["buyer_id"],
-            )
-            await conn.execute(
-                """
-                UPDATE point_balances SET balance = balance + $3
-                WHERE guild_id = $1 AND user_id = $2
-                """,
-                order["guild_id"],
-                order["buyer_id"],
-                points,
-            )
+        await refund_order_benefits(conn, order)
 
         updated = await conn.fetchrow(
             """

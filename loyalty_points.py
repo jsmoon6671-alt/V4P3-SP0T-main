@@ -192,6 +192,21 @@ async def _refund_points(conn, order):
         await conn.execute('UPDATE orders SET points_refunded = TRUE WHERE order_id = $1', order['order_id'])
 
 
+async def refund_order_benefits(conn, order):
+    """Return every coupon and point benefit reserved by an order.
+
+    The caller must hold the order row lock and run this inside the same
+    transaction as the cancellation/status change so a partially refunded
+    order cannot be left behind.
+    """
+    await _refund_points(conn, order)
+    if order.get('coupon_code'):
+        await conn.execute('''
+            UPDATE web_coupons SET used_order_id = NULL
+            WHERE guild_id = $1 AND used_order_id = $2
+        ''', order['guild_id'], order['order_id'])
+
+
 async def reset_failed_payment(conn, order_id, guild_id):
     async with conn.transaction():
         order = await _lock_order(conn, order_id, guild_id)
@@ -225,7 +240,7 @@ async def resolve_payment(conn, order_id, guild_id, approve):
                 ON CONFLICT (user_id) DO UPDATE SET total_spent = user_info.total_spent + $2
             ''', order['buyer_id'], parse_amount(order['amount']))
         else:
-            await _refund_points(conn, order)
+            await refund_order_benefits(conn, order)
         return order
 
 
@@ -236,7 +251,7 @@ async def cancel_order_record(conn, order_id, guild_id):
             await conn.execute('''
                 UPDATE user_info SET total_spent = GREATEST(total_spent - $2, 0) WHERE user_id = $1
             ''', order['buyer_id'], parse_amount(order['amount']))
-        await _refund_points(conn, order)
+        await refund_order_benefits(conn, order)
         await conn.execute('DELETE FROM orders WHERE order_id = $1', order_id)
         return order
 
