@@ -22,6 +22,38 @@ def format_buyer_order_items(rows) -> str:
     return format_order_items_for_discord(rows)
 
 
+def build_order_receipt(order: dict, item_rows=(), *, approved_at: datetime.datetime | None = None) -> str:
+    """Build the receipt sent privately to the buyer after approval."""
+    approved_at = approved_at or datetime.datetime.now(KST)
+    products = format_buyer_order_items(item_rows) or "\n".join(
+        f"• {part.strip()}" for part in str(order.get("product") or "상품 정보 없음").split(",") if part.strip()
+    )
+    if len(products) > 2400:
+        products = products[:2397].rstrip() + "..."
+    coupon_discount = int(order.get("coupon_discount") or 0)
+    shipping_fee = int(order.get("shipping_fee") or 0)
+    details = [
+        f"`주문 금액` {order.get('amount') or '0원'}",
+        f"`배송비` {shipping_fee:,}원",
+    ]
+    if coupon_discount:
+        details.append(f"`쿠폰 할인` -{coupon_discount:,}원")
+    details.extend([
+        f"`사용 포인트` {int(order.get('points_used') or 0):,}P",
+        f"`실제 입금액` {int(order.get('cash_amount') or 0):,}원",
+    ])
+    return (
+        "## 🧾 V4P3 SP0T 구매 영수증\n\n"
+        "구매가 정상적으로 승인되었습니다.\n\n"
+        f"**주문번호**\n`{order['order_id']}`\n\n"
+        f"**승인일시**\n`{approved_at:%Y-%m-%d %H:%M:%S}`\n\n"
+        f"**구매 상품**\n{products}\n\n"
+        f"**수량**\n`{order.get('quantity') or '미확인'}`\n\n"
+        "**결제 내역**\n" + "\n".join(details) + "\n\n"
+        "구매해 주셔서 감사합니다."
+    )
+
+
 def _v2(content: str, color: int = 0x32CD32, users: list[int] | None = None) -> dict:
     return {
         "flags": 1 << 15,
@@ -47,6 +79,28 @@ async def _send_dm(bot, user_id: int, payload: dict):
     user = bot.get_user(user_id) or await bot.fetch_user(user_id)
     dm = await user.create_dm()
     return await _send_channel(bot, dm.id, payload)
+
+
+async def send_order_receipt(bot, order: dict, item_rows=None):
+    """Send one private receipt to the buyer for an approved order."""
+    if item_rows is None and str(order.get("source") or "DISCORD").upper() == "WEB":
+        async with bot.db_pool.acquire() as conn:
+            item_rows = await conn.fetch(
+                """SELECT item.product_name,item.quantity,item.product_options_json,
+                          COALESCE(product.option_groups_json, '[]') option_groups_json
+                   FROM web_order_items item
+                   LEFT JOIN web_products product ON product.id=item.product_id AND product.guild_id=$2
+                   WHERE item.order_id=$1
+                   ORDER BY item.product_name""",
+                order["order_id"], int(order["guild_id"]),
+            )
+    if item_rows is None:
+        item_rows = []
+    return await _send_dm(
+        bot,
+        int(order["buyer_id"]),
+        _v2(build_order_receipt(dict(order), item_rows)),
+    )
 
 
 async def notify_product_subadmins(bot, order: dict):
@@ -209,17 +263,7 @@ async def finalize_approved_order(bot, order: dict, *, processor: str = "Pushbul
         LOGGER.exception("자동승인 로그 전송 실패: order=%s", order["order_id"])
 
     try:
-        await _send_dm(
-            bot,
-            buyer_id,
-            _v2(
-                "## ✅ 주문 승인완료\n\n"
-                "입금이 자동으로 확인되어 주문이 승인되었습니다.\n\n"
-                f"`◼️` **주문번호** : `{order['order_id']}`\n"
-                f"`◼️` **상품** : `{order['product']}`\n"
-                f"`◼️` **결제금액** : `{int(order.get('cash_amount') or 0):,}원`"
-            ),
-        )
+        await send_order_receipt(bot, order, item_rows)
     except (discord.Forbidden, discord.NotFound, discord.HTTPException):
         pass
 

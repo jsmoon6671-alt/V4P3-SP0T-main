@@ -43,7 +43,7 @@ from chat_ranking import (
 )
 from database import initialize_database
 from order_editing import build_purchase_log_payload, format_order_items_for_discord, register_order_edit_command
-from order_fulfillment import format_buyer_order_items, notify_product_subadmins
+from order_fulfillment import format_buyer_order_items, notify_product_subadmins, send_order_receipt
 from web_store import save_web_review, start_web_store
 from web_order_progress import (
     WebOrderProgressCog,
@@ -642,15 +642,16 @@ class UserInfoModal(discord.ui.Modal):
                 SET name = $2, contact = $3, address = $4, cvs = $5;
             ''', interaction.user.id, self.user_name.value, self.contact.value, self.address.value, self.cvs.value)
         
-        await interaction.response.send_message("✅ 배송 정보가 안전하게 저장 및 수정되었습니다!", ephemeral=True)
+        await interaction.response.send_message("✅ 배송 정보가 저장되었습니다. 웹사이트 정보등록 화면에도 바로 반영됩니다!", ephemeral=True)
 
 
-@bot.tree.command(name="정보패널", description="배송 정보 등록 및 관리 패널을 생성합니다.")
-async def send_info_panel(interaction: discord.Interaction):
+async def _send_info_panel_response(interaction: discord.Interaction):
+    account_url = f"{os.getenv('WEB_PUBLIC_URL', 'https://v4p3sp0t.up.railway.app').rstrip('/')}/account"
     info_content = (
         "## VAPE SP0T USER INFO\n\n"
         "구매를 위해 정보를 입력해 주시기 바랍니다.\n"
-        "등록된 정보는 배송 및 구매 처리에 사용됩니다.\n\n"
+        "Discord에서 등록한 기본 배송정보와 웹사이트 정보등록 내용은 서로 연동됩니다.\n"
+        "환불계좌와 환불약관 동의는 웹사이트에서 등록해 주세요.\n\n"
         "- 🕒 빠른 배송을 위한 정보 등록 절차입니다."
     )
     
@@ -694,6 +695,12 @@ async def send_info_panel(interaction: discord.Interaction):
                                 "style": 3,
                                 "label": "정보 조회",
                                 "custom_id": "info_view"
+                            },
+                            {
+                                "type": 2,
+                                "style": 5,
+                                "label": "웹 정보등록",
+                                "url": account_url
                             }
                         ]
                     }
@@ -706,6 +713,16 @@ async def send_info_panel(interaction: discord.Interaction):
         discord.http.Route("POST", f"/interactions/{interaction.id}/{interaction.token}/callback"),
         json={"type": 4, "data": info_payload}
     )
+
+
+@bot.tree.command(name="정보패널", description="배송 정보 등록 및 관리 패널을 생성합니다.")
+async def send_info_panel(interaction: discord.Interaction):
+    await _send_info_panel_response(interaction)
+
+
+@bot.tree.command(name="정보등록", description="웹사이트와 연동되는 배송 정보 등록 패널을 생성합니다.")
+async def send_linked_info_panel(interaction: discord.Interaction):
+    await _send_info_panel_response(interaction)
 
 
 @bot.tree.command(name="포인트조회패널", description="유저가 본인의 현재 포인트를 확인할 패널을 생성합니다. (관리자 전용)")
@@ -3254,7 +3271,15 @@ async def on_interaction(interaction: discord.Interaction):
                 point_balance = await get_balance(conn, interaction.guild.id, interaction.user.id)
                 if not user_data:
                     user_data = {"name": "미등록", "contact": "미등록", "address": "미등록",
-                                 "cvs": "미등록"}
+                                 "cvs": "미등록", "cvs_brand": "", "cvs_address": "",
+                                 "refund_bank": "", "refund_account_number": "", "refund_account_holder": ""}
+                convenience_store = " · ".join(filter(None, (
+                    user_data.get("cvs_brand"), user_data.get("cvs"), user_data.get("cvs_address"),
+                ))) or "미등록"
+                refund_account = " · ".join(filter(None, (
+                    user_data.get("refund_bank"), user_data.get("refund_account_number"),
+                    user_data.get("refund_account_holder"),
+                ))) or "미등록"
                 
                 view_content = (
                     "## 📋 내 정보 조회\n\n"
@@ -3267,7 +3292,10 @@ async def on_interaction(interaction: discord.Interaction):
                     "`🏠`**주소**\n"
                     f"`{user_data['address']}`\n\n"
                     "`🏪`**편의점**\n"
-                    f"`{user_data['cvs']}`"
+                    f"`{convenience_store}`\n\n"
+                    "`💳`**환불계좌**\n"
+                    f"`{refund_account}`\n\n"
+                    "> Discord와 웹사이트의 정보등록 내용은 같은 계정 정보로 연동됩니다."
                 )
                 
                 view_payload = {
@@ -3669,6 +3697,12 @@ async def on_interaction(interaction: discord.Interaction):
                 await notify_product_subadmins(bot, order)
             except Exception:
                 logging.exception("부관리자 주문 알림 실패: order=%s", order_id)
+            try:
+                await send_order_receipt(bot, order)
+            except (discord.Forbidden, discord.NotFound, discord.HTTPException):
+                logging.info("구매자 영수증 DM 전송 불가: order=%s buyer=%s", order_id, order['buyer_id'])
+            except Exception:
+                logging.exception("구매자 영수증 DM 전송 실패: order=%s", order_id)
 
         # 승인/거절 처리 시간 (한국 시간)
         now_str = datetime.datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S")
