@@ -134,7 +134,13 @@ async def notify_product_subadmins(bot, order: dict):
         except (discord.Forbidden, discord.NotFound, discord.HTTPException): pass
 
 
-async def finalize_approved_order(bot, order: dict, *, processor: str = "Pushbullet 자동승인"):
+async def finalize_approved_order(
+    bot,
+    order: dict,
+    *,
+    processor: str = "Pushbullet 자동승인",
+    processor_user_id: int | None = None,
+):
     """자동승인 주문에도 기존 구매로그, 누적액, 역할, 랭킹 동기화를 적용한다."""
     guild_id = int(order["guild_id"])
     buyer_id = int(order["buyer_id"])
@@ -171,7 +177,10 @@ async def finalize_approved_order(bot, order: dict, *, processor: str = "Pushbul
         )
     settings = dict(settings_row) if settings_row else {}
 
-    await notify_product_subadmins(bot, order)
+    try:
+        await notify_product_subadmins(bot, order)
+    except Exception:
+        LOGGER.exception("부관리자 주문 알림 실패: order=%s", order["order_id"])
 
     if guild:
         try:
@@ -240,16 +249,20 @@ async def finalize_approved_order(bot, order: dict, *, processor: str = "Pushbul
         except Exception:
             LOGGER.exception("자동승인 구매로그 전송 실패: order=%s", order["order_id"])
 
+    processor_text = f"`{processor}`"
+    if processor_user_id:
+        processor_text += f" · <@{int(processor_user_id)}>"
     approval_text = (
         "## ✅ 입금 자동확인 완료\n\n"
         f"`👤` **구매자**\n<@{buyer_id}>\n\n"
         f"`✍️` **입금자명**\n`{order.get('depositor_name') or '미입력'}`\n\n"
         f"`◾` **주문번호**\n`{order['order_id']}`\n\n"
         f"`💰` **금액**\n{payment_summary(order)}\n\n"
-        f"`⚡` **처리방식**\n`{processor}`"
+        f"`⚡` **처리방식**\n{processor_text}"
     )
     try:
-        approval_payload = _v2(approval_text, users=[buyer_id])
+        mentioned_users = [buyer_id] + ([int(processor_user_id)] if processor_user_id else [])
+        approval_payload = _v2(approval_text, users=mentioned_users)
         approval_channel_id = order.get("approval_channel_id") or settings.get("approval_channel_id")
         approval_message_id = order.get("approval_message_id")
         if approval_channel_id and approval_message_id:

@@ -42,8 +42,8 @@ from chat_ranking import (
     register_chat_ranking_commands,
 )
 from database import initialize_database
-from order_editing import build_purchase_log_payload, format_order_items_for_discord, register_order_edit_command
-from order_fulfillment import format_buyer_order_items, notify_product_subadmins, send_order_receipt
+from order_editing import register_order_edit_command
+from order_fulfillment import finalize_approved_order
 from web_store import save_web_review, start_web_store
 from web_order_progress import (
     WebOrderProgressCog,
@@ -3577,255 +3577,66 @@ async def on_interaction(interaction: discord.Interaction):
         action, order_id = custom_id.split("_", 1)
         await interaction.response.defer()
         async with bot.db_pool.acquire() as conn:
-            settings = await conn.fetchrow('SELECT * FROM guild_settings WHERE guild_id = $1', interaction.guild.id)
             try:
-                order = await resolve_payment(conn, order_id, interaction.guild.id, action == 'approve')
+                order = await resolve_payment(conn, order_id, interaction.guild.id, action == "approve")
             except PointsError as exc:
                 await interaction.followup.send(f"❌ {exc}", ephemeral=True)
                 return
-            if action == 'approve':
-                amount_int = parse_amount(order['amount'])
-                user_info_row = await conn.fetchrow('SELECT total_spent FROM user_info WHERE user_id = $1', order['buyer_id'])
-                current_total = user_info_row['total_spent'] if user_info_row else amount_int
-                member = interaction.guild.get_member(order['buyer_id'])
-                
-                if member and current_total >= 1 and settings and settings.get('buyer_role_id'):
-                    b_role = interaction.guild.get_role(settings['buyer_role_id'])
-                    if b_role and b_role not in member.roles:
-                        try: 
-                            await member.add_roles(b_role)
-                        except Exception as e: 
-                            pass
 
-                tiers = await conn.fetch('SELECT role_id, required_amount FROM vip_tiers WHERE guild_id = $1 ORDER BY required_amount DESC', interaction.guild.id)
-                target_role_id = None
-                
-                for t in tiers:
-                    if current_total >= t['required_amount']:
-                        target_role_id = t['role_id']
-                        break
-                        
-                if target_role_id and member:
-                    role = interaction.guild.get_role(target_role_id)
-                    if role and role not in member.roles:
-                        try:
-                            await member.add_roles(role)
-                            
-                            if settings and settings.get('tier_log_channel_id'):
-                                tier_channel = interaction.guild.get_channel(settings['tier_log_channel_id'])
-                                if tier_channel:
-                                    tier_payload = create_tier_upgrade_payload(
-                                        order['buyer_id'], role.mention, current_total
-                                    )
-                                    
-                                    await interaction.client.http.request(
-                                        discord.http.Route("POST", f"/channels/{tier_channel.id}/messages"),
-                                        json=tier_payload
-                                    )
-                        except Exception as e: 
-                            pass
-
-                await update_leaderboard(interaction.guild.id)
-
-                # 구매자 상세 배송 정보를 설정된 구매자정보채널로 전송 + 멘션
-                if settings and settings.get('buyer_info_channel_id'):
-                    buyer_info_ch = interaction.guild.get_channel(settings['buyer_info_channel_id'])
-                    if buyer_info_ch:
-                        buyer_user_data = await conn.fetchrow('SELECT * FROM user_info WHERE user_id = $1', order['buyer_id'])
-                        category_rows = await conn.fetch(
-                            """SELECT DISTINCT COALESCE(parent.name || ' › ' || category.name, category.name) category_name
-                               FROM web_order_items item
-                               JOIN web_products product ON product.id=item.product_id AND product.guild_id=$2
-                               LEFT JOIN web_categories category ON category.id=product.category_id
-                               LEFT JOIN web_categories parent ON parent.id=category.parent_id
-                               WHERE item.order_id=$1 AND category.name IS NOT NULL
-                               ORDER BY category_name""",
-                            order_id, interaction.guild.id,
-                        )
-                        item_rows = await conn.fetch(
-                            """SELECT item.product_name,item.quantity,item.product_options_json,
-                                      COALESCE(product.option_groups_json, '[]') option_groups_json
-                               FROM web_order_items item
-                               LEFT JOIN web_products product ON product.id=item.product_id AND product.guild_id=$2
-                               WHERE item.order_id=$1
-                               ORDER BY item.product_name""",
-                            order_id, interaction.guild.id,
-                        )
-                        
-                        b_name = buyer_user_data['name'] if buyer_user_data and buyer_user_data['name'] else "미등록"
-                        b_contact = buyer_user_data['contact'] if buyer_user_data and buyer_user_data['contact'] else "미등록"
-                        b_address = buyer_user_data['address'] if buyer_user_data and buyer_user_data['address'] else "미등록"
-                        b_cvs = buyer_user_data['cvs'] if buyer_user_data and buyer_user_data['cvs'] else "X"
-                        
-                        formatted_prod_info = format_buyer_order_items(item_rows) or "\n".join(
-                            f"`{p.strip()}`" for p in order['product'].split(",") if p.strip()
-                        )
-                        formatted_categories = ", ".join(str(row["category_name"]) for row in category_rows) or "미분류"
-                        now_kst_str = datetime.datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S")
-                        
-                        buyer_info_txt = (
-                            "## 📋 구매자 상세 배송 정보\n\n"
-                            "<@259758966043574272>\n\n"
-                            f"`👤` **구매자:** <@{order['buyer_id']}>\n"
-                            f"`🕒` **구매일시:** `{now_kst_str}`\n"
-                            f"`🧾` **주문번호:** `{order_id}`\n"
-                            f"`👤` **성함:** `{b_name}`\n"
-                            f"`📞` **연락처:** `{b_contact}`\n"
-                            f"`🏠` **주소:** `{b_address}`\n"
-                            f"`🏪` **편의점:** `{b_cvs}`\n"
-                            f"`🗂️` **상품 카테고리:** `{formatted_categories}`\n"
-                            f"`📦` **상품:**\n{formatted_prod_info}\n\n"
-                            f"`💰` **금액:** `{order['amount']}`"
-                        )
-                        
-                        buyer_info_payload = create_v2_payload(buyer_info_txt)
-                        buyer_info_payload["allowed_mentions"] = {
-                            "parse": [],
-                            "users": ["259758966043574272", str(order['buyer_id'])],
-                        }
-                        
-                        try:
-                            await interaction.client.http.request(
-                                discord.http.Route("POST", f"/channels/{buyer_info_ch.id}/messages"),
-                                json=buyer_info_payload
-                            )
-                        except Exception as e:
-                            print(f"구매자 정보 채널 전송 실패: {e}")
-
-        if action == 'approve':
+        if action == "approve":
             try:
-                await notify_product_subadmins(bot, order)
+                await finalize_approved_order(
+                    bot,
+                    order,
+                    processor="수동승인",
+                    processor_user_id=interaction.user.id,
+                )
             except Exception:
-                logging.exception("부관리자 주문 알림 실패: order=%s", order_id)
-            try:
-                await send_order_receipt(bot, order)
-            except (discord.Forbidden, discord.NotFound, discord.HTTPException):
-                logging.info("구매자 영수증 DM 전송 불가: order=%s buyer=%s", order_id, order['buyer_id'])
-            except Exception:
-                logging.exception("구매자 영수증 DM 전송 실패: order=%s", order_id)
+                logging.exception("수동승인 후 공통 승인 처리 실패: order=%s", order_id)
+                await interaction.followup.send(
+                    "⚠️ 주문은 승인됐지만 일부 후속 처리에 실패했습니다. 로그를 확인해 주세요.",
+                    ephemeral=True,
+                )
+            return
 
-        # 승인/거절 처리 시간 (한국 시간)
         now_str = datetime.datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S")
         buyer_mention = f"<@{order['buyer_id']}>"
-        anonymous_role_id = settings.get('anonymous_role_id') if settings else None
-        status_word, color_val = ("✅ 승인", 0x32CD32) if action == 'approve' else ("❌ 거절", 0xFF0000)
-        
-        depositor_name = order.get('depositor_name') or "알 수 없음"
-        formatted_product = "\n".join([f"`{p.strip()}`" for p in order['product'].split(",") if p.strip()])
-        
-        admin_updated = (
-            f"## {status_word} 완료\n\n"
-            "`👤`**구매자**\n"
+        depositor_name = order.get("depositor_name") or "알 수 없음"
+        formatted_product = "\n".join(
+            f"`{part.strip()}`" for part in order["product"].split(",") if part.strip()
+        )
+        rejected_text = (
+            "## ❌ 거절 완료\n\n"
+            "`👤` **구매자**\n"
             f"{buyer_mention}\n\n"
-            "`✍️`**입금자명**\n"
+            "`✍️` **입금자명**\n"
             f"`{depositor_name}`\n\n"
-            "`◾`**주문번호**\n"
+            "`◾` **주문번호**\n"
             f"`{order_id}`\n\n"
-            "`📦`**상품**\n"
+            "`📦` **상품**\n"
             f"{formatted_product}\n\n"
-            "`◾`**수량**\n"
+            "`◾` **수량**\n"
             f"`{order['quantity']}`\n\n"
-            "`💰`**금액**\n"
+            "`💰` **금액**\n"
             f"{payment_summary(order)}\n\n"
-            "`👑`**처리자**\n"
+            "`👑` **처리자**\n"
             f"{interaction.user.mention}\n\n"
-            "`🕒`**처리시각**\n"
+            "`🕒` **처리시각**\n"
             f"`{now_str}`"
         )
-        
         update_payload = {
-            "flags": 1 << 15, 
+            "flags": 1 << 15,
             "allowed_mentions": {
                 "parse": [],
-                "users": [str(order['buyer_id']), str(interaction.user.id)],
+                "users": [str(order["buyer_id"]), str(interaction.user.id)],
             },
-            "components": [
-                {
-                    "type": 17, 
-                    "accent_color": color_val, 
-
-                    "components": [
-                        {
-                            "type": 10, 
-                            "content": admin_updated
-                        }
-                    ]
-                }
-            ]
+            "components": [{
+                "type": 17,
+                "accent_color": 0xFF0000,
+                "components": [{"type": 10, "content": rejected_text}],
+            }],
         }
-        
         await interaction.client.http.request(
             discord.http.Route("PATCH", f"/channels/{interaction.channel_id}/messages/{interaction.message.id}"),
             json=update_payload,
         )
-
-        if action == 'approve':
-            if settings and settings['log_channel_id']:
-                async with bot.db_pool.acquire() as conn:
-                    purchase_item_rows = await conn.fetch(
-                        """SELECT item.product_name,item.quantity,item.product_options_json,
-                                  COALESCE(product.option_groups_json, '[]') option_groups_json
-                           FROM web_order_items item
-                           LEFT JOIN web_products product ON product.id=item.product_id AND product.guild_id=$2
-                           WHERE item.order_id=$1
-                           ORDER BY item.product_name""",
-                        order_id, interaction.guild.id,
-                    )
-                purchase_log_order = dict(order)
-                purchase_log_order["_formatted_items"] = format_order_items_for_discord(
-                    purchase_item_rows, include_text_answers=False,
-                )
-                log_payload = build_purchase_log_payload(purchase_log_order, anonymous_role_id)
-                log_response = await interaction.client.http.request(
-                    discord.http.Route("POST", f"/channels/{settings['log_channel_id']}/messages"), 
-                    json=log_payload
-                )
-                if log_response and log_response.get('id'):
-                    async with bot.db_pool.acquire() as conn:
-                        await conn.execute(
-                            """
-                            UPDATE orders
-                            SET purchase_log_channel_id = $3, purchase_log_message_id = $4
-                            WHERE order_id = $1 AND guild_id = $2
-                            """,
-                            order_id,
-                            interaction.guild.id,
-                            settings['log_channel_id'],
-                            int(log_response['id']),
-                        )
-
-            noti_txt = (
-                "## VAPE SP0T Order Complete\n\n"
-                f"{buyer_mention}님의 주문이 승인되었습니다.\n"
-                "`아래 정보를 확인하신 후 입금을 진행해 주세요.`\n\n"
-                "`🧾`주문정보\n\n"
-                "`◾`**주문번호**\n"
-                f"`{order_id}`\n\n"
-                "`📦`**상품**\n"
-                f"{formatted_product}\n\n"
-                "`💰`**금액**\n"
-                f"{payment_summary(order)}\n\n"
-                "```감사합니다.```"
-            )
-            
-            noti_payload = {
-                "flags": 1 << 15, 
-                "allowed_mentions": {"parse": [], "users": [str(order['buyer_id'])]},
-                "components": [
-                    {
-                        "type": 17, 
-                        "accent_color": 0x32CD32, 
-                        "components": [
-                            {
-                                "type": 10, 
-                                "content": noti_txt
-                            }
-                        ]
-                    }
-                ]
-            }
-            
-            await interaction.client.http.request(
-                discord.http.Route("POST", f"/channels/{order['original_channel_id']}/messages"), 
-                json=noti_payload
-            )
