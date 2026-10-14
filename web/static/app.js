@@ -620,6 +620,7 @@ async function saveCartRow(productId, quantity, selectedOptions = null) {
 }
 
 function cartTotal() {
+  if (!$("#cart-total")) return;
   const selectedRows = state.cart.filter(item => state.selected.has(Number(item.product_id)));
   const subtotal = selectedRows.reduce((sum, item) => sum + itemUnitPrice(item) * Number(item.quantity), 0);
   const productFreeShipping = qualifiesForProductFreeShipping(selectedRows);
@@ -984,8 +985,9 @@ async function loadAccount() {
     setupRefundPolicy(customer.refund_policy || {});
     state.pointBalance = Number(customer.points || 0);
     $("#point-balance").textContent = `${state.pointBalance.toLocaleString()}P`;
-    $("#checkout-point-balance").textContent = `보유 ${state.pointBalance.toLocaleString()}P`;
-    cartTotal();
+    const checkoutPointBalance = $("#checkout-point-balance");
+    if (checkoutPointBalance) checkoutPointBalance.textContent = `보유 ${state.pointBalance.toLocaleString()}P`;
+    if ($("#checkout-form")) cartTotal();
     $("#orders").innerHTML = orders.orders.length ? orders.orders.map(order => {
       const progress = orderProgress(order);
       return `<article class="order">
