@@ -775,6 +775,16 @@ body {
 .hero::after { color:rgba(24,72,43,.045); }
 .hero-card { border-color:#bdd9c7; background:rgba(255,255,255,.9); box-shadow:0 14px 36px rgba(37,77,52,.1); }
 .hero-card span,.hero-card small { color:var(--muted); }
+.tier-card { background:linear-gradient(145deg,#ffffff,#f2f7f4 72%); box-shadow:0 12px 30px rgba(42,82,57,.09); }
+.tier-god { background:linear-gradient(145deg,#fffdf7,#f8f1df 72%); color:#9b6900; }
+.tier-master { background:linear-gradient(145deg,#ffffff,#edf5fc 72%); color:#2d6f9f; }
+.tier-royal { background:linear-gradient(145deg,#ffffff,#f4effb 72%); color:#7048a3; }
+.tier-svip { color:#197454; }
+.tier-vvip { color:#17684e; }
+.tier-vip { color:#1a684b; }
+.tier-svip,.tier-vvip,.tier-vip { background:linear-gradient(145deg,#ffffff,#eaf7f0 72%); }
+.tier-benefit { border-top-color:var(--line); }
+.tier-benefit b { color:#3f5046; }
 .parent-tabs button { border-color:#cadcd0; background:linear-gradient(180deg,#fff,#edf5f0); color:#52645a; box-shadow:inset 0 1px #fff; }
 .tabs button:hover { border-color:#78b994; background:#edf7f1; }
 .tabs button.active { border-color:#63b587; background:linear-gradient(135deg,#dff5e8,#edf9f2); color:#126a43; box-shadow:0 4px 15px rgba(24,169,109,.1); }
