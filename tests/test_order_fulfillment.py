@@ -1,7 +1,7 @@
 import datetime
 import unittest
 
-from order_fulfillment import build_order_receipt, format_buyer_order_items
+from order_fulfillment import build_order_receipt, format_buyer_order_items, format_coupon_usage
 from order_editing import build_purchase_log_payload, format_order_items_for_discord
 
 
@@ -67,6 +67,18 @@ class BuyerOrderItemFormattingTests(unittest.TestCase):
         self.assertIn("쿠폰 할인` -2,000원", receipt)
         self.assertIn("사용 포인트` 1,000P", receipt)
         self.assertIn("실제 입금액` 19,000원", receipt)
+
+    def test_buyer_info_coupon_usage_contains_name_code_and_discount(self):
+        text = format_coupon_usage({
+            "coupon_code": "V4P3-WELCOME",
+            "coupon_discount": 2_000,
+        }, "WELCOME 쿠폰")
+
+        self.assertIn("WELCOME 쿠폰 · V4P3-WELCOME", text)
+        self.assertIn("-2,000원", text)
+
+    def test_buyer_info_coupon_usage_is_empty_without_discount(self):
+        self.assertEqual(format_coupon_usage({"coupon_code": None, "coupon_discount": 0}), "")
 
 
 if __name__ == "__main__":

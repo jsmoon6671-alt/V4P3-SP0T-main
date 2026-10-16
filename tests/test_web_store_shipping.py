@@ -4,6 +4,7 @@ from web_store import (
     ADMIN_USER_ID,
     StoreError,
     calculate_shipping_fee,
+    coupon_blocking_product_names,
     normalize_option_groups,
     normalize_selected_options,
     option_surcharge,
@@ -29,6 +30,13 @@ class WebStoreShippingTests(unittest.TestCase):
         self.assertFalse(qualifies_for_product_free_shipping([{**product_a, "quantity": 2}]))
         self.assertFalse(qualifies_for_product_free_shipping([product_a, product_b]))
         self.assertFalse(qualifies_for_product_free_shipping([{**product_a, "free_shipping_quantity": 0}]))
+
+    def test_coupon_blocking_products_are_reported(self):
+        products = [
+            {"name": "일반 상품", "coupon_disabled": False},
+            {"name": "쿠폰 제외 상품", "coupon_disabled": True},
+        ]
+        self.assertEqual(coupon_blocking_product_names(products), ["쿠폰 제외 상품"])
 
     def test_option_surcharge_format(self):
         self.assertEqual(option_surcharge("블랙 (+2000)"), 2_000)

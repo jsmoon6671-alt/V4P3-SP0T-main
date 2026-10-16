@@ -22,6 +22,18 @@ def format_buyer_order_items(rows) -> str:
     return format_order_items_for_discord(rows)
 
 
+def format_coupon_usage(order: dict, coupon_name: str = "") -> str:
+    """구매자정보 채널에 표시할 쿠폰명과 할인액을 만든다."""
+    coupon_code = str(order.get("coupon_code") or "").strip()
+    discount = int(order.get("coupon_discount") or 0)
+    if not coupon_code or discount <= 0:
+        return ""
+    label = str(coupon_name or coupon_code).strip()
+    if label != coupon_code:
+        label = f"{label} · {coupon_code}"
+    return f"\n`🎟️` **사용 쿠폰:** `{label}`\n`💸` **쿠폰 할인:** `-{discount:,}원`"
+
+
 def build_order_receipt(order: dict, item_rows=(), *, approved_at: datetime.datetime | None = None) -> str:
     """Build the receipt sent privately to the buyer after approval."""
     approved_at = approved_at or datetime.datetime.now(KST)
@@ -175,6 +187,23 @@ async def finalize_approved_order(
                ORDER BY item.product_name""",
             order["order_id"], guild_id,
         )
+        coupon_name = ""
+        coupon_code = str(order.get("coupon_code") or "").strip()
+        if coupon_code:
+            coupon_name = str(await conn.fetchval(
+                """SELECT COALESCE(
+                         CASE WHEN claim.event_key='WELCOME' THEN 'WELCOME 쿠폰' END,
+                         event.title,
+                         coupon.code
+                       )
+                   FROM web_coupons coupon
+                   LEFT JOIN web_coupon_claims claim
+                     ON claim.guild_id=coupon.guild_id AND claim.coupon_id=coupon.id
+                   LEFT JOIN web_coupon_events event
+                     ON event.guild_id=claim.guild_id AND event.event_key=claim.event_key
+                   WHERE coupon.guild_id=$1 AND coupon.code=$2""",
+                guild_id, coupon_code,
+            ) or coupon_code)
     settings = dict(settings_row) if settings_row else {}
 
     try:
@@ -205,6 +234,7 @@ async def finalize_approved_order(
             f"`{part.strip()}`" for part in str(order["product"]).split(",") if part.strip()
         )
         categories = ", ".join(str(row["category_name"]) for row in category_rows) or "미분류"
+        coupon_usage = format_coupon_usage(order, coupon_name)
         content = (
             "## 📋 구매자 상세 배송 정보\n\n"
             f"<@{STORE_ADMIN_USER_ID}>\n\n"
@@ -219,7 +249,7 @@ async def finalize_approved_order(
             f"`📝` **배송메모:** `{order.get('shipping_memo') or '없음'}`\n"
             f"`🗂️` **상품 카테고리:** `{categories}`\n"
             f"`📦` **상품:**\n{products}\n\n"
-            f"`💰` **금액:** `{order['amount']}`"
+            f"`💰` **금액:** `{order['amount']}`{coupon_usage}"
         )
         try:
             await _send_channel(bot, settings["buyer_info_channel_id"], _v2(content, users=[STORE_ADMIN_USER_ID, buyer_id]))
