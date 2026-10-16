@@ -192,6 +192,7 @@ async def finalize_approved_order(
         if coupon_code:
             coupon_name = str(await conn.fetchval(
                 """SELECT COALESCE(
+                         NULLIF(coupon.title, ''),
                          CASE WHEN claim.event_key='WELCOME' THEN 'WELCOME 쿠폰' END,
                          event.title,
                          coupon.code

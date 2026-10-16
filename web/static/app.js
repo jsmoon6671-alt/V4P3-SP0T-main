@@ -695,7 +695,7 @@ async function loadCheckoutCustomer() {
     }
     state.pointBalance = Number(data.points || 0);
     state.coupons = couponData.coupons || [];
-    $("#checkout-coupon").innerHTML = '<option value="">사용 안 함</option>' + state.coupons.map(coupon => `<option value="${escapeHtml(coupon.code)}">${escapeHtml(coupon.code)} · ${money(coupon.discount_amount)} 할인${Number(coupon.min_order_amount || 0) ? ` · ${money(coupon.min_order_amount)} 이상` : ""}</option>`).join("");
+    $("#checkout-coupon").innerHTML = '<option value="">사용 안 함</option>' + state.coupons.map(coupon => `<option value="${escapeHtml(coupon.code)}">${escapeHtml(coupon.title || coupon.code)} · ${money(coupon.discount_amount)} 할인${Number(coupon.min_order_amount || 0) ? ` · ${money(coupon.min_order_amount)} 이상` : ""}</option>`).join("");
     $("#checkout-point-balance").textContent = `보유 ${state.pointBalance.toLocaleString()}P`;
     updatePointUseHint();
     cartTotal();
@@ -1979,7 +1979,9 @@ async function issueCoupon(event) {
   if (data.all_users && !confirm("등록된 모든 유저에게 쿠폰을 한 장씩 지급할까요?")) return;
   try {
     const result = await api("/api/admin/coupons", { method: "POST", body: JSON.stringify(data) });
-    toast(data.all_users ? `${result.count}명에게 쿠폰을 지급했습니다.` : `쿠폰을 지급했습니다. 코드: ${result.code}`);
+    toast(data.all_users
+      ? `“${data.title}” 쿠폰을 ${result.count}명에게 지급했습니다.`
+      : `“${data.title}” 쿠폰을 지급했습니다. 코드: ${result.code}`);
     event.target.reset(); event.target.elements.days.value = 30;
     updateCouponRecipient();
   } catch (error) { toast(error.message); }

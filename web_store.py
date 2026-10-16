@@ -352,6 +352,7 @@ async def initialize_web_store_schema(conn):
         ALTER TABLE web_notices ADD COLUMN IF NOT EXISTS image_data BYTEA;
         CREATE TABLE IF NOT EXISTS web_coupons (
             id BIGSERIAL PRIMARY KEY, guild_id BIGINT NOT NULL, code TEXT NOT NULL,
+            title TEXT NOT NULL DEFAULT '',
             user_id BIGINT, discount_amount BIGINT NOT NULL CHECK (discount_amount > 0),
             expires_at TIMESTAMPTZ, used_order_id TEXT, min_order_amount BIGINT NOT NULL DEFAULT 0,
             created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -374,6 +375,7 @@ async def initialize_web_store_schema(conn):
             PRIMARY KEY (guild_id, event_key, user_id)
         );
         ALTER TABLE web_coupons ADD COLUMN IF NOT EXISTS min_order_amount BIGINT NOT NULL DEFAULT 0;
+        ALTER TABLE web_coupons ADD COLUMN IF NOT EXISTS title TEXT NOT NULL DEFAULT '';
         ALTER TABLE web_coupon_events ADD COLUMN IF NOT EXISTS minimum_tier TEXT NOT NULL DEFAULT 'NONE';
         ALTER TABLE web_coupon_events ADD COLUMN IF NOT EXISTS purchaser_requirement TEXT NOT NULL DEFAULT 'ALL';
         ALTER TABLE web_coupon_events ADD COLUMN IF NOT EXISTS max_claims INTEGER NOT NULL DEFAULT 0;
@@ -1729,7 +1731,7 @@ class StoreServer:
         user = await self._user(request)
         async with self.bot.db_pool.acquire() as conn:
             rows = await conn.fetch(
-                """SELECT code,discount_amount,expires_at,min_order_amount FROM web_coupons
+                """SELECT code,title,discount_amount,expires_at,min_order_amount FROM web_coupons
                    WHERE guild_id=$1 AND user_id=$2 AND used_order_id IS NULL
                      AND (expires_at IS NULL OR expires_at>CURRENT_TIMESTAMP)
                    ORDER BY expires_at NULLS LAST,created_at""",
@@ -1739,6 +1741,9 @@ class StoreServer:
 
     async def admin_issue_coupon(self, request):
         await self._admin(request); data = await self._body(request)
+        title = str(data.get("title") or "").strip()
+        if not title or len(title) > 80:
+            raise StoreError("쿠폰 이름을 1~80자로 입력해 주세요.")
         try:
             amount = int(data.get("discount_amount") or 0)
         except (TypeError, ValueError) as exc:
@@ -1761,16 +1766,16 @@ class StoreServer:
                     for row in users:
                         code = f"V4P3-{secrets.token_hex(4).upper()}"
                         await conn.execute(
-                            "INSERT INTO web_coupons (guild_id,code,user_id,discount_amount,expires_at,min_order_amount) VALUES ($1,$2,$3,$4,$5,$6)",
-                            self.guild_id, code, int(row["user_id"]), amount, expires_at, min_order_amount,
+                            "INSERT INTO web_coupons (guild_id,code,title,user_id,discount_amount,expires_at,min_order_amount) VALUES ($1,$2,$3,$4,$5,$6,$7)",
+                            self.guild_id, code, title, int(row["user_id"]), amount, expires_at, min_order_amount,
                         )
                         codes.append(code)
                 return web.json_response({"ok": True, "count": len(codes)})
             user_id = self._parse_discord_user_id(data.get("user_id"))
             code = f"V4P3-{secrets.token_hex(4).upper()}"
             await conn.execute(
-                "INSERT INTO web_coupons (guild_id,code,user_id,discount_amount,expires_at,min_order_amount) VALUES ($1,$2,$3,$4,$5,$6)",
-                self.guild_id, code, user_id, amount, expires_at, min_order_amount,
+                "INSERT INTO web_coupons (guild_id,code,title,user_id,discount_amount,expires_at,min_order_amount) VALUES ($1,$2,$3,$4,$5,$6,$7)",
+                self.guild_id, code, title, user_id, amount, expires_at, min_order_amount,
             )
         return web.json_response({"ok": True, "code": code, "count": 1})
 
@@ -1863,9 +1868,10 @@ class StoreServer:
                     if purchased:
                         raise StoreError("첫 구매 이력이 없는 사용자만 받을 수 있는 쿠폰입니다.", 403)
                     amount, days, min_order_amount = 2_000, 30, 0
+                    coupon_title = "WELCOME 쿠폰"
                 else:
                     event = await conn.fetchrow(
-                        """SELECT discount_amount,valid_days,minimum_tier,purchaser_requirement,
+                        """SELECT title,discount_amount,valid_days,minimum_tier,purchaser_requirement,
                                   max_claims,min_order_amount FROM web_coupon_events
                            WHERE guild_id=$1 AND event_key=$2 AND is_active=TRUE FOR UPDATE""",
                         self.guild_id, event_key,
@@ -1896,11 +1902,12 @@ class StoreServer:
                         raise StoreError("구매 이력이 있는 회원만 받을 수 있습니다.", 403)
                     amount, days = int(event["discount_amount"]), int(event["valid_days"])
                     min_order_amount = int(event["min_order_amount"] or 0)
+                    coupon_title = str(event["title"])
                 code = f"V4P3-{secrets.token_hex(4).upper()}"
                 coupon_id = await conn.fetchval(
-                    """INSERT INTO web_coupons (guild_id,code,user_id,discount_amount,expires_at,min_order_amount)
-                       VALUES ($1,$2,$3,$4,$5,$6) RETURNING id""",
-                    self.guild_id, code, user_id, amount,
+                    """INSERT INTO web_coupons (guild_id,code,title,user_id,discount_amount,expires_at,min_order_amount)
+                       VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id""",
+                    self.guild_id, code, coupon_title, user_id, amount,
                     datetime.now().astimezone() + timedelta(days=days),
                     min_order_amount,
                 )
