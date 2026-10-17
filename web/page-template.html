@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@500;600;700;800&family=Noto+Sans+KR:wght@500;600;700;800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/static/styles.css?v=20261018-80">
+  <link rel="stylesheet" href="/static/styles.css?v=20261018-81">
 </head>
 <body>
   <div class="site-top-banner">
@@ -369,6 +369,39 @@
         <div><p class="eyebrow">SAFE TEST CENTER</p><h1>기능 테스트</h1><p>실제 주문 데이터는 만들지 않고 Discord 알림과 화면 표시를 점검합니다.</p></div>
         <a class="button secondary" href="/admin">← 관리자 패널</a>
       </div>
+      <section class="panel site-test-lab">
+        <div class="panel-head"><div><p class="eyebrow">CUSTOMER FLOW SANDBOX</p><h2>사이트 기능 테스트</h2><p>실제 등록 상품으로 장바구니부터 배송완료·후기작성까지 고객 화면 흐름을 시험합니다.</p></div><span class="test-only-badge">저장 안 됨</span></div>
+        <div class="site-test-layout">
+          <form id="site-test-cart-form" class="form-panel site-test-picker">
+            <label>상품<select name="product_id" id="site-test-product"><option value="">상품을 불러오는 중입니다.</option></select></label>
+            <div class="two-field"><label>수량<input name="quantity" type="number" min="1" max="99" value="1" required></label><label>선택 옵션<input name="options" maxlength="160" placeholder="예: 색상: 클리어"></label></div>
+            <button class="button" type="submit">테스트 장바구니 담기</button>
+          </form>
+          <div class="site-test-cart-box">
+            <div class="panel-head"><h3>테스트 장바구니</h3><button type="button" id="site-test-cart-clear" class="text-button">전체 비우기</button></div>
+            <div id="site-test-cart"><p class="admin-empty">담긴 테스트 상품이 없습니다.</p></div>
+            <div class="site-test-discounts"><label>쿠폰 할인<input id="site-test-coupon" type="number" min="0" value="0"><small id="site-test-coupon-hint">테스트 금액을 직접 입력할 수 있습니다.</small></label><label>포인트 사용<input id="site-test-points" type="number" min="0" value="0"></label><label>배송방법<select id="site-test-shipping"><option value="3000">일반택배 · 3,000원</option><option value="1500">편의점택배 · 1,500원</option></select></label></div>
+            <div id="site-test-total" class="site-test-total"></div>
+            <button type="button" id="site-test-checkout" class="button wide">테스트 구매하기</button>
+          </div>
+        </div>
+        <div id="site-test-order" class="site-test-order" hidden></div>
+      </section>
+
+      <section class="panel site-test-actions-panel">
+        <div class="panel-head"><div><p class="eyebrow">PAGE ACTIONS</p><h2>다른 사이트 기능 테스트</h2><p>버튼을 누르면 해당 고객 기능의 완료 화면과 기록을 테스트합니다.</p></div></div>
+        <div class="site-test-actions">
+          <button type="button" data-site-test-action="profile"><i>👤</i><span><b>고객정보 등록</b><small>배송정보 저장 화면</small></span></button>
+          <button type="button" data-site-test-action="coupon"><i>🎟️</i><span><b>쿠폰 받기</b><small>수령 완료·중복 제한</small></span></button>
+          <button type="button" data-site-test-action="inquiry"><i>📨</i><span><b>문의 등록</b><small>문의 접수 화면</small></span></button>
+          <button type="button" data-site-test-action="chat"><i>💬</i><span><b>채팅상담</b><small>상담 연결·메시지</small></span></button>
+          <button type="button" data-site-test-action="tracking"><i>🚚</i><span><b>배송조회</b><small>배송 단계 확인</small></span></button>
+          <button type="button" data-site-test-action="age"><i>19</i><span><b>성인인증</b><small>최초 접속 확인</small></span></button>
+        </div>
+        <div id="site-test-action-result" class="site-test-action-result"><p>테스트할 기능을 선택해 주세요.</p></div>
+      </section>
+
+      <div class="test-divider"><span>Discord 연동 테스트</span></div>
       <div id="admin-test-capabilities" class="test-capabilities"><p class="admin-empty">테스트 기능을 확인하는 중입니다.</p></div>
       <div class="test-center-grid">
         <form id="admin-test-form" class="panel form-panel test-form">
@@ -447,6 +480,6 @@
     <div id="chat-home"><button type="button" id="chat-start" class="chat-start">채팅 상담</button><label id="chat-initial-wrap" hidden><span class="chat-compose-title"><b><i>✦</i> 문의 내용</b><small><span id="chat-initial-count">0</span>/1000</small></span><textarea id="chat-initial-content" maxlength="1000" placeholder="궁금한 내용을 편하게 작성해 주세요."></textarea><span class="chat-compose-hint">상담사가 확인한 뒤 실시간으로 답변해 드립니다.</span><button type="button" id="chat-create" class="button wide">상담 연결하기 <span>→</span></button></label><div><h3>상담 기록</h3><div id="chat-history" class="chat-history"></div></div></div>
     <div id="chat-room" hidden><button type="button" id="chat-back" class="text-button">← 상담 기록</button><div id="chat-messages" class="chat-messages"></div><form id="chat-message-form" class="chat-message-form"><div id="chat-upload-preview" class="chat-upload-preview" hidden><img alt="전송할 사진 미리보기"><span>사진 전송 중...</span></div><textarea name="content" maxlength="2000" rows="1" aria-label="채팅 메시지" placeholder="메시지를 입력해 주세요."></textarea><label class="chat-file" title="사진 첨부" aria-label="사진 첨부"><span aria-hidden="true">🖼️</span><input name="image" type="file" accept="image/png,image/jpeg,image/webp,image/gif"></label><button class="button chat-send" type="submit" title="메시지 보내기" aria-label="메시지 보내기"><i aria-hidden="true">↑</i></button><small class="chat-enter-hint">사진은 선택 즉시 전송 · Enter 전송 · Shift+Enter 줄바꿈</small></form></div>
   </section>
-<script src="/static/app.js?v=20261018-64"></script>
+<script src="/static/app.js?v=20261018-65"></script>
 </body>
 </html>

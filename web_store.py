@@ -28,7 +28,7 @@ from delivery_tracking import (
     normalize_waybill,
     track_shipment,
 )
-from loyalty_points import PointsError, adjust_points, award_review_points, get_balance, maximum_points, parse_amount, refund_order_benefits, request_payment, resolve_payment
+from loyalty_points import REVIEW_GUIDE, PointsError, adjust_points, award_review_points, get_balance, maximum_points, parse_amount, refund_order_benefits, request_payment, resolve_payment
 from order_editing import sync_buyer_roles
 from order_fulfillment import finalize_approved_order, notify_expired_order
 from payment_automation import (
@@ -43,6 +43,7 @@ from product_scraper import (
     scrape_products_from_url,
     sync_scraped_products,
 )
+from review_notifications import build_web_review_payload, replace_web_review_guide
 from store_lookup import StoreLookupError, search_stores
 from review_watermark import ReviewImageError, watermark_review_image
 
@@ -1322,18 +1323,37 @@ class StoreServer:
                 reward, balance = await award_review_points(conn, self.guild_id, int(user["id"]), review_id)
             except Exception:
                 reward, balance = 0, await get_balance(conn, self.guild_id, int(user["id"]))
-            channel_id = await conn.fetchval("SELECT review_channel_id FROM guild_settings WHERE guild_id=$1", self.guild_id)
+            review_settings = await conn.fetchrow(
+                "SELECT review_channel_id,review_auto_message FROM guild_settings WHERE guild_id=$1",
+                self.guild_id,
+            )
+        channel_id = review_settings.get("review_channel_id") if review_settings else None
         if channel_id:
-            channel = self.bot.get_channel(int(channel_id))
-            if channel:
-                try:
-                    files = [discord.File(BytesIO(image), filename=f"review-{review_id}-{index}.jpg") for index, image in enumerate(processed)]
-                    await channel.send(
-                        f"## 구매후기\n- 구매자 : 익명\n- 별점 : {'⭐' * rating}\n\n**{content}**",
-                        files=files,
+            try:
+                filenames = [f"review-{review_id}-{index}.jpg" for index in range(len(processed))]
+                files = [discord.File(BytesIO(image), filename=filename) for image, filename in zip(processed, filenames)]
+                payload = build_web_review_payload(rating, content, filenames)
+                if files:
+                    payload["attachments"] = [file.to_dict(index) for index, file in enumerate(files)]
+                    with discord.http.handle_message_parameters(files=files) as params:
+                        params.multipart[0]["value"] = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+                        await self.bot.http.request(
+                            discord.http.Route("POST", f"/channels/{int(channel_id)}/messages"),
+                            files=params.files,
+                            form=params.multipart,
+                        )
+                else:
+                    await self.bot.http.request(
+                        discord.http.Route("POST", f"/channels/{int(channel_id)}/messages"),
+                        json=payload,
                     )
-                except Exception:
-                    LOGGER.exception("웹 구매후기 Discord 전송 실패: %s", review_id)
+                guide = str(review_settings.get("review_auto_message") or REVIEW_GUIDE).strip()
+                async with self.bot.db_pool.acquire() as conn:
+                    await replace_web_review_guide(
+                        conn, self.bot.http, self.guild_id, int(channel_id), guide,
+                    )
+            except Exception:
+                LOGGER.exception("웹 구매후기 Discord 전송 또는 안내 갱신 실패: %s", review_id)
         return web.json_response({"ok": True, "reward": reward, "balance": balance})
 
     async def purchase_ranking(self, request):

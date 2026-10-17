@@ -49,6 +49,10 @@ const state = {
   cartPromise: null,
   productRenderFrame: null,
   productSearchTimer: null,
+  siteTestProducts: [],
+  siteTestCart: [],
+  siteTestOrder: null,
+  siteTestActionRuns: new Set(),
 };
 
 const $ = (selector, parent = document) => parent.querySelector(selector);
@@ -1287,6 +1291,15 @@ function bindForms() {
     $("#admin-test-form").onsubmit = runAdminTest;
     $("#admin-test-form").elements.kind.onchange = updateAdminTestForm;
   }
+  if ($("#site-test-cart-form")) $("#site-test-cart-form").onsubmit = addSiteTestCartItem;
+  if ($("#site-test-cart-clear")) $("#site-test-cart-clear").onclick = clearSiteTestCart;
+  if ($("#site-test-checkout")) $("#site-test-checkout").onclick = createSiteTestOrder;
+  ["#site-test-coupon", "#site-test-points", "#site-test-shipping"].forEach(selector => {
+    if ($(selector)) $(selector).oninput = renderSiteTestCart;
+  });
+  $$('[data-site-test-action]').forEach(button => {
+    button.onclick = () => runSitePageActionTest(button.dataset.siteTestAction);
+  });
   if ($("#policy-admin-form")) $("#policy-admin-form").onsubmit = saveAdminPolicies;
   if ($('#coupon-event-admin-form [name="image"]')) $('#coupon-event-admin-form [name="image"]').onchange = previewCouponEventImage;
   $("#claim-welcome-coupon").onclick = () => claimCouponEvent("WELCOME", true);
@@ -1794,8 +1807,159 @@ async function openAdminTest() {
     goToPage("home");
     return;
   }
-  await loadAdminTestStatus();
+  await Promise.all([loadAdminTestStatus(), loadSiteTestLab()]);
   updateAdminTestForm();
+}
+
+async function loadSiteTestLab() {
+  const select = $("#site-test-product");
+  if (!select) return;
+  try {
+    const data = await api("/api/catalog");
+    state.siteTestProducts = data.products || [];
+    select.innerHTML = state.siteTestProducts.length
+      ? state.siteTestProducts.map(product => `<option value="${Number(product.id)}">${escapeHtml(product.name)} · ${money(product.price)}</option>`).join("")
+      : '<option value="">등록된 상품이 없습니다.</option>';
+    select.disabled = !state.siteTestProducts.length;
+  } catch (error) {
+    select.innerHTML = `<option value="">${escapeHtml(error.message)}</option>`;
+    select.disabled = true;
+  }
+  renderSiteTestCart();
+}
+
+function addSiteTestCartItem(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const product = state.siteTestProducts.find(item => Number(item.id) === Number(form.elements.product_id.value));
+  const quantity = Math.max(1, Math.min(99, Number(form.elements.quantity.value) || 1));
+  const options = String(form.elements.options.value || "").trim();
+  if (!product) { toast("테스트할 상품을 선택해 주세요."); return; }
+  const existing = state.siteTestCart.find(item => Number(item.product.id) === Number(product.id) && item.options === options);
+  if (existing) existing.quantity = Math.min(99, existing.quantity + quantity);
+  else state.siteTestCart.push({ product, quantity, options });
+  form.elements.quantity.value = 1;
+  form.elements.options.value = "";
+  state.siteTestOrder = null;
+  renderSiteTestCart();
+  renderSiteTestOrder();
+  toast("테스트 장바구니에 담았습니다.");
+}
+
+function clearSiteTestCart() {
+  state.siteTestCart = [];
+  state.siteTestOrder = null;
+  if ($("#site-test-coupon")) $("#site-test-coupon").value = 0;
+  if ($("#site-test-points")) $("#site-test-points").value = 0;
+  renderSiteTestCart();
+  renderSiteTestOrder();
+}
+
+function siteTestTotals() {
+  const subtotal = state.siteTestCart.reduce((sum, item) => sum + Number(item.product.price || 0) * item.quantity, 0);
+  const couponBlocked = state.siteTestCart.some(item => Boolean(item.product.coupon_disabled));
+  const only = state.siteTestCart.length === 1 ? state.siteTestCart[0] : null;
+  const freeThreshold = Number(only?.product.free_shipping_quantity || 0);
+  const freeShipping = Boolean(only && freeThreshold > 0 && only.quantity >= freeThreshold);
+  const shipping = state.siteTestCart.length ? (freeShipping ? 0 : Number($("#site-test-shipping")?.value || 0)) : 0;
+  const couponInput = $("#site-test-coupon");
+  if (couponInput) {
+    couponInput.disabled = couponBlocked;
+    if (couponBlocked) couponInput.value = 0;
+  }
+  const coupon = couponBlocked ? 0 : Math.min(subtotal, Math.max(0, Number(couponInput?.value || 0)));
+  const points = Math.min(Math.max(0, subtotal + shipping - coupon), Math.max(0, Number($("#site-test-points")?.value || 0)));
+  return { subtotal, shipping, coupon, points, total: Math.max(0, subtotal + shipping - coupon - points), couponBlocked, freeShipping, freeThreshold };
+}
+
+function renderSiteTestCart() {
+  const target = $("#site-test-cart");
+  if (!target) return;
+  target.innerHTML = state.siteTestCart.length ? state.siteTestCart.map((item, index) => `<div class="site-test-cart-row">
+    <span><b>${escapeHtml(item.product.name)}</b><small>${item.options ? `${escapeHtml(item.options)} · ` : ""}${item.quantity}개 × ${money(item.product.price)}</small></span>
+    <strong>${money(Number(item.product.price || 0) * item.quantity)}</strong>
+    <button type="button" aria-label="테스트 상품 삭제" data-site-test-remove="${index}">×</button>
+  </div>`).join("") : '<p class="admin-empty">담긴 테스트 상품이 없습니다.</p>';
+  $$('[data-site-test-remove]', target).forEach(button => {
+    button.onclick = () => {
+      state.siteTestCart.splice(Number(button.dataset.siteTestRemove), 1);
+      state.siteTestOrder = null;
+      renderSiteTestCart();
+      renderSiteTestOrder();
+    };
+  });
+  const totals = siteTestTotals();
+  const couponHint = $("#site-test-coupon-hint");
+  if (couponHint) couponHint.textContent = totals.couponBlocked ? "쿠폰 사용 불가 상품이 있어 적용할 수 없습니다." : "테스트 금액을 직접 입력할 수 있습니다.";
+  $("#site-test-total").innerHTML = `<span>상품금액 <b>${money(totals.subtotal)}</b></span><span>배송비 <b>${totals.freeShipping ? `무료 · ${totals.freeThreshold}개 이상 단독구매` : money(totals.shipping)}</b></span><span>쿠폰 <b>-${money(totals.coupon)}</b></span><span>포인트 <b>-${totals.points.toLocaleString()}P</b></span><strong>최종 결제금액 <em>${money(totals.total)}</em></strong>`;
+  $("#site-test-checkout").disabled = !state.siteTestCart.length;
+}
+
+function createSiteTestOrder() {
+  if (!state.siteTestCart.length) { toast("테스트 장바구니에 상품을 담아 주세요."); return; }
+  const totals = siteTestTotals();
+  state.siteTestOrder = {
+    orderId: `TEST-SITE-${Date.now().toString(36).toUpperCase()}`,
+    status: "PENDING",
+    progress: "PAYMENT_WAITING",
+    totals,
+    items: state.siteTestCart.map(item => ({ ...item })),
+  };
+  renderSiteTestOrder();
+  $("#site-test-order").scrollIntoView({ behavior: "smooth", block: "center" });
+}
+
+function renderSiteTestOrder() {
+  const target = $("#site-test-order");
+  if (!target) return;
+  const order = state.siteTestOrder;
+  target.hidden = !order;
+  if (!order) { target.innerHTML = ""; return; }
+  const status = {
+    PENDING: ["입금 확인 대기", "구매 결과를 선택해 전체 흐름을 테스트해 주세요."],
+    APPROVED: ["결제 승인", "승인 후 배송 상태를 단계별로 변경할 수 있습니다."],
+    REJECTED: ["결제 거절", "쿠폰과 포인트가 반환되는 종료 화면입니다."],
+    EXPIRED: ["시간초과", "5분 내 입금되지 않아 자동 취소되는 화면입니다."],
+  }[order.status];
+  const progressLabels = { PAYMENT_APPROVED: "승인완료", PRODUCT_PREPARING: "상품준비중", SHIPPING_PREPARING: "배송준비중", SHIPPING: "배송중", DELIVERED: "배송완료" };
+  const progressButtons = order.status === "APPROVED" ? `<div class="site-test-progress">${Object.entries(progressLabels).map(([value, label]) => `<button type="button" class="${order.progress === value ? "active" : ""}" data-site-test-progress="${value}">${label}</button>`).join("")}</div>` : "";
+  const review = order.status === "APPROVED" && order.progress === "DELIVERED" ? `<form id="site-test-review-form" class="site-test-review"><b>${escapeHtml(state.me?.username || "고객")}님! 배송받으신 상품이 어떠신가요?</b><div><select name="rating"><option value="5">★★★★★</option><option value="4">★★★★☆</option><option value="3">★★★☆☆</option><option value="2">★★☆☆☆</option><option value="1">★☆☆☆☆</option></select><input name="content" maxlength="300" placeholder="테스트 후기를 입력해 주세요." required><button class="button compact" type="submit">후기작성</button></div></form>` : "";
+  target.innerHTML = `<div class="site-test-order-head"><span><small>테스트 주문번호</small><b>${escapeHtml(order.orderId)}</b></span><strong class="status-${order.status.toLowerCase()}">${status[0]}</strong></div><p>${status[1]}</p><div class="site-test-order-items">${order.items.map(item => `<span>${escapeHtml(item.product.name)} × ${item.quantity}${item.options ? ` · ${escapeHtml(item.options)}` : ""}</span>`).join("")}</div><div class="site-test-order-total">결제금액 <b>${money(order.totals.total)}</b></div>${order.status === "PENDING" ? '<div class="site-test-outcomes"><button type="button" class="button" data-site-test-outcome="APPROVED">승인</button><button type="button" class="button danger" data-site-test-outcome="REJECTED">거절</button><button type="button" class="button secondary" data-site-test-outcome="EXPIRED">시간초과</button></div>' : progressButtons}${review}`;
+  $$('[data-site-test-outcome]', target).forEach(button => {
+    button.onclick = () => {
+      order.status = button.dataset.siteTestOutcome;
+      order.progress = order.status === "APPROVED" ? "PAYMENT_APPROVED" : order.status;
+      renderSiteTestOrder();
+    };
+  });
+  $$('[data-site-test-progress]', target).forEach(button => {
+    button.onclick = () => { order.progress = button.dataset.siteTestProgress; renderSiteTestOrder(); };
+  });
+  const reviewForm = $("#site-test-review-form");
+  if (reviewForm) reviewForm.onsubmit = event => {
+    event.preventDefault();
+    const data = Object.fromEntries(new FormData(event.currentTarget));
+    runSitePageActionTest("review", `별점 ${data.rating}점 · ${data.content}`);
+    event.currentTarget.innerHTML = '<b>테스트 후기가 등록되었습니다.</b><small>실제 구매후기에는 저장되지 않습니다.</small>';
+  };
+}
+
+function runSitePageActionTest(action, detail = "") {
+  const target = $("#site-test-action-result");
+  if (!target) return;
+  const duplicate = state.siteTestActionRuns.has(action);
+  const examples = {
+    profile: ["고객정보 저장 완료", "이름·연락처·배송주소·환불계좌 입력 흐름이 정상입니다."],
+    coupon: duplicate ? ["이미 받은 쿠폰입니다", "한 계정당 한 번만 수령할 수 있는 상태를 확인했습니다."] : ["쿠폰 수령 완료", "테스트 쿠폰이 보관함에 표시되는 흐름입니다."],
+    inquiry: ["문의가 등록되었습니다", "문의번호 TEST-001 · 관리자 확인 대기 화면입니다."],
+    chat: ["상담이 연결되었습니다", "상담사 연결과 실시간 메시지 화면을 테스트했습니다."],
+    tracking: ["배송조회 완료", "상품 인수 → 이동중 → 배송완료 단계가 표시됩니다."],
+    age: duplicate ? ["이미 성인 확인이 완료되었습니다", "같은 IP에서는 다시 표시되지 않는 흐름입니다."] : ["19세 이상 확인 완료", "최초 접속 성인 확인 화면을 통과했습니다."],
+    review: ["후기가 등록되었습니다", detail || "배송완료 주문의 후기작성 흐름입니다."],
+  };
+  const [title, description] = examples[action] || ["기능 테스트 완료", "사이트 화면 흐름을 확인했습니다."];
+  state.siteTestActionRuns.add(action);
+  target.innerHTML = `<span class="site-test-action-check">✓</span><div><b>${escapeHtml(title)}</b><p>${escapeHtml(description)}</p><small>테스트 전용 · 실제 데이터 저장 없음</small></div>`;
 }
 
 async function loadAdminTestStatus() {
