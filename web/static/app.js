@@ -125,6 +125,7 @@ const PAGE_PATHS = {
   cart: "/cart",
   complete: "/cart#complete",
   admin: "/admin",
+  "admin-test": "/admin-test",
   "subadmin-panel": "/subadmin-panel",
 };
 
@@ -176,7 +177,7 @@ function route() {
     return;
   }
   const id = currentPageId();
-  if (["account", "review-write", "support", "events", "cart", "complete", "tracking", "admin", "subadmin-panel"].includes(id) && !state.me) {
+  if (["account", "review-write", "support", "events", "cart", "complete", "tracking", "admin", "admin-test", "subadmin-panel"].includes(id) && !state.me) {
     try { sessionStorage.setItem("v4p3PostLoginHash", PAGE_PATHS[id]); } catch {}
     location.href = "/auth/login";
     return;
@@ -207,6 +208,7 @@ function route() {
     if (id === "notices") loadNoticesPage();
     if (id === "subadmin-panel") openSubadminPanel();
     if (id === "admin") openAdminPanel();
+    if (id === "admin-test") openAdminTest();
   });
 }
 
@@ -230,6 +232,7 @@ async function boot() {
     $("#admin-link").hidden = !data.is_admin;
     $("#subadmin-panel-link").hidden = !data.is_subadmin;
     if ($("#admin")) $("#admin").hidden = !data.is_admin;
+    if ($("#admin-test")) $("#admin-test").hidden = !data.is_admin;
     if ($("#subadmin-panel")) $("#subadmin-panel").hidden = !data.is_subadmin;
     $("#login-button").onclick = () => goToPage("account");
     await loadCart();
@@ -1280,6 +1283,10 @@ function bindForms() {
   if ($("#coupon-admin-form")) $("#coupon-admin-form").onsubmit = issueCoupon;
   if ($('#coupon-admin-form [name="all_users"]')) $('#coupon-admin-form [name="all_users"]').onchange = updateCouponRecipient;
   if ($("#coupon-event-admin-form")) $("#coupon-event-admin-form").onsubmit = createCouponEvent;
+  if ($("#admin-test-form")) {
+    $("#admin-test-form").onsubmit = runAdminTest;
+    $("#admin-test-form").elements.kind.onchange = updateAdminTestForm;
+  }
   if ($("#policy-admin-form")) $("#policy-admin-form").onsubmit = saveAdminPolicies;
   if ($('#coupon-event-admin-form [name="image"]')) $('#coupon-event-admin-form [name="image"]').onchange = previewCouponEventImage;
   $("#claim-welcome-coupon").onclick = () => claimCouponEvent("WELCOME", true);
@@ -1764,6 +1771,87 @@ async function openAdminPanel() {
   await loadAdmin();
   const requested = new URLSearchParams(location.search).get("admin_section");
   if (requested) setAdminSection(requested);
+}
+
+const ADMIN_TEST_MESSAGE_KINDS = new Set(["review", "inquiry", "live_chat"]);
+
+function updateAdminTestForm() {
+  const form = $("#admin-test-form");
+  if (!form) return;
+  const kind = form.elements.kind.value;
+  $("#admin-test-outcome-wrap").hidden = kind !== "purchase";
+  $("#admin-test-message-wrap").hidden = !ADMIN_TEST_MESSAGE_KINDS.has(kind);
+  $$("[data-admin-test-kind]").forEach(card => card.classList.toggle("active", card.dataset.adminTestKind === kind));
+}
+
+async function openAdminTest() {
+  if (!state.me) {
+    location.href = "/auth/login";
+    return;
+  }
+  if (!state.isAdmin) {
+    toast("관리자 계정만 접근할 수 있습니다.");
+    goToPage("home");
+    return;
+  }
+  await loadAdminTestStatus();
+  updateAdminTestForm();
+}
+
+async function loadAdminTestStatus() {
+  const target = $("#admin-test-capabilities");
+  if (!target) return;
+  try {
+    const data = await api("/api/admin/test-status");
+    const form = $("#admin-test-form");
+    if (form && !form.elements.user_id.value) form.elements.user_id.value = data.default_user_id || "";
+    target.innerHTML = (data.tests || []).map(item => `<button type="button" class="test-capability ${item.configured ? "ready" : "missing"}" data-admin-test-kind="${escapeHtml(item.kind)}">
+      <span class="test-capability-icon">${item.configured ? "✓" : "!"}</span>
+      <span><b>${escapeHtml(item.label)}</b><small>${item.configured ? escapeHtml(item.destination) : "채널 설정 필요"}</small></span>
+    </button>`).join("");
+    $$('[data-admin-test-kind]', target).forEach(button => {
+      button.onclick = () => {
+        form.elements.kind.value = button.dataset.adminTestKind;
+        updateAdminTestForm();
+        form.scrollIntoView({ behavior: "smooth", block: "start" });
+      };
+    });
+    updateAdminTestForm();
+  } catch (error) {
+    target.innerHTML = `<p class="admin-empty">${escapeHtml(error.message)}</p>`;
+  }
+}
+
+async function runAdminTest(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const buttons = [...form.querySelectorAll('button[type="submit"]')];
+  const send = event.submitter?.dataset.testAction === "send";
+  const data = Object.fromEntries(new FormData(form));
+  data.send = send;
+  buttons.forEach(button => { button.disabled = true; });
+  const badge = $("#admin-test-result-badge");
+  badge.textContent = send ? "전송중" : "생성중";
+  try {
+    const result = await api("/api/admin/test-notification", { method: "POST", body: JSON.stringify(data) });
+    $("#admin-test-preview").innerHTML = `<div class="test-preview-meta"><b>${escapeHtml(result.label)}</b><span>${escapeHtml(result.destination)}</span></div><pre>${escapeHtml(result.preview)}</pre>`;
+    badge.textContent = result.sent ? "전송완료" : "미리보기";
+    badge.classList.toggle("success", Boolean(result.sent));
+    const history = $("#admin-test-history");
+    if (history.querySelector(".admin-empty")) history.innerHTML = "";
+    const row = document.createElement("div");
+    row.className = "test-history-row";
+    row.innerHTML = `<span><b>${escapeHtml(result.label)}</b><small>${new Date().toLocaleString("ko-KR")}</small></span><em>${result.sent ? "Discord 전송" : "화면 미리보기"}</em>`;
+    history.prepend(row);
+    while (history.children.length > 8) history.lastElementChild.remove();
+    toast(result.sent ? `${result.label} 테스트를 전송했습니다.` : `${result.label} 미리보기를 만들었습니다.`);
+  } catch (error) {
+    badge.textContent = "실패";
+    badge.classList.remove("success");
+    toast(error.message);
+  } finally {
+    buttons.forEach(button => { button.disabled = false; });
+  }
 }
 
 async function loadAdmin(period = "week") {

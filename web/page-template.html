@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@500;600;700;800&family=Noto+Sans+KR:wght@500;600;700;800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/static/styles.css?v=20261017-79">
+  <link rel="stylesheet" href="/static/styles.css?v=20261018-80">
 </head>
 <body>
   <div class="site-top-banner">
@@ -283,6 +283,7 @@
         <button type="button" data-admin-section-target="notices">공지·이벤트</button>
         <button type="button" data-admin-section-target="policies">약관관리</button>
         <button type="button" data-admin-section-target="coupons">쿠폰관리</button>
+        <a class="admin-test-link" href="/admin-test">기능 테스트 <span>→</span></a>
       </nav>
       <div class="admin-section active" data-admin-section="dashboard">
         <div id="metrics" class="metrics"></div>
@@ -362,6 +363,34 @@
         <form id="coupon-event-admin-form" class="panel form-panel admin-subpanel"><h2>이벤트 쿠폰 등록</h2><p>등록한 쿠폰은 사이트 이벤트 페이지에서 조건을 충족한 유저가 직접 받을 수 있습니다.</p><label>쿠폰명<input name="title" maxlength="80" required placeholder="예: 주말 3,000원 쿠폰"></label><label>설명<textarea name="description" maxlength="500" placeholder="쿠폰 이벤트 안내"></textarea></label><label>할인 금액<input name="discount_amount" type="number" min="1" required></label><label>수령 가능 최소 등급<select name="minimum_tier"><option value="NONE">등급 제한 없음</option><option value="VIP">VIP 이상</option><option value="VVIP">VVIP 이상</option><option value="SVIP">SVIP 이상</option><option value="ROYAL">ROYAL 이상</option><option value="VAPE_MASTER">VAPE MASTER 이상</option><option value="VAPE_GOD">VAPE GOD</option></select></label><label>구매 이력 제한<select name="purchaser_requirement"><option value="ALL">제한 없음</option><option value="FIRST_PURCHASE">구매 이력이 없는 회원만</option><option value="EXISTING_BUYER">구매 이력이 있는 회원만</option></select></label><label>최대 수령 인원 · 0명은 제한 없음<input name="max_claims" type="number" min="0" value="0" required></label><label>최소 주문금액 · 0원은 제한 없음<input name="min_order_amount" type="number" min="0" value="0" required></label><label>수령 후 사용 기한(일)<input name="valid_days" type="number" min="1" max="365" value="30" required></label><label>쿠폰 이미지<input name="image" type="file" accept="image/png,image/jpeg,image/webp" required></label><img id="coupon-event-image-preview" class="coupon-event-image-preview" alt="쿠폰 이미지 미리보기" hidden><button class="button" type="submit">이벤트 쿠폰 등록</button></form>
       </div>
     </section>
+
+    <section id="admin-test" class="page" hidden>
+      <div class="page-title test-page-title">
+        <div><p class="eyebrow">SAFE TEST CENTER</p><h1>기능 테스트</h1><p>실제 주문 데이터는 만들지 않고 Discord 알림과 화면 표시를 점검합니다.</p></div>
+        <a class="button secondary" href="/admin">← 관리자 패널</a>
+      </div>
+      <div id="admin-test-capabilities" class="test-capabilities"><p class="admin-empty">테스트 기능을 확인하는 중입니다.</p></div>
+      <div class="test-center-grid">
+        <form id="admin-test-form" class="panel form-panel test-form">
+          <div><p class="eyebrow">TEST MESSAGE</p><h2>테스트 내용 설정</h2><p>미리보기는 Discord에 보내지 않습니다. 실제 전송에는 항상 테스트 표시가 붙습니다.</p></div>
+          <label>테스트 기능<select name="kind" required><option value="purchase">구매 승인 요청</option><option value="purchase_log">구매로그</option><option value="buyer_info">구매자정보</option><option value="receipt">구매 영수증 DM</option><option value="shipping">배송 알림 DM</option><option value="review">구매후기</option><option value="inquiry">문의알림</option><option value="live_chat">실시간 채팅상담</option></select></label>
+          <label id="admin-test-outcome-wrap">구매 처리 결과<select name="outcome"><option value="APPROVED">승인</option><option value="REJECTED">거절</option><option value="EXPIRED">시간초과</option></select></label>
+          <label>테스트 유저 ID<input name="user_id" inputmode="numeric" pattern="[0-9]{15,20}" maxlength="20" required></label>
+          <div class="two-field"><label>주문번호<input name="order_id" maxlength="80" value="TEST-WEB-000001" required></label><label>수량<input name="quantity" type="number" min="1" max="99" value="1" required></label></div>
+          <label>상품명<input name="product" maxlength="120" value="테스트 상품" required></label>
+          <label>상품 옵션<textarea name="options" maxlength="300" rows="3" placeholder="예: 색상: 클리어&#10;맛: 멘솔">색상: 테스트 컬러</textarea></label>
+          <label>결제금액<input name="amount" type="number" min="0" max="100000000" value="35000" required></label>
+          <label id="admin-test-message-wrap">테스트 내용<textarea name="message" maxlength="1000" rows="4">기능 테스트용 메시지입니다.</textarea></label>
+          <div class="test-form-actions"><button type="submit" class="button secondary" data-test-action="preview">화면 미리보기</button><button type="submit" class="button" data-test-action="send">Discord로 테스트 전송</button></div>
+        </form>
+        <aside class="panel test-preview-panel">
+          <div class="panel-head"><div><p class="eyebrow">PREVIEW</p><h2>테스트 결과</h2></div><span id="admin-test-result-badge" class="badge">대기중</span></div>
+          <div id="admin-test-preview" class="test-preview"><p>왼쪽에서 기능을 선택하고 미리보기를 실행해 주세요.</p></div>
+          <div class="test-safety-note"><b>실제 데이터 변경 없음</b><span>주문·매출·포인트·쿠폰·등급·문의·상담 기록에는 반영되지 않습니다.</span></div>
+          <div><h3>최근 테스트</h3><div id="admin-test-history" class="test-history"><p class="admin-empty">아직 실행한 테스트가 없습니다.</p></div></div>
+        </aside>
+      </div>
+    </section>
   </main>
 
   <section id="review-showcase" class="review-showcase" aria-labelledby="review-showcase-title">
@@ -418,6 +447,6 @@
     <div id="chat-home"><button type="button" id="chat-start" class="chat-start">채팅 상담</button><label id="chat-initial-wrap" hidden><span class="chat-compose-title"><b><i>✦</i> 문의 내용</b><small><span id="chat-initial-count">0</span>/1000</small></span><textarea id="chat-initial-content" maxlength="1000" placeholder="궁금한 내용을 편하게 작성해 주세요."></textarea><span class="chat-compose-hint">상담사가 확인한 뒤 실시간으로 답변해 드립니다.</span><button type="button" id="chat-create" class="button wide">상담 연결하기 <span>→</span></button></label><div><h3>상담 기록</h3><div id="chat-history" class="chat-history"></div></div></div>
     <div id="chat-room" hidden><button type="button" id="chat-back" class="text-button">← 상담 기록</button><div id="chat-messages" class="chat-messages"></div><form id="chat-message-form" class="chat-message-form"><div id="chat-upload-preview" class="chat-upload-preview" hidden><img alt="전송할 사진 미리보기"><span>사진 전송 중...</span></div><textarea name="content" maxlength="2000" rows="1" aria-label="채팅 메시지" placeholder="메시지를 입력해 주세요."></textarea><label class="chat-file" title="사진 첨부" aria-label="사진 첨부"><span aria-hidden="true">🖼️</span><input name="image" type="file" accept="image/png,image/jpeg,image/webp,image/gif"></label><button class="button chat-send" type="submit" title="메시지 보내기" aria-label="메시지 보내기"><i aria-hidden="true">↑</i></button><small class="chat-enter-hint">사진은 선택 즉시 전송 · Enter 전송 · Shift+Enter 줄바꿈</small></form></div>
   </section>
-<script src="/static/app.js?v=20261017-63"></script>
+<script src="/static/app.js?v=20261018-64"></script>
 </body>
 </html>

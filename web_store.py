@@ -21,6 +21,7 @@ import aiohttp
 import discord
 from aiohttp import web
 
+from admin_test_notifications import TEST_NOTIFICATION_TYPES, build_test_notification
 from delivery_tracking import (
     DeliveryTrackingError,
     TRACKING_PANEL_CARRIERS,
@@ -62,6 +63,7 @@ WEB_PAGE_ROUTES = {
     "tracking": "tracking.html",
     "cart": "cart.html",
     "admin": "admin.html",
+    "admin-test": "admin-test.html",
     "subadmin-panel": "subadmin-panel.html",
 }
 COOKIE = "v4p3_session"
@@ -676,6 +678,8 @@ class StoreServer:
             web.delete(r"/api/admin/products/{product_id:\d+}", self.admin_delete_product),
             web.get("/api/admin/channels", self.admin_channels),
             web.put("/api/admin/channels", self.admin_save_channels),
+            web.get("/api/admin/test-status", self.admin_test_status),
+            web.post("/api/admin/test-notification", self.admin_test_notification),
             web.get("/api/admin/orders", self.admin_orders),
             web.post(r"/api/admin/orders/{order_id}/status", self.admin_set_order_status),
             web.post(r"/api/admin/orders/{order_id}/cancel", self.admin_cancel_order),
@@ -3308,6 +3312,101 @@ class StoreServer:
             "ok": True,
             "channels": {**{key: str(value) if value is not None else "" for key, value in zip(keys, values)}, "live_chat_start": chat_start, "live_chat_end": chat_end},
         })
+
+    async def admin_test_status(self, request):
+        admin = await self._admin(request)
+        setting_keys = sorted({
+            item["setting"] for item in TEST_NOTIFICATION_TYPES.values() if item["setting"]
+        })
+        async with self.bot.db_pool.acquire() as conn:
+            row = await conn.fetchrow(
+                f"SELECT {','.join(setting_keys)} FROM guild_settings WHERE guild_id=$1",
+                self.guild_id,
+            )
+        settings = dict(row) if row else {}
+        guild = self._guild()
+        tests = []
+        for kind, config in TEST_NOTIFICATION_TYPES.items():
+            setting_key = config["setting"]
+            channel_id = settings.get(setting_key) if setting_key else None
+            channel = guild.get_channel(int(channel_id)) if guild and channel_id else None
+            tests.append({
+                "kind": kind,
+                "label": config["label"],
+                "destination": (
+                    f"#{channel.name}" if channel else str(channel_id or "대상 유저 DM")
+                ),
+                "configured": bool(channel_id) if setting_key else True,
+                "is_dm": setting_key is None,
+            })
+        return web.json_response({
+            "tests": tests,
+            "default_user_id": str(admin["id"]),
+        })
+
+    async def admin_test_notification(self, request):
+        admin = await self._admin(request)
+        data = await self._body(request)
+        kind = str(data.get("kind") or "").strip()
+        if kind not in TEST_NOTIFICATION_TYPES:
+            raise StoreError("테스트할 기능을 선택해 주세요.")
+        target_user_id = (
+            self._parse_discord_user_id(data.get("user_id"))
+            if str(data.get("user_id") or "").strip()
+            else int(admin["id"])
+        )
+        for key, limit in (("product", 120), ("options", 300), ("message", 1000), ("order_id", 80)):
+            if len(str(data.get(key) or "")) > limit:
+                raise StoreError(f"테스트 입력값이 너무 깁니다. ({key}: 최대 {limit}자)")
+        try:
+            quantity = int(data.get("quantity") or 1)
+            amount = int(data.get("amount") or 35_000)
+        except (TypeError, ValueError) as exc:
+            raise StoreError("수량과 금액을 숫자로 입력해 주세요.") from exc
+        if not 1 <= quantity <= 99 or not 0 <= amount <= 100_000_000:
+            raise StoreError("수량은 1~99개, 금액은 0~1억원으로 입력해 주세요.")
+        data["quantity"], data["amount"] = quantity, amount
+        try:
+            built = build_test_notification(kind, data, target_user_id)
+        except (TypeError, ValueError) as exc:
+            raise StoreError(str(exc)) from exc
+
+        should_send = bool(data.get("send"))
+        destination = "화면 미리보기"
+        if should_send:
+            setting_key = TEST_NOTIFICATION_TYPES[kind]["setting"]
+            if setting_key:
+                async with self.bot.db_pool.acquire() as conn:
+                    channel_id = await conn.fetchval(
+                        f"SELECT {setting_key} FROM guild_settings WHERE guild_id=$1",
+                        self.guild_id,
+                    )
+                if not channel_id:
+                    raise StoreError(f"{TEST_NOTIFICATION_TYPES[kind]['label']}을 보낼 채널을 먼저 설정해 주세요.")
+                destination = f"채널 {channel_id}"
+            else:
+                try:
+                    user = self.bot.get_user(target_user_id) or await self.bot.fetch_user(target_user_id)
+                    dm = await user.create_dm()
+                    channel_id = dm.id
+                except (discord.NotFound, discord.Forbidden, discord.HTTPException) as exc:
+                    raise StoreError("테스트 DM을 보낼 사용자를 찾지 못했거나 DM이 차단되어 있습니다.") from exc
+                destination = f"사용자 {target_user_id} DM"
+            try:
+                await self.bot.http.request(
+                    discord.http.Route("POST", f"/channels/{int(channel_id)}/messages"),
+                    json=built["payload"],
+                )
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException) as exc:
+                raise StoreError("테스트 메시지 전송에 실패했습니다. 채널 권한과 설정을 확인해 주세요.") from exc
+
+        return web.json_response({
+            "ok": True,
+            "sent": should_send,
+            "label": built["label"],
+            "preview": built["preview"],
+            "destination": destination,
+        }, dumps=lambda value: json.dumps(value, ensure_ascii=False))
 
     async def admin_orders(self, request):
         await self._admin(request)

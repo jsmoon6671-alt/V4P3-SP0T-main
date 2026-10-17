@@ -9,7 +9,7 @@
 <link href="https://fonts.googleapis.com" rel="preconnect"/>
 <link crossorigin="" href="https://fonts.gstatic.com" rel="preconnect"/>
 <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@500;600;700;800&amp;family=Noto+Sans+KR:wght@500;600;700;800&amp;display=swap" rel="stylesheet"/>
-<link href="/static/styles.css?v=20261017-79" rel="stylesheet"/>
+<link href="/static/styles.css?v=20261018-80" rel="stylesheet"/>
 </head>
 <body data-page="admin">
 <div class="site-top-banner">
@@ -62,6 +62,7 @@
 <button data-admin-section-target="notices" type="button">공지·이벤트</button>
 <button data-admin-section-target="policies" type="button">약관관리</button>
 <button data-admin-section-target="coupons" type="button">쿠폰관리</button>
+<a class="admin-test-link" href="/admin-test">기능 테스트 <span>→</span></a>
 </nav>
 <div class="admin-section active" data-admin-section="dashboard">
 <div class="metrics" id="metrics"></div>
@@ -141,6 +142,7 @@
 <form class="panel form-panel admin-subpanel" id="coupon-event-admin-form"><h2>이벤트 쿠폰 등록</h2><p>등록한 쿠폰은 사이트 이벤트 페이지에서 조건을 충족한 유저가 직접 받을 수 있습니다.</p><label>쿠폰명<input maxlength="80" name="title" placeholder="예: 주말 3,000원 쿠폰" required=""/></label><label>설명<textarea maxlength="500" name="description" placeholder="쿠폰 이벤트 안내"></textarea></label><label>할인 금액<input min="1" name="discount_amount" required="" type="number"/></label><label>수령 가능 최소 등급<select name="minimum_tier"><option value="NONE">등급 제한 없음</option><option value="VIP">VIP 이상</option><option value="VVIP">VVIP 이상</option><option value="SVIP">SVIP 이상</option><option value="ROYAL">ROYAL 이상</option><option value="VAPE_MASTER">VAPE MASTER 이상</option><option value="VAPE_GOD">VAPE GOD</option></select></label><label>구매 이력 제한<select name="purchaser_requirement"><option value="ALL">제한 없음</option><option value="FIRST_PURCHASE">구매 이력이 없는 회원만</option><option value="EXISTING_BUYER">구매 이력이 있는 회원만</option></select></label><label>최대 수령 인원 · 0명은 제한 없음<input min="0" name="max_claims" required="" type="number" value="0"/></label><label>최소 주문금액 · 0원은 제한 없음<input min="0" name="min_order_amount" required="" type="number" value="0"/></label><label>수령 후 사용 기한(일)<input max="365" min="1" name="valid_days" required="" type="number" value="30"/></label><label>쿠폰 이미지<input accept="image/png,image/jpeg,image/webp" name="image" required="" type="file"/></label><img alt="쿠폰 이미지 미리보기" class="coupon-event-image-preview" hidden="" id="coupon-event-image-preview"/><button class="button" type="submit">이벤트 쿠폰 등록</button></form>
 </div>
 </section>
+
 </main>
 <section aria-labelledby="review-showcase-title" class="review-showcase" id="review-showcase">
 <div class="review-showcase-head">
@@ -195,6 +197,6 @@
 <div id="chat-home"><button class="chat-start" id="chat-start" type="button">채팅 상담</button><label hidden="" id="chat-initial-wrap"><span class="chat-compose-title"><b><i>✦</i> 문의 내용</b><small><span id="chat-initial-count">0</span>/1000</small></span><textarea id="chat-initial-content" maxlength="1000" placeholder="궁금한 내용을 편하게 작성해 주세요."></textarea><span class="chat-compose-hint">상담사가 확인한 뒤 실시간으로 답변해 드립니다.</span><button class="button wide" id="chat-create" type="button">상담 연결하기 <span>→</span></button></label><div><h3>상담 기록</h3><div class="chat-history" id="chat-history"></div></div></div>
 <div hidden="" id="chat-room"><button class="text-button" id="chat-back" type="button">← 상담 기록</button><div class="chat-messages" id="chat-messages"></div><form class="chat-message-form" id="chat-message-form"><div class="chat-upload-preview" hidden="" id="chat-upload-preview"><img alt="전송할 사진 미리보기"/><span>사진 전송 중...</span></div><textarea aria-label="채팅 메시지" maxlength="2000" name="content" placeholder="메시지를 입력해 주세요." rows="1"></textarea><label aria-label="사진 첨부" class="chat-file" title="사진 첨부"><span aria-hidden="true">🖼️</span><input accept="image/png,image/jpeg,image/webp,image/gif" name="image" type="file"/></label><button aria-label="메시지 보내기" class="button chat-send" title="메시지 보내기" type="submit"><i aria-hidden="true">↑</i></button><small class="chat-enter-hint">사진은 선택 즉시 전송 · Enter 전송 · Shift+Enter 줄바꿈</small></form></div>
 </section>
-<script src="/static/app.js?v=20261017-63"></script>
+<script src="/static/app.js?v=20261018-64"></script>
 </body>
 </html>

@@ -22,6 +22,7 @@ PAGES = {
     "tracking.html": ("tracking", {"tracking"}),
     "cart.html": ("cart", {"cart", "complete"}),
     "admin.html": ("admin", {"admin"}),
+    "admin-test.html": ("admin-test", {"admin-test"}),
     "subadmin-panel.html": ("subadmin-panel", {"subadmin-panel"}),
 }
 
@@ -39,6 +40,7 @@ PATHS = {
     "cart": "/cart",
     "complete": "/cart#complete",
     "admin": "/admin",
+    "admin-test": "/admin-test",
     "subadmin-panel": "/subadmin-panel",
 }
 
