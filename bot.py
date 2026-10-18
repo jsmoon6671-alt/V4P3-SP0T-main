@@ -235,7 +235,7 @@ class WebRefundAccountModal(discord.ui.Modal, title="환불계좌 등록"):
         account = self.account.value.strip()
         async with bot.db_pool.acquire() as conn:
             order = await conn.fetchrow(
-                "SELECT buyer_id,product FROM orders WHERE order_id=$1", self.order_id,
+                "SELECT buyer_id,product,amount,cash_amount FROM orders WHERE order_id=$1", self.order_id,
             )
             if not order or int(order["buyer_id"]) != interaction.user.id:
                 await interaction.response.send_message("❌ 환불 대상 주문을 찾을 수 없습니다.", ephemeral=True)
@@ -261,6 +261,7 @@ class WebRefundAccountModal(discord.ui.Modal, title="환불계좌 등록"):
                         "## 💳 주문취소 환불계좌 등록\n\n"
                         f"`유저` {interaction.user} (`{interaction.user.id}`)\n"
                         f"`주문` {order['product']}\n`주문 ID` {self.order_id}\n"
+                        f"`환불금액` **{(int(order['cash_amount']) if order['cash_amount'] is not None else parse_amount(order['amount'])):,}원**\n"
                         f"`환불계좌` {account}"
                     ),
                 }]}],

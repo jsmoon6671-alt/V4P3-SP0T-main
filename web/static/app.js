@@ -928,7 +928,7 @@ function renderTrackingResult(data, target = "#tracking-result") {
 
 function updateShippingMode() {
   const method = $("#shipping-method").value;
-  const convenience = method === "GS25" || method === "CU";
+  const convenience = method === "GS25";
   $("#store-lookup").hidden = !convenience;
   $("#shipping-address").readOnly = convenience;
   if (!convenience) {

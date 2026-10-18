@@ -2572,7 +2572,6 @@ class StoreServer:
         shipping_labels = {
             "GENERAL": "일반택배",
             "GS25": "GS25반값택배",
-            "CU": "CU알뜰택배",
         }
         shipping_method = str(data.get("shipping_method", "")).strip().upper()
         if shipping_method not in shipping_labels:
@@ -2586,7 +2585,7 @@ class StoreServer:
             raise StoreError("배송메모는 300자 이하로 입력해 주세요.")
         if not shipping_name or not shipping_contact or not shipping_address:
             raise StoreError("받는 분의 이름, 연락처, 배송 주소를 모두 입력해 주세요.")
-        if shipping_method in {"GS25", "CU"} and not shipping_cvs:
+        if shipping_method == "GS25" and not shipping_cvs:
             raise StoreError("조회 결과에서 받을 편의점을 선택해 주세요.")
         if shipping_method == "GENERAL":
             shipping_cvs = ""
@@ -3591,7 +3590,22 @@ class StoreServer:
                         "UPDATE user_info SET total_spent=GREATEST(COALESCE(total_spent,0)-$2,0) WHERE user_id=$1",
                         int(order["buyer_id"]), parse_amount(order["amount"]),
                     )
-                refund_account = await conn.fetchval("SELECT refund_account FROM user_info WHERE user_id=$1", int(order["buyer_id"]))
+                refund_profile = await conn.fetchrow(
+                    """SELECT refund_bank,refund_account_number,refund_account_holder,refund_account
+                       FROM user_info WHERE user_id=$1""",
+                    int(order["buyer_id"]),
+                )
+                refund_account = str(refund_profile["refund_account"] or "").strip() if refund_profile else ""
+                if refund_profile and all((
+                    refund_profile["refund_bank"],
+                    refund_profile["refund_account_number"],
+                    refund_profile["refund_account_holder"],
+                )):
+                    refund_account = " / ".join((
+                        str(refund_profile["refund_bank"]).strip(),
+                        str(refund_profile["refund_account_number"]).strip(),
+                        str(refund_profile["refund_account_holder"]).strip(),
+                    ))
         payload = {
             "flags": 1 << 15,
             "components": [{"type": 17, "accent_color": 0xE74C3C, "components": [
@@ -3612,11 +3626,19 @@ class StoreServer:
                 if owner is None:
                     owner = (await self.bot.application_info()).owner
                 owner_dm = await owner.create_dm()
+                refund_amount = int(order["cash_amount"]) if order["cash_amount"] is not None else parse_amount(order["amount"])
+                if refund_profile and refund_profile["refund_account_number"]:
+                    bank = discord.utils.escape_markdown(str(refund_profile["refund_bank"] or "미등록"))
+                    account_number = discord.utils.escape_markdown(str(refund_profile["refund_account_number"]).strip())
+                    holder = discord.utils.escape_markdown(str(refund_profile["refund_account_holder"] or "미등록"))
+                    refund_details = f"`은행` {bank}\n`계좌번호` `{account_number}`\n`예금주` {holder}"
+                else:
+                    refund_details = f"`환불계좌` {discord.utils.escape_markdown(refund_account)}"
                 owner_payload = {
                     "flags": 1 << 15,
                     "components": [{"type": 17, "accent_color": 0x32CD32, "components": [{
                         "type": 10,
-                        "content": f"## 💳 주문취소 환불정보\n\n`유저` {order['buyer_id']}\n`주문` {order['product']}\n`주문 ID` {order_id}\n`환불계좌` {refund_account}",
+                        "content": f"## 💳 주문취소 환불정보\n\n`유저` {order['buyer_id']}\n`주문` {order['product']}\n`주문 ID` {order_id}\n`환불금액` **{refund_amount:,}원**\n{refund_details}",
                     }]}],
                 }
                 await self.bot.http.request(discord.http.Route("POST", f"/channels/{owner_dm.id}/messages"), json=owner_payload)
