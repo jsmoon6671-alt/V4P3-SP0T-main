@@ -448,6 +448,10 @@ async def initialize_web_store_schema(conn):
         ALTER TABLE web_products ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT TRUE;
         ALTER TABLE web_products ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP;
         ALTER TABLE web_products ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP;
+        CREATE INDEX IF NOT EXISTS web_products_catalog_idx
+            ON web_products (guild_id,is_active,category_id,updated_at DESC);
+        CREATE INDEX IF NOT EXISTS web_categories_catalog_idx
+            ON web_categories (guild_id,parent_id,sort_order);
         ALTER TABLE web_products ADD COLUMN IF NOT EXISTS option_label TEXT NOT NULL DEFAULT '색상';
         ALTER TABLE web_products ADD COLUMN IF NOT EXISTS options TEXT[] NOT NULL DEFAULT '{}';
         ALTER TABLE web_products ADD COLUMN IF NOT EXISTS option_groups_json TEXT NOT NULL DEFAULT '[]';

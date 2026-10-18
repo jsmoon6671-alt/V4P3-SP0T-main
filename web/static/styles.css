@@ -328,6 +328,9 @@ h3,strong { font-weight: 800; }
 .tabs button.active { background: linear-gradient(135deg,#164329,#12301f); border-color: #32955e; color: #77efa9; box-shadow: 0 4px 15px rgba(40,207,124,.1); }
 .subcategory-tabs button { min-height: 34px; padding: 8px 14px; background: #0b120e; font-size: 12px; }
 .product-grid { display: grid; grid-template-columns: repeat(4,1fr); gap: 18px; }
+.product-loading { grid-column: 1/-1; min-height: 250px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; margin: 0; color: var(--muted); text-align: center; }
+.product-loading::before { content: ""; width: 25px; height: 25px; border: 3px solid var(--line); border-top-color: var(--accent); border-radius: 50%; animation: product-loading-spin .75s linear infinite; }
+@keyframes product-loading-spin { to { transform: rotate(360deg); } }
 .product { background: var(--surface); border: 1px solid var(--line); border-radius: 6px; overflow: hidden; display: flex; flex-direction: column; transition: border-color .14s ease,background .14s ease; }
 .product:hover { background: #111a15; border-color: #365342; }
 .product-media { aspect-ratio: 1; background: #0b120e; display: grid; place-items: center; overflow: hidden; border-bottom: 1px solid var(--line); }

@@ -47,6 +47,7 @@ const state = {
   routeLoadToken: 0,
   cartLoadedAt: 0,
   cartPromise: null,
+  catalogPromise: null,
   productRenderFrame: null,
   productSearchTimer: null,
   siteTestProducts: [],
@@ -115,6 +116,8 @@ const CHANNEL_CACHE_KEY = "v4p3DiscordChannelIds";
 const SHIPPING_BANNER_KEY = "v4p3ShippingBannerClosed";
 const NOTICE_SEEN_KEY = "v4p3NoticeSeenAt";
 const EVENT_SEEN_KEY = "v4p3EventSeenAt";
+const CATALOG_CACHE_KEY = "v4p3CatalogCacheV1";
+const CATALOG_CACHE_MAX_AGE = 24 * 60 * 60 * 1000;
 const PAGE_PATHS = {
   home: "/",
   store: "/store",
@@ -314,9 +317,8 @@ async function logout() {
   location.reload();
 }
 
-async function loadCatalog() {
-  const data = await api("/api/catalog");
-  state.products = data.products;
+function applyCatalog(data) {
+  state.products = Array.isArray(data.products) ? data.products : [];
   state.catalogCategories = Array.isArray(data.categories) ? data.categories : [];
   const validCategoryIds = new Set(state.catalogCategories.map(category => String(category.id)));
   if (state.activeParentCategory !== "all" && !validCategoryIds.has(String(state.activeParentCategory))) {
@@ -328,6 +330,50 @@ async function loadCatalog() {
   }
   renderTabs();
   renderProducts();
+}
+
+function readCatalogCache() {
+  try {
+    const cached = JSON.parse(localStorage.getItem(CATALOG_CACHE_KEY) || "null");
+    if (!cached || Date.now() - Number(cached.savedAt || 0) > CATALOG_CACHE_MAX_AGE) return null;
+    if (!Array.isArray(cached.products) || !Array.isArray(cached.categories)) return null;
+    return cached;
+  } catch (_) { return null; }
+}
+
+function writeCatalogCache(data) {
+  try {
+    localStorage.setItem(CATALOG_CACHE_KEY, JSON.stringify({
+      savedAt: Date.now(), products: data.products || [], categories: data.categories || [],
+    }));
+  } catch (_) {}
+}
+
+async function loadCatalog() {
+  const cached = readCatalogCache();
+  if (cached && !state.products.length) applyCatalog(cached);
+  if (state.catalogPromise) return state.catalogPromise;
+  state.catalogPromise = (async () => {
+    try {
+      const data = await api("/api/catalog");
+      writeCatalogCache(data);
+      applyCatalog(data);
+      return data;
+    } catch (error) {
+      if (!cached) throw error;
+      return cached;
+    } finally {
+      state.catalogPromise = null;
+    }
+  })();
+  return state.catalogPromise;
+}
+
+function warmCatalogCache() {
+  if (readCatalogCache()) return;
+  const warm = () => api("/api/catalog").then(writeCatalogCache).catch(() => {});
+  if ("requestIdleCallback" in window) requestIdleCallback(warm, { timeout: 1800 });
+  else setTimeout(warm, 350);
 }
 
 async function loadHome() {
@@ -345,6 +391,7 @@ async function loadHome() {
     <a class="home-popular-media" href="/store" aria-label="${escapeHtml(product.name)} 스토어에서 보기">${product.image_url ? `<img src="${escapeHtml(product.image_url)}" alt="${escapeHtml(product.name)}" loading="lazy" decoding="async">` : '<span>V4P3</span>'}<em>0${index + 1}</em></a>
     <div><small>${escapeHtml(product.parent_category_name ? `${product.parent_category_name} · ${product.category_name}` : (product.category_name || "추천 상품"))}</small><h3>${escapeHtml(product.name)}</h3><p>${escapeHtml(product.description || "V4P3 SP0T 추천 상품입니다.")}</p><footer><strong>${money(product.price)}</strong><span>${Number(product.sold_count || 0) > 0 ? `최근 ${Number(product.sold_count).toLocaleString()}개 판매` : "V4P3 추천"}</span></footer></div>
   </article>`).join("") : '<p class="empty">등록된 인기 상품이 없습니다.</p>';
+  warmCatalogCache();
 }
 
 const MEMBERSHIP_TIERS = [
