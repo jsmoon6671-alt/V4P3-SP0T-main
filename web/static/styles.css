@@ -257,6 +257,7 @@ h3,strong { font-weight: 800; }
 
 .toolbar { display: flex; align-items: center; justify-content: space-between; margin: 50px 0 20px; }
 .catalog-toolbar { align-items: flex-start; justify-content: flex-start; gap: 14px; }
+#store .catalog-toolbar { margin-top: 4px; }
 .catalog-toolbar h2 { flex: 0 0 auto; margin: 8px 0 0; white-space: nowrap; }
 .catalog-heading { display: flex; flex: 0 0 140px; width: 140px; min-width: 140px; align-items: center; justify-content: space-between; gap: 13px; }
 .catalog-heading h2 { min-width: 0; margin-right: auto; overflow: hidden; white-space: normal; word-break: keep-all; overflow-wrap: normal; line-height: 1.35; }
@@ -544,6 +545,8 @@ h3,strong { font-weight: 800; }
 .admin-bulk-actions label,.admin-product-info { display: flex; align-items: center; gap: 10px; }
 .admin-bulk-actions label { color: var(--muted); font-size: 12px; font-weight: 800; cursor: pointer; }
 .admin-product-info { min-width: 0; }
+.admin-product-hidden { opacity: .72; }
+.product-hidden-badge { display: inline-flex; margin-left: 8px; padding: 3px 7px; border: 1px solid #d9a4a1; border-radius: 999px; background: #fff0ef; color: #a24641; font-size: 9px; font-style: normal; font-weight: 900; vertical-align: 1px; }
 .admin-product-check,.admin-bulk-actions input { width: 18px; height: 18px; flex: 0 0 auto; accent-color: var(--accent); cursor: pointer; }
 .admin-empty { margin: 0; padding: 24px 0 8px; color: var(--muted); text-align: center; }
 .admin-order { display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 17px 0; border-bottom: 1px solid var(--line); }

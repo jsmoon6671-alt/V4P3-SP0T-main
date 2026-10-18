@@ -269,6 +269,7 @@ async def initialize_web_store_schema(conn):
             option_groups_json TEXT NOT NULL DEFAULT '[]',
             free_shipping_quantity INTEGER NOT NULL DEFAULT 0 CHECK (free_shipping_quantity BETWEEN 0 AND 99),
             coupon_disabled BOOLEAN NOT NULL DEFAULT FALSE,
+            is_hidden BOOLEAN NOT NULL DEFAULT FALSE,
             is_active BOOLEAN NOT NULL DEFAULT TRUE,
             created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -457,6 +458,9 @@ async def initialize_web_store_schema(conn):
         ALTER TABLE web_products ADD COLUMN IF NOT EXISTS option_groups_json TEXT NOT NULL DEFAULT '[]';
         ALTER TABLE web_products ADD COLUMN IF NOT EXISTS free_shipping_quantity INTEGER NOT NULL DEFAULT 0;
         ALTER TABLE web_products ADD COLUMN IF NOT EXISTS coupon_disabled BOOLEAN NOT NULL DEFAULT FALSE;
+        ALTER TABLE web_products ADD COLUMN IF NOT EXISTS is_hidden BOOLEAN NOT NULL DEFAULT FALSE;
+        CREATE INDEX IF NOT EXISTS web_products_visible_catalog_idx
+            ON web_products (guild_id,is_active,is_hidden,category_id,updated_at DESC);
         ALTER TABLE web_cart_items ADD COLUMN IF NOT EXISTS selected_option TEXT NOT NULL DEFAULT '';
         ALTER TABLE web_cart_items ADD COLUMN IF NOT EXISTS selected_options_json TEXT NOT NULL DEFAULT '[]';
         ALTER TABLE web_order_items ADD COLUMN IF NOT EXISTS product_option TEXT NOT NULL DEFAULT '';
@@ -682,6 +686,7 @@ class StoreServer:
             web.post("/api/admin/products/import", self.admin_import_products),
             web.post("/api/admin/products/sync", self.admin_sync_products),
             web.post("/api/admin/products/delete-batch", self.admin_delete_products_batch),
+            web.post(r"/api/admin/products/{product_id:\d+}/visibility", self.admin_set_product_visibility),
             web.delete(r"/api/admin/products/{product_id:\d+}", self.admin_delete_product),
             web.get("/api/admin/channels", self.admin_channels),
             web.put("/api/admin/channels", self.admin_save_channels),
@@ -1156,7 +1161,7 @@ class StoreServer:
                 FROM web_products p
                 LEFT JOIN web_categories c ON c.id = p.category_id
                 LEFT JOIN web_categories parent ON parent.id = c.parent_id
-                WHERE p.guild_id = $1 AND p.is_active = TRUE
+                WHERE p.guild_id = $1 AND p.is_active = TRUE AND p.is_hidden = FALSE
                 ORDER BY COALESCE(parent.sort_order, c.sort_order), parent.name,
                          c.sort_order, c.name, p.name
                 """, guild_id,
@@ -1195,7 +1200,7 @@ class StoreServer:
                        WHERE o.status='APPROVED'
                        GROUP BY item.product_id
                    ) sales ON sales.product_id=p.id
-                   WHERE p.guild_id=$1 AND p.is_active=TRUE
+                   WHERE p.guild_id=$1 AND p.is_active=TRUE AND p.is_hidden=FALSE
                    ORDER BY COALESCE(sales.sold_count,0) DESC,p.updated_at DESC,p.id DESC
                    LIMIT 4""",
                 guild_id,
@@ -2070,10 +2075,12 @@ class StoreServer:
                 SELECT c.product_id, c.quantity, c.selected_option, c.selected_options_json,
                        p.name, p.price, p.image_url, p.option_label, p.options, p.option_groups_json,
                        p.free_shipping_quantity, p.coupon_disabled,
-                       p.is_active, cat.name AS category_name
+                       p.is_active, p.is_hidden, cat.name AS category_name
                 FROM web_cart_items c JOIN web_products p ON p.id = c.product_id
                 LEFT JOIN web_categories cat ON cat.id = p.category_id
-                WHERE c.guild_id = $1 AND c.user_id = $2 ORDER BY c.created_at
+                WHERE c.guild_id = $1 AND c.user_id = $2
+                  AND p.is_active=TRUE AND p.is_hidden=FALSE
+                ORDER BY c.created_at
                 """, self.guild_id, int(user["id"]),
             )
         return web.json_response({"items": [dict(row) for row in rows]})
@@ -2086,10 +2093,10 @@ class StoreServer:
             raise StoreError("수량은 1~99개로 입력해 주세요.")
         async with self.bot.db_pool.acquire() as conn:
             product = await conn.fetchrow(
-                "SELECT is_active, option_label, options, option_groups_json FROM web_products WHERE id = $1 AND guild_id = $2",
+                "SELECT is_active, is_hidden, option_label, options, option_groups_json FROM web_products WHERE id = $1 AND guild_id = $2",
                 product_id, self.guild_id,
             )
-            if not product or not product["is_active"]:
+            if not product or not product["is_active"] or product["is_hidden"]:
                 raise StoreError("판매 중인 상품이 아닙니다.", 404)
             groups = normalize_option_groups(
                 product["option_groups_json"], product["option_label"], list(product["options"] or []),
@@ -2585,7 +2592,7 @@ class StoreServer:
                 rows = await conn.fetch(
                     """
                     SELECT c.product_id, c.quantity, c.selected_option, c.selected_options_json,
-                           p.name, p.price, p.is_active, p.option_label, p.options, p.option_groups_json,
+                           p.name, p.price, p.is_active, p.is_hidden, p.option_label, p.options, p.option_groups_json,
                            p.free_shipping_quantity, p.coupon_disabled
                     FROM web_cart_items c JOIN web_products p ON p.id = c.product_id
                     WHERE c.guild_id = $1 AND c.user_id = $2 AND c.product_id = ANY($3::bigint[])
@@ -2594,7 +2601,7 @@ class StoreServer:
                 )
                 if len(rows) != len(set(selected)):
                     raise StoreError("장바구니 상품 일부를 찾을 수 없습니다.")
-                if any(not row["is_active"] for row in rows):
+                if any(not row["is_active"] or row["is_hidden"] for row in rows):
                     raise StoreError("판매가 종료된 상품이 있습니다.")
                 normalized_selections = {}
                 normalized_groups = {}
@@ -3285,6 +3292,34 @@ class StoreServer:
         if not deleted:
             raise StoreError("삭제할 상품을 찾을 수 없습니다.", 404)
         return web.json_response({"ok": True, "name": deleted["name"]})
+
+    async def admin_set_product_visibility(self, request):
+        await self._admin(request)
+        product_id = int(request.match_info["product_id"])
+        data = await self._body(request)
+        hidden = data.get("hidden") is True
+        async with self.bot.db_pool.acquire() as conn:
+            async with conn.transaction():
+                product = await conn.fetchrow(
+                    """
+                    UPDATE web_products
+                    SET is_hidden=$3, updated_at=CURRENT_TIMESTAMP
+                    WHERE id=$1 AND guild_id=$2 AND is_active=TRUE
+                    RETURNING id,name,is_hidden
+                    """,
+                    product_id, self.guild_id, hidden,
+                )
+                if product and hidden:
+                    await conn.execute(
+                        "DELETE FROM web_cart_items WHERE product_id=$1 AND guild_id=$2",
+                        product_id, self.guild_id,
+                    )
+        if not product:
+            raise StoreError("상품을 찾을 수 없습니다.", 404)
+        return web.json_response({
+            "ok": True,
+            "product": dict(product),
+        }, dumps=lambda value: json.dumps(value, ensure_ascii=False, default=str))
 
     async def admin_delete_products_batch(self, request):
         await self._admin(request)

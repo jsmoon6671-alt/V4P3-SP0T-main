@@ -2801,7 +2801,9 @@ function renderAdminLists() {
     const optionGroups = productOptionGroups(product);
     const categoryPath = product.parent_category_name ? `${product.parent_category_name} › ${product.category_name}` : (product.category_name || "미분류");
     const optionSummary = optionGroups.map(group => group.type === "text" ? `${escapeHtml(group.label)}: 구매자 직접입력` : `${escapeHtml(group.label)}: ${group.options.map(escapeHtml).join(", ")}`).join("<br>");
-    return `<div class="admin-row"><span class="admin-product-info"><input class="admin-product-check" type="checkbox" value="${product.id}" aria-label="${escapeHtml(product.name)} 선택"><span><b>${escapeHtml(product.name)}</b><br>${escapeHtml(categoryPath)} · ${money(product.price)}${optionSummary ? `<br><small>${optionSummary}</small>` : ""}</span></span><span class="admin-actions"><button class="text-button" data-edit-product="${product.id}">수정</button><button class="remove" data-del-product="${product.id}">삭제</button></span></div>`;
+    const visibilityBadge = product.is_hidden ? '<em class="product-hidden-badge">스토어 숨김</em>' : "";
+    const visibilityLabel = product.is_hidden ? "다시 표시" : "숨기기";
+    return `<div class="admin-row ${product.is_hidden ? "admin-product-hidden" : ""}"><span class="admin-product-info"><input class="admin-product-check" type="checkbox" value="${product.id}" aria-label="${escapeHtml(product.name)} 선택"><span><b>${escapeHtml(product.name)}</b>${visibilityBadge}<br>${escapeHtml(categoryPath)} · ${money(product.price)}${optionSummary ? `<br><small>${optionSummary}</small>` : ""}</span></span><span class="admin-actions"><button class="text-button" data-product-visibility="${product.id}" data-hidden="${product.is_hidden ? "false" : "true"}">${visibilityLabel}</button><button class="text-button" data-edit-product="${product.id}">수정</button><button class="remove" data-del-product="${product.id}">삭제</button></span></div>`;
   }).join("");
   $("#product-admin").innerHTML = `<div class="admin-bulk-actions">
     <label><input id="select-all-products" type="checkbox" ${state.adminProducts.length ? "" : "disabled"}> 전체 선택</label>
@@ -2854,6 +2856,26 @@ function renderAdminLists() {
     };
   });
   $$("[data-edit-product]").forEach(button => { button.onclick = () => { state.productEditorScope = "admin"; openEditor("product", state.adminProducts.find(item => item.id == button.dataset.editProduct)); }; });
+  $$("[data-product-visibility]").forEach(button => {
+    button.onclick = async () => {
+      const product = state.adminProducts.find(item => item.id == button.dataset.productVisibility);
+      if (!product) return;
+      const hidden = button.dataset.hidden === "true";
+      button.disabled = true;
+      try {
+        await api(`/api/admin/products/${product.id}/visibility`, {
+          method: "POST",
+          body: JSON.stringify({ hidden }),
+        });
+        localStorage.removeItem(CATALOG_CACHE_KEY);
+        await Promise.all([loadAdmin(), loadCatalog(), loadCart()]);
+        toast(hidden ? `"${product.name}" 상품을 스토어에서 숨겼습니다.` : `"${product.name}" 상품을 스토어에 다시 표시했습니다.`);
+      } catch (error) {
+        button.disabled = false;
+        toast(error.message);
+      }
+    };
+  });
   $$("[data-del-product]").forEach(button => {
     button.onclick = async () => {
       const product = state.adminProducts.find(item => item.id == button.dataset.delProduct);
