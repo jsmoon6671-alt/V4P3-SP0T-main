@@ -70,6 +70,7 @@ WEB_PAGE_ROUTES = {
 }
 COOKIE = "v4p3_session"
 ADMIN_USER_ID = 259758966043574272
+BLOCKED_LOGOUT_PASSWORD_HASH = "666a919ff179f1c16ad64bd11e837c9de9d281f1ad02ff8ad64f464b5eb61344"
 BASE_SHIPPING_FEE = 3_000
 DISCOUNTED_SHIPPING_FEE = 1_500
 DISCOUNTED_SHIPPING_THRESHOLD = 35_000
@@ -647,6 +648,7 @@ class StoreServer:
             web.get("/auth/login", self.login),
             web.get("/auth/callback", self.callback),
             web.post("/api/logout", self.logout),
+            web.post("/api/blocked-logout", self.blocked_logout),
             web.get("/api/age-verification", self.age_verification),
             web.post("/api/age-verification", self.age_verification),
             web.get("/api/me", self.me),
@@ -1100,6 +1102,28 @@ class StoreServer:
         return response
 
     async def logout(self, request):
+        response = web.json_response({"ok": True})
+        response.del_cookie(COOKIE)
+        return response
+
+    async def blocked_logout(self, request):
+        user = await self._user(request, allow_blocked=True)
+        data = await self._body(request)
+        password = str(data.get("password") or "")
+        async with self.bot.db_pool.acquire() as conn:
+            blocked = await conn.fetchval(
+                """SELECT EXISTS(
+                       SELECT 1 FROM web_blacklist
+                       WHERE guild_id=$1 AND user_id=$2 AND blacklist_type='PERMANENT'
+                         AND (expires_at IS NULL OR expires_at>CURRENT_TIMESTAMP)
+                   )""",
+                self.guild_id, int(user["id"]),
+            )
+        if not blocked:
+            raise StoreError("현재 계정은 영구 블랙리스트 차단 상태가 아닙니다.", 409)
+        supplied_hash = hashlib.sha256(password.encode("utf-8")).hexdigest()
+        if not hmac.compare_digest(supplied_hash, BLOCKED_LOGOUT_PASSWORD_HASH):
+            raise StoreError("비밀번호가 올바르지 않습니다.", 403)
         response = web.json_response({"ok": True})
         response.del_cookie(COOKIE)
         return response

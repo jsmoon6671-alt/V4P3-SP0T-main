@@ -317,6 +317,38 @@ async function logout() {
   location.reload();
 }
 
+function openBlockedLogout() {
+  const dialog = $("#blocked-logout-dialog");
+  dialog.hidden = false;
+  requestAnimationFrame(() => $("#blocked-logout-password").focus());
+}
+
+function closeBlockedLogout() {
+  $("#blocked-logout-dialog").hidden = true;
+  $("#blocked-logout-form").reset();
+}
+
+async function submitBlockedLogout(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const submit = form.querySelector('[type="submit"]');
+  const label = submit.textContent;
+  submit.disabled = true;
+  submit.textContent = "확인 중...";
+  try {
+    await api("/api/blocked-logout", {
+      method: "POST",
+      body: JSON.stringify({ password: form.elements.password.value }),
+    });
+    location.replace("/");
+  } catch (error) {
+    toast(error.message);
+    form.elements.password.select();
+    submit.disabled = false;
+    submit.textContent = label;
+  }
+}
+
 function applyCatalog(data) {
   state.products = Array.isArray(data.products) ? data.products : [];
   state.catalogCategories = Array.isArray(data.categories) ? data.categories : [];
@@ -1303,6 +1335,12 @@ function bindForms() {
     }
   };
   if ($("#account-logout")) $("#account-logout").onclick = logout;
+  if ($("#blocked-logout-open")) $("#blocked-logout-open").onclick = openBlockedLogout;
+  if ($("#blocked-logout-cancel")) $("#blocked-logout-cancel").onclick = closeBlockedLogout;
+  if ($("#blocked-logout-form")) $("#blocked-logout-form").onsubmit = submitBlockedLogout;
+  if ($("#blocked-logout-dialog")) $("#blocked-logout-dialog").onclick = event => {
+    if (event.target === event.currentTarget) closeBlockedLogout();
+  };
   if ($("#checkout-form")) $("#checkout-form").onsubmit = checkout;
   if ($("#use-all-points")) $("#use-all-points").onclick = useAllPoints;
   if ($("#checkout-form [name=\"points\"]")) $("#checkout-form [name=\"points\"]").oninput = cartTotal;
