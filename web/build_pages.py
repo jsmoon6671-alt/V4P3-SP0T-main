@@ -11,6 +11,7 @@ TEMPLATE = ROOT / "page-template.html"
 
 PAGES = {
     "index.html": ("home", {"home"}),
+    "store.html": ("store", {"store"}),
     "events.html": ("events", {"events"}),
     "notices.html": ("notices", {"notices"}),
     "support.html": ("support", {"support"}),
@@ -28,6 +29,7 @@ PAGES = {
 
 PATHS = {
     "home": "/",
+    "store": "/store",
     "events": "/events",
     "notices": "/notices",
     "support": "/support",

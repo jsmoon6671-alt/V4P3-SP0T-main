@@ -117,6 +117,7 @@ const NOTICE_SEEN_KEY = "v4p3NoticeSeenAt";
 const EVENT_SEEN_KEY = "v4p3EventSeenAt";
 const PAGE_PATHS = {
   home: "/",
+  store: "/store",
   events: "/events",
   notices: "/notices",
   support: "/support",
@@ -198,6 +199,7 @@ function route() {
   requestAnimationFrame(() => {
     if (loadToken !== state.routeLoadToken || currentPageId() !== id) return;
     if (id === "account" && state.me) loadAccount();
+    if (id === "store") loadCatalog().catch(error => toast(error.message));
     if (id === "cart" && state.me) {
       loadCart(false);
       loadCheckoutCustomer();
@@ -255,7 +257,7 @@ async function boot() {
   }
   if (currentPageId() === "home") {
     try {
-      await loadCatalog();
+      await loadHome();
     } catch (error) {
       toast(error.message);
     }
@@ -326,6 +328,23 @@ async function loadCatalog() {
   }
   renderTabs();
   renderProducts();
+}
+
+async function loadHome() {
+  const target = $("#home-popular-products");
+  if (!target) return;
+  let products = [];
+  try {
+    const data = await api("/api/popular-products");
+    products = data.products || [];
+  } catch (_) {
+    const fallback = await api("/api/catalog");
+    products = (fallback.products || []).slice(0, 4);
+  }
+  target.innerHTML = products.length ? products.map((product, index) => `<article class="home-popular-card">
+    <a class="home-popular-media" href="/store" aria-label="${escapeHtml(product.name)} 스토어에서 보기">${product.image_url ? `<img src="${escapeHtml(product.image_url)}" alt="${escapeHtml(product.name)}" loading="lazy" decoding="async">` : '<span>V4P3</span>'}<em>0${index + 1}</em></a>
+    <div><small>${escapeHtml(product.parent_category_name ? `${product.parent_category_name} · ${product.category_name}` : (product.category_name || "추천 상품"))}</small><h3>${escapeHtml(product.name)}</h3><p>${escapeHtml(product.description || "V4P3 SP0T 추천 상품입니다.")}</p><footer><strong>${money(product.price)}</strong><span>${Number(product.sold_count || 0) > 0 ? `최근 ${Number(product.sold_count).toLocaleString()}개 판매` : "V4P3 추천"}</span></footer></div>
+  </article>`).join("") : '<p class="empty">등록된 인기 상품이 없습니다.</p>';
 }
 
 const MEMBERSHIP_TIERS = [

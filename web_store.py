@@ -53,6 +53,7 @@ STATIC = ROOT / "web" / "static"
 WEB_PAGE_ROUTES = {
     "": "index.html",
     "index": "index.html",
+    "store": "store.html",
     "events": "events.html",
     "notices": "notices.html",
     "support": "support.html",
@@ -643,6 +644,7 @@ class StoreServer:
             web.get("/api/me", self.me),
             web.get(r"/api/products/{product_id:\d+}/image", self.product_image),
             web.get("/api/catalog", self.catalog),
+            web.get("/api/popular-products", self.popular_products),
             web.get("/api/reviews", self.reviews),
             web.post("/api/reviews", self.submit_review),
             web.get(r"/api/reviews/{review_id:\d+}/image/{image_index:\d+}", self.review_image),
@@ -1169,6 +1171,33 @@ class StoreServer:
             )
         return web.json_response(
             {"products": [dict(row) for row in rows], "categories": [dict(row) for row in categories]},
+            dumps=lambda value: json.dumps(value, ensure_ascii=False, default=str),
+        )
+
+    async def popular_products(self, request):
+        guild = self._guild()
+        guild_id = guild.id if guild else self.guild_id
+        async with self.bot.db_pool.acquire() as conn:
+            rows = await conn.fetch(
+                """SELECT p.*,c.name AS category_name,parent.name AS parent_category_name,
+                          COALESCE(sales.sold_count,0)::BIGINT AS sold_count
+                   FROM web_products p
+                   LEFT JOIN web_categories c ON c.id=p.category_id
+                   LEFT JOIN web_categories parent ON parent.id=c.parent_id
+                   LEFT JOIN (
+                       SELECT item.product_id,SUM(item.quantity)::BIGINT AS sold_count
+                       FROM web_order_items item
+                       JOIN orders o ON o.order_id=item.order_id AND o.guild_id=$1
+                       WHERE o.status='APPROVED'
+                       GROUP BY item.product_id
+                   ) sales ON sales.product_id=p.id
+                   WHERE p.guild_id=$1 AND p.is_active=TRUE
+                   ORDER BY COALESCE(sales.sold_count,0) DESC,p.updated_at DESC,p.id DESC
+                   LIMIT 4""",
+                guild_id,
+            )
+        return web.json_response(
+            {"products": [dict(row) for row in rows]},
             dumps=lambda value: json.dumps(value, ensure_ascii=False, default=str),
         )
 
