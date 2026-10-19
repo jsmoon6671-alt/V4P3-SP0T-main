@@ -30,7 +30,6 @@ const state = {
   couponEvents: [],
   eventNotices: [],
   notices: [],
-  welcomePending: false,
   chatSessions: [],
   activeChatId: null,
   chatPoll: null,
@@ -212,7 +211,7 @@ function route() {
     if (id === "terms") loadPolicies();
     if (id === "ranking") loadPurchaseRanking();
     if (id === "support") { renderSupportForm(); loadInquiries(); }
-    if (id === "events" && state.me) loadCouponEvents(false);
+    if (id === "events" && state.me) loadCouponEvents();
     if (id === "review-write" && state.me) restoreOrderReviewContext();
     if (id === "notices") loadNoticesPage();
     if (id === "subadmin-panel") openSubadminPanel();
@@ -246,7 +245,7 @@ async function boot() {
     $("#login-button").onclick = () => goToPage("account");
     await loadCart();
     await refreshRegistrationPrompt();
-    try { await loadCouponEvents(true); } catch (error) { toast(error.message); }
+    try { await loadCouponEvents(); } catch (error) { toast(error.message); }
     try {
       const postLoginHash = sessionStorage.getItem("v4p3PostLoginHash");
       if (postLoginHash) {
@@ -267,7 +266,7 @@ async function boot() {
   }
   try { await refreshNoticeIndicators(); } catch (error) { console.error("새 공지 표시를 확인하지 못했습니다.", error); }
   route();
-  if (!state.welcomePending) loadSiteMessages().catch(() => showDiscordNotice());
+  loadSiteMessages().catch(() => showDiscordNotice());
   if (currentPageId() === "home") {
     loadReviews().catch(error => {
       const track = $("#review-track");
@@ -1406,7 +1405,6 @@ function bindForms() {
   });
   if ($("#policy-admin-form")) $("#policy-admin-form").onsubmit = saveAdminPolicies;
   if ($('#coupon-event-admin-form [name="image"]')) $('#coupon-event-admin-form [name="image"]').onchange = previewCouponEventImage;
-  $("#claim-welcome-coupon").onclick = () => claimCouponEvent("WELCOME", true);
   $("#delivery-review-later").onclick = closeDeliveredReviewPrompt;
   $("#delivery-review-write").onclick = () => {
     const modal = $("#delivery-review-modal");
@@ -2373,7 +2371,7 @@ async function createCouponEvent(event) {
     event.target.reset();
     $("#coupon-event-image-preview").hidden = true;
     await loadAdminCouponEvents();
-    await loadCouponEvents(false);
+    await loadCouponEvents();
     toast("이벤트 페이지에 쿠폰을 등록했습니다.");
   } catch (error) { toast(error.message); }
   finally { submit.disabled = false; }
@@ -2414,14 +2412,14 @@ async function deleteAdminCouponEvent(eventKey, title) {
   if (!confirm(`'${title}' 쿠폰을 이벤트창에서 삭제할까요?\n삭제 후에는 새로 받을 수 없으며, 이미 받은 쿠폰은 유지됩니다.`)) return;
   try {
     await api(`/api/admin/coupon-events/${encodeURIComponent(eventKey)}`, { method: "DELETE", body: "{}" });
-    await Promise.all([loadAdminCouponEvents(), loadCouponEvents(false)]);
+    await Promise.all([loadAdminCouponEvents(), loadCouponEvents()]);
     toast("이벤트 쿠폰을 삭제했습니다. 이제 새로 받을 수 없습니다.");
   } catch (error) {
     toast(error.message);
   }
 }
 
-async function loadCouponEvents(showWelcome = false) {
+async function loadCouponEvents() {
   if (!state.me) return;
   const [couponData, noticeData] = await Promise.all([
     api("/api/coupon-events"),
@@ -2429,17 +2427,12 @@ async function loadCouponEvents(showWelcome = false) {
   ]);
   state.couponEvents = couponData.events || [];
   state.eventNotices = (noticeData.notices || []).filter(item => item.notice_type === "EVENT");
-  state.welcomePending = Boolean(couponData.welcome_pending);
   renderCouponEvents();
   updateNoticeIndicators(noticeData.notices || [], state.couponEvents);
-  if (showWelcome && state.welcomePending) {
-    $("#welcome-coupon-modal").hidden = false;
-    document.body.classList.add("modal-open");
-  }
-  if (!showWelcome && currentPageId() === "events") {
+  if (currentPageId() === "events") {
     const latest = Math.max(
       latestUpdate(state.eventNotices, "updated_at"),
-      latestUpdate(state.couponEvents.filter(item => item.event_key !== "WELCOME"), "created_at"),
+      latestUpdate(state.couponEvents, "created_at"),
     );
     if (latest) localStorage.setItem(EVENT_SEEN_KEY, String(latest));
     updateNoticeIndicators();
@@ -2465,7 +2458,7 @@ function renderCouponEvents() {
       <button type="button" class="button ${event.claimed || !event.eligible ? "secondary" : ""}" data-claim-coupon="${escapeHtml(event.event_key)}" ${event.claimed || !event.eligible ? "disabled" : ""}>${event.claimed ? "받은 쿠폰" : event.eligible ? "쿠폰 받기" : "조건 미충족"}</button>
     </article>`).join("") : '<div class="empty">현재 받을 수 있는 이벤트 쿠폰이 없습니다.</div>';
   $$('[data-claim-coupon]', target).forEach(button => {
-    button.onclick = () => claimCouponEvent(button.dataset.claimCoupon, false);
+    button.onclick = () => claimCouponEvent(button.dataset.claimCoupon);
   });
 }
 
@@ -2480,7 +2473,7 @@ function updateNoticeIndicators(notices = state.notices, couponEvents = state.co
   const noticeLatest = latestUpdate(noticeUpdates, "updated_at");
   const eventLatest = Math.max(
     latestUpdate(eventUpdates, "updated_at"),
-    latestUpdate(couponEvents.filter(item => item.event_key !== "WELCOME"), "created_at"),
+    latestUpdate(couponEvents, "created_at"),
   );
   $("#notices-nav-dot").hidden = !noticeLatest || noticeLatest <= Number(localStorage.getItem(NOTICE_SEEN_KEY) || 0);
   $("#events-nav-dot").hidden = !eventLatest || eventLatest <= Number(localStorage.getItem(EVENT_SEEN_KEY) || 0);
@@ -2510,19 +2503,13 @@ async function loadNoticesPage() {
   }
 }
 
-async function claimCouponEvent(eventKey, welcome) {
-  const button = welcome ? $("#claim-welcome-coupon") : $(`[data-claim-coupon="${eventKey}"]`);
+async function claimCouponEvent(eventKey) {
+  const button = $(`[data-claim-coupon="${eventKey}"]`);
   if (button) button.disabled = true;
   try {
     const result = await api(`/api/coupon-events/${encodeURIComponent(eventKey)}/claim`, { method: "POST", body: "{}" });
     toast(`${money(result.discount_amount)} 할인쿠폰을 받았습니다.`);
-    if (welcome) {
-      $("#welcome-coupon-modal").hidden = true;
-      document.body.classList.remove("modal-open");
-      state.welcomePending = false;
-      loadSiteMessages().catch(() => showDiscordNotice());
-    }
-    await loadCouponEvents(false);
+    await loadCouponEvents();
   } catch (error) {
     toast(error.message);
     if (button) button.disabled = false;
@@ -2530,7 +2517,7 @@ async function claimCouponEvent(eventKey, welcome) {
 }
 
 async function checkDeliveredReviewPrompt() {
-  if (!state.me || state.welcomePending) return false;
+  if (!state.me) return false;
   const data = await api("/api/orders");
   const order = (data.orders || []).find(item => (
     item.status === "APPROVED" && item.fulfillment_status === "DELIVERED" && !item.reviewed
