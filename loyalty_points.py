@@ -15,7 +15,7 @@ def maximum_points(balance, amount, allowed=True):
 REVIEW_GUIDE = (
     "## **후기 작성 안내**\n\n"
     "**`/후기작성` 명령어를 사용해 후기와 사진을 함께 작성해 주세요!**\n\n"
-    "**후기 작성 시 랜덤으로 200P \\~ 500P의 포인트가 적립됩니다!**"
+    "**후기 작성 시 랜덤으로 100P \\~ 500P의 포인트가 적립됩니다!**"
 )
 
 
@@ -130,7 +130,7 @@ async def award_review_points(conn, guild_id, user_id, interaction_id):
             INSERT INTO review_point_rewards (guild_id, interaction_id, user_id, points)
             VALUES ($1, $2, $3, $4)
             ON CONFLICT (guild_id, interaction_id) DO NOTHING RETURNING points
-        ''', guild_id, interaction_id, user_id, random.randint(200, 500))
+        ''', guild_id, interaction_id, user_id, random.randint(100, 500))
         if reward is not None:
             await conn.execute('''
                 INSERT INTO point_balances (guild_id, user_id, balance) VALUES ($1, $2, $3)
@@ -192,21 +192,6 @@ async def _refund_points(conn, order):
         await conn.execute('UPDATE orders SET points_refunded = TRUE WHERE order_id = $1', order['order_id'])
 
 
-async def refund_order_benefits(conn, order):
-    """Return every coupon and point benefit reserved by an order.
-
-    The caller must hold the order row lock and run this inside the same
-    transaction as the cancellation/status change so a partially refunded
-    order cannot be left behind.
-    """
-    await _refund_points(conn, order)
-    if order.get('coupon_code'):
-        await conn.execute('''
-            UPDATE web_coupons SET used_order_id = NULL
-            WHERE guild_id = $1 AND used_order_id = $2
-        ''', order['guild_id'], order['order_id'])
-
-
 async def reset_failed_payment(conn, order_id, guild_id):
     async with conn.transaction():
         order = await _lock_order(conn, order_id, guild_id)
@@ -240,7 +225,7 @@ async def resolve_payment(conn, order_id, guild_id, approve):
                 ON CONFLICT (user_id) DO UPDATE SET total_spent = user_info.total_spent + $2
             ''', order['buyer_id'], parse_amount(order['amount']))
         else:
-            await refund_order_benefits(conn, order)
+            await _refund_points(conn, order)
         return order
 
 
@@ -251,7 +236,7 @@ async def cancel_order_record(conn, order_id, guild_id):
             await conn.execute('''
                 UPDATE user_info SET total_spent = GREATEST(total_spent - $2, 0) WHERE user_id = $1
             ''', order['buyer_id'], parse_amount(order['amount']))
-        await refund_order_benefits(conn, order)
+        await _refund_points(conn, order)
         await conn.execute('DELETE FROM orders WHERE order_id = $1', order_id)
         return order
 

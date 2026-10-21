@@ -5,7 +5,6 @@ from chat_points import initialize_chat_points_schema
 from chat_ranking import initialize_chat_ranking_schema
 from join_applications import initialize_join_application_schema
 from loyalty_points import initialize_points_schema
-from web_store import initialize_web_store_schema
 
 
 async def initialize_database(conn):
@@ -14,13 +13,11 @@ async def initialize_database(conn):
             guild_id BIGINT PRIMARY KEY,
             approval_channel_id BIGINT,
             log_channel_id BIGINT,
+            ticket_cat_purchase BIGINT,
             ticket_cat_general BIGINT,
-            ticket_cat_payment BIGINT,
-            ticket_cat_shipping BIGINT,
             ticket_cat_partner BIGINT,
+            archive_cat_purchase BIGINT,
             archive_cat_general BIGINT,
-            archive_cat_payment BIGINT,
-            archive_cat_shipping BIGINT,
             archive_cat_partner BIGINT,
             ticket_log_channel_id BIGINT,
             tier_log_channel_id BIGINT,
@@ -61,8 +58,6 @@ async def initialize_database(conn):
             depositor_name TEXT,
             purchase_log_channel_id BIGINT,
             purchase_log_message_id BIGINT,
-            approval_channel_id BIGINT,
-            approval_message_id BIGINT,
             processed_at TIMESTAMPTZ,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
@@ -114,16 +109,12 @@ async def initialize_database(conn):
         'ALTER TABLE orders ADD COLUMN created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP;',
         'ALTER TABLE orders ADD COLUMN purchase_log_channel_id BIGINT;',
         'ALTER TABLE orders ADD COLUMN purchase_log_message_id BIGINT;',
-        'ALTER TABLE orders ADD COLUMN approval_channel_id BIGINT;',
-        'ALTER TABLE orders ADD COLUMN approval_message_id BIGINT;',
         'ALTER TABLE orders ADD COLUMN processed_at TIMESTAMPTZ;',
+        'ALTER TABLE guild_settings ADD COLUMN ticket_cat_purchase BIGINT;',
         'ALTER TABLE guild_settings ADD COLUMN ticket_cat_general BIGINT;',
-        'ALTER TABLE guild_settings ADD COLUMN ticket_cat_payment BIGINT;',
-        'ALTER TABLE guild_settings ADD COLUMN ticket_cat_shipping BIGINT;',
         'ALTER TABLE guild_settings ADD COLUMN ticket_cat_partner BIGINT;',
+        'ALTER TABLE guild_settings ADD COLUMN archive_cat_purchase BIGINT;',
         'ALTER TABLE guild_settings ADD COLUMN archive_cat_general BIGINT;',
-        'ALTER TABLE guild_settings ADD COLUMN archive_cat_payment BIGINT;',
-        'ALTER TABLE guild_settings ADD COLUMN archive_cat_shipping BIGINT;',
         'ALTER TABLE guild_settings ADD COLUMN archive_cat_partner BIGINT;',
         'ALTER TABLE guild_settings ADD COLUMN ticket_log_channel_id BIGINT;',
         'ALTER TABLE guild_settings ADD COLUMN tier_log_channel_id BIGINT;',
@@ -149,7 +140,6 @@ async def initialize_database(conn):
         'ALTER TABLE guild_settings ADD COLUMN leaderboard_first_user_id BIGINT;',
         'ALTER TABLE guild_settings ADD COLUMN anonymous_role_id BIGINT;',
         'ALTER TABLE guild_settings ADD COLUMN join_log_channel_id BIGINT;',
-        'ALTER TABLE guild_settings ADD COLUMN purchase_verified_role_id BIGINT;',
     ]
     for query in updates:
         try:
@@ -163,4 +153,3 @@ async def initialize_database(conn):
     await initialize_join_application_schema(conn)
     await initialize_admin_roles_schema(conn)
     await initialize_chat_ranking_schema(conn)
-    await initialize_web_store_schema(conn)

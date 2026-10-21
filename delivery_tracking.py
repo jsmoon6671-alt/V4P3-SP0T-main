@@ -22,14 +22,6 @@ LEGACY_CARRIERS = {
     "04": "kr.cjlogistics", "01": "kr.epost",
 }
 
-# Discord와 웹사이트 배송조회 패널에서 동일하게 노출하는 택배사입니다.
-TRACKING_PANEL_CARRIERS = (
-    {"name": "GS편의점택배", "id": "kr.cvsnet", "emoji": "🏪"},
-    {"name": "CU알뜰택배", "id": "kr.cupost", "emoji": "🏪"},
-    {"name": "CJ대한통운", "id": "kr.cjlogistics", "emoji": "🚚"},
-    {"name": "우체국택배", "id": "kr.epost", "emoji": "📮"},
-)
-
 
 class DeliveryTrackingError(Exception):
     """사용자에게 안내할 수 있는 배송조회 오류."""

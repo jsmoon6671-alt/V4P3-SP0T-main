@@ -31,7 +31,7 @@ from loyalty_points import (
     reset_failed_payment, resolve_payment, cancel_order_record, payment_summary, maximum_points, adjust_points,
 )
 from delivery_tracking import (
-    DeliveryTrackingError, TRACKING_PANEL_CARRIERS, format_tracking_result,
+    DeliveryTrackingError, format_tracking_result,
     normalize_waybill, safe_text, track_shipment,
 )
 from review_watermark import ReviewImageError, watermark_review_image
@@ -42,14 +42,7 @@ from chat_ranking import (
     register_chat_ranking_commands,
 )
 from database import initialize_database
-from order_editing import register_order_edit_command
-from order_fulfillment import finalize_approved_order
-from web_store import save_web_review, start_web_store
-from web_order_progress import (
-    WebOrderProgressCog,
-    handle_web_progress_interaction,
-    register_web_order_commands,
-)
+from order_editing import build_purchase_log_payload, register_order_edit_command
 
 # 한국 표준시(KST) 설정
 KST = datetime.timezone(datetime.timedelta(hours=9))
@@ -181,8 +174,6 @@ class MyBot(commands.Bot):
     def __init__(self):
         super().__init__(command_prefix='!', intents=intents, tree_cls=AdminCommandTree)
         self.db_pool = None
-        self.web_store = None
-        self.refresh_purchase_leaderboard = None
 
     async def setup_hook(self):
         # Railway의 DATABASE_URL 환경 변수를 가져와서 PostgreSQL 연결
@@ -200,80 +191,13 @@ class MyBot(commands.Bot):
         if self.db_pool is not None:
             await self.add_cog(ChatPointsCog(self))
             await self.add_cog(ChatRankingCog(self))
-            await self.add_cog(WebOrderProgressCog(self))
-            self.refresh_purchase_leaderboard = update_leaderboard
-            if os.getenv("WEB_STORE_ENABLED", "true").lower() not in {"0", "false", "off", "no"}:
-                self.web_store = await start_web_store(self)
         leaderboard_updater.start()  # 실시간 랭킹 및 인기 품목 루프 시작
         print('✅ 슬래시 명령어 동기화 및 랭킹/인기 시스템이 시작되었습니다!')
 
-    async def close(self):
-        if self.web_store is not None:
-            await self.web_store.close()
-            self.web_store = None
-        if self.db_pool is not None:
-            await self.db_pool.close()
-            self.db_pool = None
-        await super().close()
-
 bot = MyBot()
-
-
-class WebRefundAccountModal(discord.ui.Modal, title="환불계좌 등록"):
-    account = discord.ui.TextInput(
-        label="환불계좌",
-        placeholder="은행명 / 계좌번호 / 예금주",
-        required=True,
-        max_length=150,
-    )
-
-    def __init__(self, order_id: str):
-        super().__init__()
-        self.order_id = order_id
-
-    async def on_submit(self, interaction: discord.Interaction):
-        account = self.account.value.strip()
-        async with bot.db_pool.acquire() as conn:
-            order = await conn.fetchrow(
-                "SELECT buyer_id,product,amount,cash_amount FROM orders WHERE order_id=$1", self.order_id,
-            )
-            if not order or int(order["buyer_id"]) != interaction.user.id:
-                await interaction.response.send_message("❌ 환불 대상 주문을 찾을 수 없습니다.", ephemeral=True)
-                return
-            await conn.execute(
-                "UPDATE user_info SET refund_account=$2 WHERE user_id=$1",
-                interaction.user.id, account,
-            )
-        owner_id = int(os.getenv("BOT_OWNER_ID", "0") or 0)
-        owner = bot.get_user(owner_id) if owner_id else None
-        if owner is None:
-            try:
-                owner = (await bot.application_info()).owner
-            except Exception:
-                owner = None
-        if owner:
-            dm = await owner.create_dm()
-            payload = {
-                "flags": 1 << 15,
-                "components": [{"type": 17, "accent_color": 0x32CD32, "components": [{
-                    "type": 10,
-                    "content": (
-                        "## 💳 주문취소 환불계좌 등록\n\n"
-                        f"`유저` {interaction.user} (`{interaction.user.id}`)\n"
-                        f"`주문` {order['product']}\n`주문 ID` {self.order_id}\n"
-                        f"`환불금액` **{(int(order['cash_amount']) if order['cash_amount'] is not None else parse_amount(order['amount'])):,}원**\n"
-                        f"`환불계좌` {account}"
-                    ),
-                }]}],
-            }
-            await bot.http.request(
-                discord.http.Route("POST", f"/channels/{dm.id}/messages"), json=payload,
-            )
-        await interaction.response.send_message("✅ 환불계좌를 등록했습니다. 확인 후 환불이 진행됩니다.", ephemeral=True)
 register_event_command(bot)
 register_admin_role_command(bot)
 register_chat_ranking_commands(bot)
-register_web_order_commands(bot)
 
 
 # ==========================================
@@ -317,7 +241,12 @@ class TrackingModal(discord.ui.Modal):
 @bot.tree.command(name="배송조회", description="배송 조회 패널을 띄워줍니다.")
 async def send_tracking_panel(interaction: discord.Interaction):
     await interaction.response.defer()
-    carriers = TRACKING_PANEL_CARRIERS
+    carriers = [
+        {"name": "GS반값택배", "id": "kr.cvsnet", "emoji": "🏪"},
+        {"name": "CU알뜰택배", "id": "kr.cupost", "emoji": "🏪"},
+        {"name": "CJ대한통운", "id": "kr.cjlogistics", "emoji": "🚚"},
+        {"name": "우체국택배", "id": "kr.epost", "emoji": "📮"},
+    ]
 
     main_content = (
         "## 📦 배송조회\n\n"
@@ -643,16 +572,15 @@ class UserInfoModal(discord.ui.Modal):
                 SET name = $2, contact = $3, address = $4, cvs = $5;
             ''', interaction.user.id, self.user_name.value, self.contact.value, self.address.value, self.cvs.value)
         
-        await interaction.response.send_message("✅ 배송 정보가 저장되었습니다. 웹사이트 정보등록 화면에도 바로 반영됩니다!", ephemeral=True)
+        await interaction.response.send_message("✅ 배송 정보가 안전하게 저장 및 수정되었습니다!", ephemeral=True)
 
 
-async def _send_info_panel_response(interaction: discord.Interaction):
-    account_url = f"{os.getenv('WEB_PUBLIC_URL', 'https://v4p3sp0t.up.railway.app').rstrip('/')}/account"
+@bot.tree.command(name="정보패널", description="배송 정보 등록 및 관리 패널을 생성합니다.")
+async def send_info_panel(interaction: discord.Interaction):
     info_content = (
         "## VAPE SP0T USER INFO\n\n"
         "구매를 위해 정보를 입력해 주시기 바랍니다.\n"
-        "Discord에서 등록한 기본 배송정보와 웹사이트 정보등록 내용은 서로 연동됩니다.\n"
-        "환불계좌와 환불약관 동의는 웹사이트에서 등록해 주세요.\n\n"
+        "등록된 정보는 배송 및 구매 처리에 사용됩니다.\n\n"
         "- 🕒 빠른 배송을 위한 정보 등록 절차입니다."
     )
     
@@ -696,12 +624,6 @@ async def _send_info_panel_response(interaction: discord.Interaction):
                                 "style": 3,
                                 "label": "정보 조회",
                                 "custom_id": "info_view"
-                            },
-                            {
-                                "type": 2,
-                                "style": 5,
-                                "label": "웹 정보등록",
-                                "url": account_url
                             }
                         ]
                     }
@@ -714,16 +636,6 @@ async def _send_info_panel_response(interaction: discord.Interaction):
         discord.http.Route("POST", f"/interactions/{interaction.id}/{interaction.token}/callback"),
         json={"type": 4, "data": info_payload}
     )
-
-
-@bot.tree.command(name="정보패널", description="배송 정보 등록 및 관리 패널을 생성합니다.")
-async def send_info_panel(interaction: discord.Interaction):
-    await _send_info_panel_response(interaction)
-
-
-@bot.tree.command(name="정보등록", description="웹사이트와 연동되는 배송 정보 등록 패널을 생성합니다.")
-async def send_linked_info_panel(interaction: discord.Interaction):
-    await _send_info_panel_response(interaction)
 
 
 @bot.tree.command(name="포인트조회패널", description="유저가 본인의 현재 포인트를 확인할 패널을 생성합니다. (관리자 전용)")
@@ -1019,15 +931,9 @@ class DepositModal(discord.ui.Modal):
         }])
         admin_payload['allowed_mentions'] = {"parse": []}
         try:
-            approval_message = await interaction.client.http.request(
+            await interaction.client.http.request(
                 discord.http.Route("POST", f"/channels/{self.settings_data['approval_channel_id']}/messages"), json=admin_payload,
             )
-            if approval_message and approval_message.get("id"):
-                async with bot.db_pool.acquire() as conn:
-                    await conn.execute(
-                        "UPDATE orders SET approval_channel_id=$3,approval_message_id=$4 WHERE order_id=$1 AND guild_id=$2",
-                        self.order_id, interaction.guild.id, int(self.settings_data["approval_channel_id"]), int(approval_message["id"]),
-                    )
         except discord.HTTPException:
             async with bot.db_pool.acquire() as conn:
                 await reset_failed_payment(conn, self.order_id, interaction.guild.id)
@@ -1055,7 +961,7 @@ class DepositModal(discord.ui.Modal):
         )
 
 
-@bot.tree.command(name="운송장", description="배송문의 티켓과 구매자 DM으로 운송장 발급 안내를 전송합니다. (관리자 전용)")
+@bot.tree.command(name="운송장", description="구매 티켓과 구매자 DM으로 운송장 발급 안내를 전송합니다. (관리자 전용)")
 @app_commands.describe(
     유저="운송장을 발급받을 구매자를 선택해 주세요.",
     주문번호="해당 구매자의 주문번호를 입력해 주세요.",
@@ -1072,7 +978,7 @@ async def issue_waybill(
         return
 
     if interaction.guild is None or not interaction.channel:
-        await interaction.response.send_message("❌ 서버의 배송문의 티켓 채널에서 사용해 주세요.", ephemeral=True)
+        await interaction.response.send_message("❌ 서버의 구매 티켓 채널에서 사용해 주세요.", ephemeral=True)
         return
 
     try:
@@ -1095,7 +1001,7 @@ async def issue_waybill(
         )
         order = await conn.fetchrow(
             """
-            SELECT order_id, shipping_method FROM orders
+            SELECT order_id FROM orders
             WHERE order_id = $1 AND guild_id = $2 AND buyer_id = $3
             """,
             order_id,
@@ -1103,8 +1009,8 @@ async def issue_waybill(
             유저.id,
         )
 
-    if not ticket or ticket['ticket_type'] != 'shipping':
-        await interaction.followup.send("❌ 배송문의 티켓 채널에서만 사용할 수 있습니다.", ephemeral=True)
+    if not ticket or ticket['ticket_type'] != 'purchase':
+        await interaction.followup.send("❌ 구매문의 티켓 채널에서만 사용할 수 있습니다.", ephemeral=True)
         return
 
     if ticket['user_id'] != 유저.id:
@@ -1117,18 +1023,6 @@ async def issue_waybill(
             ephemeral=True,
         )
         return
-
-    shipping_method = str(order['shipping_method'] or '')
-    carrier_id = (
-        'kr.cvsnet' if 'GS25' in shipping_method
-        else 'kr.cupost' if 'CU' in shipping_method
-        else None
-    )
-    async with bot.db_pool.acquire() as conn:
-        await conn.execute(
-            'UPDATE orders SET waybill_number = $2, carrier_id = $3 WHERE order_id = $1',
-            order_id, waybill_number, carrier_id,
-        )
 
     message = (
         f"**- {유저.mention} 귀하의 운송장이 발급되었습니다.\n"
@@ -1525,14 +1419,37 @@ async def cancel_order(interaction: discord.Interaction, 주문번호: str):
         
     await update_leaderboard(interaction.guild.id)
     
-    await interaction.followup.send(f"✅ `{주문번호}` 주문이 삭제(취소)되었으며, 사용한 쿠폰·포인트와 해당 유저의 누적 금액 및 역할이 정상적으로 롤백되었습니다.", ephemeral=True)
+    await interaction.followup.send(f"✅ `{주문번호}` 주문이 삭제(취소)되었으며, 해당 유저의 누적 금액 및 역할이 정상적으로 롤백되었습니다.", ephemeral=True)
 
 
 # ==========================================
 # [기능 5] 문의 티켓 시스템 (모달 및 생성)
 # ==========================================
+PURCHASE_INFO_FIELDS = ("name", "contact", "address", "cvs")
+
+
+def has_complete_purchase_info(user_data) -> bool:
+    """구매 배송에 필요한 정보가 모두 등록되어 있는지 확인합니다."""
+    if not user_data:
+        return False
+
+    try:
+        return all(str(user_data[field] or "").strip() for field in PURCHASE_INFO_FIELDS)
+    except (KeyError, TypeError):
+        return False
+
+
+def build_missing_purchase_info_notice(user_id: int) -> str:
+    return (
+        "## ⚠️ 구매자 정보 미등록\n\n"
+        f"<@{user_id}>님, 아직 배송 정보가 등록되지 않았습니다!\n"
+        "빠른 발송을 위해 채널 밖에서 <#1553664818349608960> 채널에서 [정보 등록] 버튼을 눌러 배송지를 등록해 주세요."
+    )
+
+
 async def create_ticket_channel(interaction: discord.Interaction, t_type: str, type_kr: str, form_answers: dict):
     await interaction.response.defer(ephemeral=True)
+    purchase_info_missing = False
     
     async with bot.db_pool.acquire() as conn:
         settings = await conn.fetchrow('SELECT * FROM guild_settings WHERE guild_id = $1', interaction.guild.id)
@@ -1607,78 +1524,74 @@ async def create_ticket_channel(interaction: discord.Interaction, t_type: str, t
             json=welcome_payload
         )
         
+        if t_type == "purchase":
+            user_data = await conn.fetchrow('SELECT * FROM user_info WHERE user_id = $1', interaction.user.id)
+            
+            if has_complete_purchase_info(user_data):
+                info_content = (
+                    "## 📋 구매자 등록 배송 정보\n\n"
+                    "`👤`**이름:** `" + user_data['name'] + "`\n\n"
+                    "`📞`**연락처:** `" + user_data['contact'] + "`\n\n"
+                    "`🏠`**주소:** `" + user_data['address'] + "`\n\n"
+                    "`🏪`**편의점:** `" + user_data['cvs'] + "`\n\n"
+                    "-# 💡 관리자는 위 정보를 바탕으로 상품을 발송합니다."
+                )
+                info_payload = {
+                    "flags": 1 << 15,
+                    "components": [
+                        {
+                            "type": 17,
+                            "accent_color": 0x32CD32,
+                            "components": [
+                                {
+                                    "type": 10,
+                                    "content": info_content
+                                }
+                            ]
+                        }
+                    ]
+                }
+
+                await interaction.client.http.request(
+                    discord.http.Route("POST", f"/channels/{ticket_channel.id}/messages"),
+                    json=info_payload
+                )
+            else:
+                purchase_info_missing = True
+                
         await interaction.followup.send(f"✅ 티켓이 정상적으로 생성되었습니다: {ticket_channel.mention}", ephemeral=True)
 
-
-@bot.tree.command(name="강제티켓", description="관리자가 지정한 유저의 문의 티켓을 강제로 생성합니다.")
-@app_commands.describe(유저="티켓을 열 유저", 티켓유형="생성할 티켓 유형", 사유="강제로 티켓을 여는 사유", 내용="티켓에 기록할 문의 내용")
-@app_commands.choices(티켓유형=[
-    app_commands.Choice(name="일반문의", value="general"),
-    app_commands.Choice(name="입금문의", value="payment"),
-    app_commands.Choice(name="배송문의", value="shipping"),
-    app_commands.Choice(name="제휴문의", value="partner"),
-])
-async def force_ticket(interaction: discord.Interaction, 유저: discord.Member, 티켓유형: app_commands.Choice[str], 사유: str, 내용: str):
-    if not interaction.user.guild_permissions.administrator:
-        await interaction.response.send_message("❌ 관리자만 강제 티켓을 생성할 수 있습니다.", ephemeral=True)
-        return
-    if not bot.db_pool:
-        await interaction.response.send_message("❌ DB 오류가 발생했습니다.", ephemeral=True)
-        return
-    reason, content = 사유.strip(), 내용.strip()
-    if not reason or not content:
-        await interaction.response.send_message("❌ 사유와 내용을 모두 입력해 주세요.", ephemeral=True)
-        return
-    await interaction.response.defer(ephemeral=True)
-    type_labels = {"general": "일반문의", "payment": "입금문의", "shipping": "배송문의", "partner": "제휴문의"}
-    ticket_type = 티켓유형.value
-    async with bot.db_pool.acquire() as conn:
-        settings = await conn.fetchrow("SELECT * FROM guild_settings WHERE guild_id=$1", interaction.guild.id)
-        category_id = settings.get(f"ticket_cat_{ticket_type}") if settings else None
-        category = interaction.guild.get_channel(category_id) if category_id else None
-        if not isinstance(category, discord.CategoryChannel):
-            await interaction.followup.send(f"❌ {type_labels[ticket_type]} 카테고리가 설정되지 않았습니다.", ephemeral=True)
-            return
-        ticket_count = await conn.fetchval("SELECT COUNT(*) FROM tickets")
-        overwrites = dict(category.overwrites)
-        overwrites[유저] = discord.PermissionOverwrite(view_channel=True, read_messages=True, send_messages=True)
-        try:
-            ticket_channel = await interaction.guild.create_text_channel(
-                name=f"{type_labels[ticket_type]}-{유저.name}-{int(ticket_count or 0) + 1:04d}",
-                category=category,
-                overwrites=overwrites,
+        if purchase_info_missing:
+            await interaction.followup.send(
+                build_missing_purchase_info_notice(interaction.user.id),
+                ephemeral=True,
+                allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False)
             )
-        except (discord.Forbidden, discord.HTTPException):
-            await interaction.followup.send("❌ 티켓 채널을 생성하지 못했습니다. 봇 권한을 확인해 주세요.", ephemeral=True)
-            return
-        await conn.execute(
-            "INSERT INTO tickets (channel_id,user_id,ticket_type) VALUES ($1,$2,$3)",
-            ticket_channel.id, 유저.id, ticket_type,
-        )
-    ticket_payload = create_v2_payload(
-        f"## 🎫 관리자가 {type_labels[ticket_type]} 티켓을 생성했습니다\n\n"
-        f"**대상 유저:** {유저.mention} (`{유저.id}`)\n"
-        f"**생성 관리자:** {interaction.user.mention}\n"
-        f"**사유:** {discord.utils.escape_markdown(reason[:500])}\n\n"
-        f"### 문의 내용\n{discord.utils.escape_markdown(content[:2500])}",
-        extra_components=[{"type": 1, "components": [{"type": 2, "style": 4, "label": "티켓 닫기", "custom_id": "ticket_close"}]}],
+
+
+class PurchaseTicketModal(discord.ui.Modal, title="💳 구매 문의 작성"):
+    product = discord.ui.TextInput(
+        label="구매상품", 
+        required=True
     )
-    ticket_payload["allowed_mentions"] = {"parse": [], "users": [str(유저.id), str(interaction.user.id)]}
-    await interaction.client.http.request(discord.http.Route("POST", f"/channels/{ticket_channel.id}/messages"), json=ticket_payload)
-    try:
-        await 유저.send(
-            f"V4P3 SP0T 관리자가 {type_labels[ticket_type]} 티켓을 생성했습니다.\n사유: {reason}\n티켓: https://discord.com/channels/{interaction.guild.id}/{ticket_channel.id}",
-            allowed_mentions=discord.AllowedMentions.none(),
-        )
-    except (discord.Forbidden, discord.HTTPException):
-        pass
-    await interaction.followup.send(f"✅ {유저.mention}님의 티켓을 생성했습니다: {ticket_channel.mention}", ephemeral=True)
+    quantity = discord.ui.TextInput(
+        label="수량", 
+        placeholder="1", 
+        required=True
+    )
+    
+    async def on_submit(self, interaction: discord.Interaction):
+        answers = {
+            "구매상품": self.product.value, 
+            "수량": self.quantity.value
+        }
+        await create_ticket_channel(interaction, "purchase", "구매문의", answers)
 
 
 class GeneralTicketModal(discord.ui.Modal, title="💌 일반 문의 작성"):
     content = discord.ui.TextInput(
-        label="문의내용",
-        style=discord.TextStyle.paragraph,
+        label="문의내용", 
+        style=discord.TextStyle.paragraph, 
         required=True
     )
     
@@ -1687,46 +1600,6 @@ class GeneralTicketModal(discord.ui.Modal, title="💌 일반 문의 작성"):
             "문의내용": self.content.value
         }
         await create_ticket_channel(interaction, "general", "일반문의", answers)
-
-
-class PaymentTicketModal(discord.ui.Modal, title="💳 입금 문의 작성"):
-    order_id = discord.ui.TextInput(
-        label="주문번호",
-        placeholder="주문번호가 없다면 없음이라고 입력해 주세요.",
-        required=True,
-    )
-    content = discord.ui.TextInput(
-        label="문의내용",
-        style=discord.TextStyle.paragraph,
-        required=True,
-    )
-
-    async def on_submit(self, interaction: discord.Interaction):
-        answers = {
-            "주문번호": self.order_id.value,
-            "문의내용": self.content.value,
-        }
-        await create_ticket_channel(interaction, "payment", "입금문의", answers)
-
-
-class ShippingTicketModal(discord.ui.Modal, title="🚚 배송 문의 작성"):
-    order_id = discord.ui.TextInput(
-        label="주문번호",
-        placeholder="확인할 주문번호를 입력해 주세요.",
-        required=True,
-    )
-    content = discord.ui.TextInput(
-        label="문의내용",
-        style=discord.TextStyle.paragraph,
-        required=True,
-    )
-
-    async def on_submit(self, interaction: discord.Interaction):
-        answers = {
-            "주문번호": self.order_id.value,
-            "문의내용": self.content.value,
-        }
-        await create_ticket_channel(interaction, "shipping", "배송문의", answers)
 
 
 class PartnerTicketModal(discord.ui.Modal, title="🤝 제휴 문의 작성"):
@@ -1748,51 +1621,35 @@ class PartnerTicketModal(discord.ui.Modal, title="🤝 제휴 문의 작성"):
 
 
 @bot.tree.command(name="티켓카테고리", description="티켓 카테고리를 설정합니다.")
-async def set_ticket_cat(
-    interaction: discord.Interaction,
-    일반문의_카테고리: discord.CategoryChannel,
-    입금문의_카테고리: discord.CategoryChannel,
-    배송문의_카테고리: discord.CategoryChannel,
-    제휴문의_카테고리: discord.CategoryChannel,
-):
+async def set_ticket_cat(interaction: discord.Interaction, 구매문의_카테고리: discord.CategoryChannel, 일반문의_카테고리: discord.CategoryChannel, 제휴문의_카테고리: discord.CategoryChannel):
     if not bot.db_pool: 
         await interaction.response.send_message("❌ DB 오류가 발생했습니다.", ephemeral=True)
         return
         
     async with bot.db_pool.acquire() as conn:
         await conn.execute('''
-            INSERT INTO guild_settings (guild_id, ticket_cat_general, ticket_cat_payment, ticket_cat_shipping, ticket_cat_partner)
-            VALUES ($1, $2, $3, $4, $5)
+            INSERT INTO guild_settings (guild_id, ticket_cat_purchase, ticket_cat_general, ticket_cat_partner) 
+            VALUES ($1, $2, $3, $4) 
             ON CONFLICT (guild_id) DO UPDATE 
-            SET ticket_cat_general = $2, ticket_cat_payment = $3,
-                ticket_cat_shipping = $4, ticket_cat_partner = $5;
-        ''', interaction.guild.id, 일반문의_카테고리.id, 입금문의_카테고리.id,
-             배송문의_카테고리.id, 제휴문의_카테고리.id)
+            SET ticket_cat_purchase = $2, ticket_cat_general = $3, ticket_cat_partner = $4;
+        ''', interaction.guild.id, 구매문의_카테고리.id, 일반문의_카테고리.id, 제휴문의_카테고리.id)
         
     await interaction.response.send_message("✅ 카테고리 설정 완료!", ephemeral=True)
 
 
 @bot.tree.command(name="보관카테고리", description="닫힌 티켓 보관 카테고리를 설정합니다.")
-async def set_archive_cat(
-    interaction: discord.Interaction,
-    일반문의_보관: discord.CategoryChannel,
-    입금문의_보관: discord.CategoryChannel,
-    배송문의_보관: discord.CategoryChannel,
-    제휴문의_보관: discord.CategoryChannel,
-):
+async def set_archive_cat(interaction: discord.Interaction, 구매문의_보관: discord.CategoryChannel, 일반문의_보관: discord.CategoryChannel, 제휴문의_보관: discord.CategoryChannel):
     if not bot.db_pool: 
         await interaction.response.send_message("❌ DB 오류가 발생했습니다.", ephemeral=True)
         return
         
     async with bot.db_pool.acquire() as conn:
         await conn.execute('''
-            INSERT INTO guild_settings (guild_id, archive_cat_general, archive_cat_payment, archive_cat_shipping, archive_cat_partner)
-            VALUES ($1, $2, $3, $4, $5)
+            INSERT INTO guild_settings (guild_id, archive_cat_purchase, archive_cat_general, archive_cat_partner) 
+            VALUES ($1, $2, $3, $4) 
             ON CONFLICT (guild_id) DO UPDATE 
-            SET archive_cat_general = $2, archive_cat_payment = $3,
-                archive_cat_shipping = $4, archive_cat_partner = $5;
-        ''', interaction.guild.id, 일반문의_보관.id, 입금문의_보관.id,
-             배송문의_보관.id, 제휴문의_보관.id)
+            SET archive_cat_purchase = $2, archive_cat_general = $3, archive_cat_partner = $4;
+        ''', interaction.guild.id, 구매문의_보관.id, 일반문의_보관.id, 제휴문의_보관.id)
         
     await interaction.response.send_message("✅ 보관 카테고리 설정 완료!", ephemeral=True)
 
@@ -1802,17 +1659,85 @@ async def set_ticket_log_chan(interaction: discord.Interaction, 채널: discord.
     await update_setting(interaction, "ticket_log_channel_id", 채널.id, f"✅ 로그 채널 설정이 {채널.mention}(으)로 완료되었습니다.")
 
 
+PURCHASE_TICKET_STATUSES = ("구매완료", "배송준비중", "배송중", "배송완료")
+PURCHASE_TICKET_PREFIXES = ("구매문의",) + PURCHASE_TICKET_STATUSES
+
+
+def purchase_ticket_status_name(channel_name: str, status: str) -> str:
+    if status not in PURCHASE_TICKET_STATUSES:
+        raise ValueError("지원하지 않는 티켓 상태입니다.")
+    current_prefix, separator, suffix = channel_name.partition("-")
+    if not separator or not suffix or current_prefix not in PURCHASE_TICKET_PREFIXES:
+        raise ValueError("구매문의 티켓 채널 이름을 확인할 수 없습니다.")
+    updated_name = f"{status}-{suffix}"
+    if len(updated_name) > 100:
+        raise ValueError("변경할 채널 이름이 Discord의 100자 제한을 초과합니다.")
+    return updated_name
+
+
+@bot.tree.command(name="티켓상태", description="현재 구매문의 티켓의 상태를 변경합니다. (관리자 전용)")
+@app_commands.describe(상태="채널 이름에 표시할 구매 처리 상태")
+@app_commands.choices(상태=[
+    app_commands.Choice(name="구매완료", value="구매완료"),
+    app_commands.Choice(name="배송준비중", value="배송준비중"),
+    app_commands.Choice(name="배송중", value="배송중"),
+    app_commands.Choice(name="배송완료", value="배송완료"),
+])
+async def set_ticket_status(interaction: discord.Interaction, 상태: app_commands.Choice[str]):
+    if bot.db_pool is None:
+        await interaction.response.send_message("❌ 데이터베이스가 연결되지 않았습니다.", ephemeral=True)
+        return
+
+    async with bot.db_pool.acquire() as conn:
+        ticket = await conn.fetchrow(
+            'SELECT ticket_type FROM tickets WHERE channel_id = $1', interaction.channel.id
+        )
+
+    if ticket is None:
+        await interaction.response.send_message("❌ 이 명령어는 봇이 생성한 티켓 채널에서만 사용할 수 있습니다.", ephemeral=True)
+        return
+    if ticket['ticket_type'] != "purchase":
+        await interaction.response.send_message("❌ 구매문의 티켓에서만 상태를 변경할 수 있습니다.", ephemeral=True)
+        return
+
+    try:
+        new_name = purchase_ticket_status_name(interaction.channel.name, 상태.value)
+    except ValueError as error:
+        await interaction.response.send_message(f"❌ {error}", ephemeral=True)
+        return
+
+    if new_name == interaction.channel.name:
+        await interaction.response.send_message(f"✅ 이미 **{상태.value}** 상태입니다.", ephemeral=True)
+        return
+
+    old_name = interaction.channel.name
+    try:
+        await interaction.channel.edit(
+            name=new_name,
+            reason=f"{interaction.user}님이 구매 티켓 상태를 {상태.value}(으)로 변경",
+        )
+    except discord.Forbidden:
+        await interaction.response.send_message("❌ 봇에 채널 관리 권한이 없어 이름을 변경할 수 없습니다.", ephemeral=True)
+        return
+    except discord.HTTPException:
+        await interaction.response.send_message("❌ Discord에서 채널 이름을 변경하지 못했습니다. 잠시 후 다시 시도해 주세요.", ephemeral=True)
+        return
+
+    await interaction.response.send_message(
+        f"✅ 티켓 상태를 **{상태.value}**(으)로 변경했습니다.\n`{old_name}` → `{new_name}`",
+        ephemeral=True,
+    )
+
+
 @bot.tree.command(name="문의패널", description="문의(티켓) 생성 패널을 띄웁니다.")
 async def send_support_panel(interaction: discord.Interaction):
     support_content = (
         "## VAPE SP0T SUPPORT\n\n"
         "- 아래에서 문의 유형을 선택하여 티켓을 열어 주시기 바랍니다.\n\n"
+        "- `💳`구매문의\n"
+        "> 전담, 상단배너 구매를 위한 티켓입니다.\n\n"
         "- `💌`일반문의\n"
         "> 질문 또는 후원 등 기타 문의를 위한 티켓입니다.\n\n"
-        "- `💳`입금문의\n"
-        "> 입금 확인 및 결제 관련 문의를 위한 티켓입니다.\n\n"
-        "- `🚚`배송문의\n"
-        "> 배송 현황 및 운송장 관련 문의를 위한 티켓입니다.\n\n"
         "- `🤝`제휴문의\n"
         "> 파트너 또는 제휴상단 문의를 위한 티켓입니다.\n\n"
         "-# 티켓을 여신 후 10분 동안 응답이 없을 경우 티켓이 자동으로 닫힙니다.\n"
@@ -1840,22 +1765,16 @@ async def send_support_panel(interaction: discord.Interaction):
                                 "placeholder": "티켓 유형을 선택해 주세요", 
                                 "options": [
                                     {
+                                        "label": "구매문의", 
+                                        "value": "purchase", 
+                                        "description": "전담, 상단배너를 구매하는 티켓입니다.", 
+                                        "emoji": {"name": "💳"}
+                                    },
+                                    {
                                         "label": "일반문의", 
                                         "value": "general", 
                                         "description": "질문 혹은 후원 등 기타 문의를 담당하는 티켓입니다.", 
                                         "emoji": {"name": "💌"}
-                                    },
-                                    {
-                                        "label": "입금문의",
-                                        "value": "payment",
-                                        "description": "입금 확인 및 결제 관련 문의를 담당합니다.",
-                                        "emoji": {"name": "💳"}
-                                    },
-                                    {
-                                        "label": "배송문의",
-                                        "value": "shipping",
-                                        "description": "배송 현황 및 운송장 관련 문의를 담당합니다.",
-                                        "emoji": {"name": "🚚"}
                                     },
                                     {
                                         "label": "제휴문의", 
@@ -2407,13 +2326,12 @@ class TierSetupGroup(app_commands.Group):
             
         async with bot.db_pool.acquire() as conn:
             await conn.execute('''
-                INSERT INTO vip_tiers (guild_id, role_id, required_amount)
-                VALUES ($1, $2, $3)
-                ON CONFLICT (guild_id, role_id) DO UPDATE SET
-                    required_amount = EXCLUDED.required_amount;
+                INSERT INTO vip_tiers (guild_id, role_id, required_amount) 
+                VALUES ($1, $2, $3) 
+                ON CONFLICT (guild_id, role_id) DO UPDATE SET required_amount = $3;
             ''', interaction.guild.id, 역할.id, 누적구매액수)
             
-        await interaction.response.send_message(f"✅ {역할.mention} 등급이 `{누적구매액수:,}원` 조건으로 설정되었습니다.", ephemeral=True)
+        await interaction.response.send_message(f"✅ {역할.mention} 등급이 `{누적구매액수:,}원` 조건으로 설정 완료되었습니다.", ephemeral=True)
 
     @app_commands.command(name="삭제", description="기존 등급을 삭제합니다.")
     async def delete_tier(self, interaction: discord.Interaction, 역할: discord.Role):
@@ -2853,30 +2771,14 @@ async def write_review(
 
     # 1. 후기 등록
     route = discord.http.Route("POST", f"/channels/{review_channel.id}/messages")
-    sent_review = None
     if watermarked_file:
         with discord.http.handle_message_parameters(file=watermarked_file) as params:
             params.multipart[0]["value"] = json.dumps(
                 review_payload, ensure_ascii=False, separators=(",", ":")
             )
-            sent_review = await interaction.client.http.request(route, files=params.files, form=params.multipart)
+            await interaction.client.http.request(route, files=params.files, form=params.multipart)
     else:
-        sent_review = await interaction.client.http.request(route, json=review_payload)
-
-    # 웹 스토어의 후기 영역에서도 같은 후기를 사용할 수 있도록 함께 저장합니다.
-    try:
-        message_id = int((sent_review or {}).get("id") or interaction.id)
-        sent_attachments = (sent_review or {}).get("attachments") or []
-        image_url = ""
-        if sent_attachments:
-            image_url = str(sent_attachments[0].get("url") or sent_attachments[0].get("proxy_url") or "")
-        async with bot.db_pool.acquire() as conn:
-            await save_web_review(
-                conn, interaction.guild.id, message_id, interaction.user.id,
-                별점.value, real_review_content, image_url,
-            )
-    except Exception:
-        logging.exception("웹 구매후기 저장 실패: interaction=%s", interaction.id)
+        await interaction.client.http.request(route, json=review_payload)
     
     reward_text = ""
     try:
@@ -2968,8 +2870,8 @@ async def create_device_price_post(
     content = (
         f"- 가격 : {가격} ( 택배비, 수수료 포함 )\n"
         f"- 색상 : {real_colors}\n"
-        "- 구매 안내 : <#1553664487117168640>\n"
-        "** 구매는 웹사이트에서 진행해 주세요. **\n"
+        "- 구매문의 : <#1553664487117168640>\n"
+        "** 품절 현황은 티켓에서! **\n"
         "-# <a:__:1553621821268697128> 재고 및 가격은 GS와 CU가 다를 수 있습니다."
     )
     
@@ -3019,8 +2921,8 @@ async def create_disposable_price_post(
     content = (
         f"- 가격 : {가격} ( 택배비, 수수료 포함 )\n"
         f"- 맛 : {real_flavors}\n"
-        "- 구매 안내 : <#1553664487117168640>\n"
-        "** 구매는 웹사이트에서 진행해 주세요. **\n"
+        "- 구매문의 : <#1553664487117168640>\n"
+        "** 품절 현황은 티켓에서! **\n"
         "-# <a:__:1553621821268697128> 재고 및 가격은 GS와 CU가 다를 수 있습니다."
     )
 
@@ -3073,8 +2975,8 @@ async def create_liquid_price_post(
     content = (
         f"- 가격 : {가격} ( 택배비, 수수료 포함 )\n"
         f"- 맛 : {real_flavors}\n"
-        "- 구매 안내 : <#1553664487117168640>\n"
-        "** 구매는 웹사이트에서 진행해 주세요. **\n"
+        "- 구매문의 : <#1553664487117168640>\n"
+        "** 품절 현황은 티켓에서! **\n"
         "-# <a:__:1553621821268697128> 재고 및 가격은 GS와 CU가 다를 수 있습니다."
     )
     
@@ -3138,16 +3040,16 @@ async def restore_price_lists(interaction: discord.Interaction, 채널: discord.
             content = (
                 f"- 가격 : {price} ( 택배비, 수수료 포함 )\n"
                 f"- 색상 : {real_options}\n"
-                "- 구매 안내 : <#1553664487117168640>\n"
-                "** 구매는 웹사이트에서 진행해 주세요. **\n"
+                "- 구매문의 : <#1553664487117168640>\n"
+                "** 품절 현황은 티켓에서! **\n"
                 "-# <a:__:1553621821268697128> 재고 및 가격은 GS와 CU가 다를 수 있습니다."
             )
         elif p_type in ('액상', '일회용'):
             content = (
                 f"- 가격 : {price} ( 택배비, 수수료 포함 )\n"
                 f"- 맛 : {real_options}\n"
-                "- 구매 안내 : <#1553664487117168640>\n"
-                "** 구매는 웹사이트에서 진행해 주세요. **\n"
+                "- 구매문의 : <#1553664487117168640>\n"
+                "** 품절 현황은 티켓에서! **\n"
                 "-# <a:__:1553621821268697128> 재고 및 가격은 GS와 CU가 다를 수 있습니다."
             )
         else:
@@ -3184,33 +3086,11 @@ async def restore_price_lists(interaction: discord.Interaction, 채널: discord.
 # [기능 9] 모든 버튼/드롭다운 클릭 이벤트 통제 센터
 # ==========================================
 @bot.event
-async def on_message(message: discord.Message):
-    if bot.web_store is not None:
-        try:
-            handled = await bot.web_store.handle_discord_chat_message(message)
-            if handled:
-                return
-        except Exception:
-            logging.exception("웹 실시간 상담 메시지 연동 실패: channel=%s", message.channel.id)
-    await bot.process_commands(message)
-
-
-@bot.event
 async def on_interaction(interaction: discord.Interaction):
     if interaction.type != discord.InteractionType.component: 
         return
         
     custom_id = interaction.data.get("custom_id", "")
-
-    if bot.web_store is not None and await bot.web_store.handle_discord_chat_interaction(interaction):
-        return
-
-    if custom_id.startswith("web_refund_account:"):
-        await interaction.response.send_modal(WebRefundAccountModal(custom_id.split(":", 1)[1]))
-        return
-
-    if await handle_web_progress_interaction(interaction, bot):
-        return
 
     if custom_id.startswith("chat_rank_page:"):
         await handle_rank_page(interaction, bot)
@@ -3272,15 +3152,7 @@ async def on_interaction(interaction: discord.Interaction):
                 point_balance = await get_balance(conn, interaction.guild.id, interaction.user.id)
                 if not user_data:
                     user_data = {"name": "미등록", "contact": "미등록", "address": "미등록",
-                                 "cvs": "미등록", "cvs_brand": "", "cvs_address": "",
-                                 "refund_bank": "", "refund_account_number": "", "refund_account_holder": ""}
-                convenience_store = " · ".join(filter(None, (
-                    user_data.get("cvs_brand"), user_data.get("cvs"), user_data.get("cvs_address"),
-                ))) or "미등록"
-                refund_account = " · ".join(filter(None, (
-                    user_data.get("refund_bank"), user_data.get("refund_account_number"),
-                    user_data.get("refund_account_holder"),
-                ))) or "미등록"
+                                 "cvs": "미등록"}
                 
                 view_content = (
                     "## 📋 내 정보 조회\n\n"
@@ -3293,10 +3165,7 @@ async def on_interaction(interaction: discord.Interaction):
                     "`🏠`**주소**\n"
                     f"`{user_data['address']}`\n\n"
                     "`🏪`**편의점**\n"
-                    f"`{convenience_store}`\n\n"
-                    "`💳`**환불계좌**\n"
-                    f"`{refund_account}`\n\n"
-                    "> Discord와 웹사이트의 정보등록 내용은 같은 계정 정보로 연동됩니다."
+                    f"`{user_data['cvs']}`"
                 )
                 
                 view_payload = {
@@ -3325,19 +3194,12 @@ async def on_interaction(interaction: discord.Interaction):
     # 티켓 생성 드롭다운
     if custom_id == "select_ticket_type":
         t_type = interaction.data["values"][0]
-        if t_type == "general":
+        if t_type == "purchase": 
+            await interaction.response.send_modal(PurchaseTicketModal())
+        elif t_type == "general": 
             await interaction.response.send_modal(GeneralTicketModal())
-        elif t_type == "payment":
-            await interaction.response.send_modal(PaymentTicketModal())
-        elif t_type == "shipping":
-            await interaction.response.send_modal(ShippingTicketModal())
-        elif t_type == "partner":
+        elif t_type == "partner": 
             await interaction.response.send_modal(PartnerTicketModal())
-        else:
-            await interaction.response.send_message(
-                "❌ 이전 문의 패널입니다. 새로 등록된 문의 패널을 이용해 주세요.",
-                ephemeral=True,
-            )
         return
 
     # 티켓 닫기 버튼
@@ -3578,66 +3440,206 @@ async def on_interaction(interaction: discord.Interaction):
         action, order_id = custom_id.split("_", 1)
         await interaction.response.defer()
         async with bot.db_pool.acquire() as conn:
+            settings = await conn.fetchrow('SELECT * FROM guild_settings WHERE guild_id = $1', interaction.guild.id)
             try:
-                order = await resolve_payment(conn, order_id, interaction.guild.id, action == "approve")
+                order = await resolve_payment(conn, order_id, interaction.guild.id, action == 'approve')
             except PointsError as exc:
                 await interaction.followup.send(f"❌ {exc}", ephemeral=True)
                 return
+            if action == 'approve':
+                amount_int = parse_amount(order['amount'])
+                user_info_row = await conn.fetchrow('SELECT total_spent FROM user_info WHERE user_id = $1', order['buyer_id'])
+                current_total = user_info_row['total_spent'] if user_info_row else amount_int
+                member = interaction.guild.get_member(order['buyer_id'])
+                
+                if member and current_total >= 1 and settings and settings.get('buyer_role_id'):
+                    b_role = interaction.guild.get_role(settings['buyer_role_id'])
+                    if b_role and b_role not in member.roles:
+                        try: 
+                            await member.add_roles(b_role)
+                        except Exception as e: 
+                            pass
 
-        if action == "approve":
-            try:
-                await finalize_approved_order(
-                    bot,
-                    order,
-                    processor="수동승인",
-                    processor_user_id=interaction.user.id,
-                )
-            except Exception:
-                logging.exception("수동승인 후 공통 승인 처리 실패: order=%s", order_id)
-                await interaction.followup.send(
-                    "⚠️ 주문은 승인됐지만 일부 후속 처리에 실패했습니다. 로그를 확인해 주세요.",
-                    ephemeral=True,
-                )
-            return
+                tiers = await conn.fetch('SELECT role_id, required_amount FROM vip_tiers WHERE guild_id = $1 ORDER BY required_amount DESC', interaction.guild.id)
+                target_role_id = None
+                
+                for t in tiers:
+                    if current_total >= t['required_amount']:
+                        target_role_id = t['role_id']
+                        break
+                        
+                if target_role_id and member:
+                    role = interaction.guild.get_role(target_role_id)
+                    if role and role not in member.roles:
+                        try:
+                            await member.add_roles(role)
+                            
+                            if settings and settings.get('tier_log_channel_id'):
+                                tier_channel = interaction.guild.get_channel(settings['tier_log_channel_id'])
+                                if tier_channel:
+                                    tier_payload = create_tier_upgrade_payload(
+                                        order['buyer_id'], role.mention, current_total
+                                    )
+                                    
+                                    await interaction.client.http.request(
+                                        discord.http.Route("POST", f"/channels/{tier_channel.id}/messages"),
+                                        json=tier_payload
+                                    )
+                        except Exception as e: 
+                            pass
 
+                await update_leaderboard(interaction.guild.id)
+
+                # 구매자 상세 배송 정보를 설정된 구매자정보채널로 전송 + 멘션
+                if settings and settings.get('buyer_info_channel_id'):
+                    buyer_info_ch = interaction.guild.get_channel(settings['buyer_info_channel_id'])
+                    if buyer_info_ch:
+                        buyer_user_data = await conn.fetchrow('SELECT * FROM user_info WHERE user_id = $1', order['buyer_id'])
+                        
+                        b_name = buyer_user_data['name'] if buyer_user_data and buyer_user_data['name'] else "미등록"
+                        b_contact = buyer_user_data['contact'] if buyer_user_data and buyer_user_data['contact'] else "미등록"
+                        b_address = buyer_user_data['address'] if buyer_user_data and buyer_user_data['address'] else "미등록"
+                        b_cvs = buyer_user_data['cvs'] if buyer_user_data and buyer_user_data['cvs'] else "X"
+                        
+                        formatted_prod_info = "\n".join([f"`{p.strip()}`" for p in order['product'].split(",") if p.strip()])
+                        now_kst_str = datetime.datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S")
+                        
+                        buyer_info_txt = (
+                            "## 📋 구매자 상세 배송 정보\n\n"
+                            "<@259758966043574272>\n\n"
+                            f"`👤` **구매자:** <@{order['buyer_id']}>\n"
+                            f"`🕒` **구매일시:** `{now_kst_str}`\n"
+                            f"`🧾` **주문번호:** `{order_id}`\n"
+                            f"`👤` **성함:** `{b_name}`\n"
+                            f"`📞` **연락처:** `{b_contact}`\n"
+                            f"`🏠` **주소:** `{b_address}`\n"
+                            f"`🏪` **편의점:** `{b_cvs}`\n"
+                            f"`📦` **상품:**\n{formatted_prod_info}\n\n"
+                            f"`💰` **금액:** `{order['amount']}`"
+                        )
+                        
+                        buyer_info_payload = create_v2_payload(buyer_info_txt)
+                        buyer_info_payload["allowed_mentions"] = {
+                            "parse": [],
+                            "users": ["259758966043574272", str(order['buyer_id'])],
+                        }
+                        
+                        try:
+                            await interaction.client.http.request(
+                                discord.http.Route("POST", f"/channels/{buyer_info_ch.id}/messages"),
+                                json=buyer_info_payload
+                            )
+                        except Exception as e:
+                            print(f"구매자 정보 채널 전송 실패: {e}")
+
+        # 승인/거절 처리 시간 (한국 시간)
         now_str = datetime.datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S")
         buyer_mention = f"<@{order['buyer_id']}>"
-        depositor_name = order.get("depositor_name") or "알 수 없음"
-        formatted_product = "\n".join(
-            f"`{part.strip()}`" for part in order["product"].split(",") if part.strip()
-        )
-        rejected_text = (
-            "## ❌ 거절 완료\n\n"
-            "`👤` **구매자**\n"
+        anonymous_role_id = settings.get('anonymous_role_id') if settings else None
+        status_word, color_val = ("✅ 승인", 0x32CD32) if action == 'approve' else ("❌ 거절", 0xFF0000)
+        
+        depositor_name = order.get('depositor_name') or "알 수 없음"
+        formatted_product = "\n".join([f"`{p.strip()}`" for p in order['product'].split(",") if p.strip()])
+        
+        admin_updated = (
+            f"## {status_word} 완료\n\n"
+            "`👤`**구매자**\n"
             f"{buyer_mention}\n\n"
-            "`✍️` **입금자명**\n"
+            "`✍️`**입금자명**\n"
             f"`{depositor_name}`\n\n"
-            "`◾` **주문번호**\n"
+            "`◾`**주문번호**\n"
             f"`{order_id}`\n\n"
-            "`📦` **상품**\n"
+            "`📦`**상품**\n"
             f"{formatted_product}\n\n"
-            "`◾` **수량**\n"
+            "`◾`**수량**\n"
             f"`{order['quantity']}`\n\n"
-            "`💰` **금액**\n"
+            "`💰`**금액**\n"
             f"{payment_summary(order)}\n\n"
-            "`👑` **처리자**\n"
+            "`👑`**처리자**\n"
             f"{interaction.user.mention}\n\n"
-            "`🕒` **처리시각**\n"
+            "`🕒`**처리시각**\n"
             f"`{now_str}`"
         )
+        
         update_payload = {
-            "flags": 1 << 15,
+            "flags": 1 << 15, 
             "allowed_mentions": {
                 "parse": [],
-                "users": [str(order["buyer_id"]), str(interaction.user.id)],
+                "users": [str(order['buyer_id']), str(interaction.user.id)],
             },
-            "components": [{
-                "type": 17,
-                "accent_color": 0xFF0000,
-                "components": [{"type": 10, "content": rejected_text}],
-            }],
+            "components": [
+                {
+                    "type": 17, 
+                    "accent_color": color_val, 
+
+                    "components": [
+                        {
+                            "type": 10, 
+                            "content": admin_updated
+                        }
+                    ]
+                }
+            ]
         }
+        
         await interaction.client.http.request(
-            discord.http.Route("PATCH", f"/channels/{interaction.channel_id}/messages/{interaction.message.id}"),
-            json=update_payload,
+            discord.http.Route("PATCH", f"/webhooks/{interaction.application_id}/{interaction.token}/messages/@original"),
+            json=update_payload
         )
+
+        if action == 'approve':
+            if settings and settings['log_channel_id']:
+                log_payload = build_purchase_log_payload(order, anonymous_role_id)
+                log_response = await interaction.client.http.request(
+                    discord.http.Route("POST", f"/channels/{settings['log_channel_id']}/messages"), 
+                    json=log_payload
+                )
+                if log_response and log_response.get('id'):
+                    async with bot.db_pool.acquire() as conn:
+                        await conn.execute(
+                            """
+                            UPDATE orders
+                            SET purchase_log_channel_id = $3, purchase_log_message_id = $4
+                            WHERE order_id = $1 AND guild_id = $2
+                            """,
+                            order_id,
+                            interaction.guild.id,
+                            settings['log_channel_id'],
+                            int(log_response['id']),
+                        )
+
+            noti_txt = (
+                "## VAPE SP0T Order Complete\n\n"
+                f"{buyer_mention}님의 주문이 승인되었습니다.\n"
+                "`아래 정보를 확인하신 후 입금을 진행해 주세요.`\n\n"
+                "`🧾`주문정보\n\n"
+                "`◾`**주문번호**\n"
+                f"`{order_id}`\n\n"
+                "`📦`**상품**\n"
+                f"{formatted_product}\n\n"
+                "`💰`**금액**\n"
+                f"{payment_summary(order)}\n\n"
+                "```감사합니다.```"
+            )
+            
+            noti_payload = {
+                "flags": 1 << 15, 
+                "allowed_mentions": {"parse": [], "users": [str(order['buyer_id'])]},
+                "components": [
+                    {
+                        "type": 17, 
+                        "accent_color": 0x32CD32, 
+                        "components": [
+                            {
+                                "type": 10, 
+                                "content": noti_txt
+                            }
+                        ]
+                    }
+                ]
+            }
+            
+            await interaction.client.http.request(
+                discord.http.Route("POST", f"/channels/{order['original_channel_id']}/messages"), 
+                json=noti_payload
+            )
