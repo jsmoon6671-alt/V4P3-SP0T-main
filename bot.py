@@ -1447,9 +1447,28 @@ def build_missing_purchase_info_notice(user_id: int) -> str:
     )
 
 
+async def get_purchase_info(user_id: int):
+    if bot.db_pool is None:
+        return None
+    async with bot.db_pool.acquire() as conn:
+        return await conn.fetchrow(
+            'SELECT name, contact, address, cvs FROM user_info WHERE user_id = $1',
+            user_id,
+        )
+
+
 async def create_ticket_channel(interaction: discord.Interaction, t_type: str, type_kr: str, form_answers: dict):
+    if t_type == "purchase":
+        user_data = await get_purchase_info(interaction.user.id)
+        if not has_complete_purchase_info(user_data):
+            await interaction.response.send_message(
+                build_missing_purchase_info_notice(interaction.user.id),
+                ephemeral=True,
+                allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False),
+            )
+            return
+
     await interaction.response.defer(ephemeral=True)
-    purchase_info_missing = False
     
     async with bot.db_pool.acquire() as conn:
         settings = await conn.fetchrow('SELECT * FROM guild_settings WHERE guild_id = $1', interaction.guild.id)
@@ -1556,17 +1575,7 @@ async def create_ticket_channel(interaction: discord.Interaction, t_type: str, t
                     discord.http.Route("POST", f"/channels/{ticket_channel.id}/messages"),
                     json=info_payload
                 )
-            else:
-                purchase_info_missing = True
-                
         await interaction.followup.send(f"✅ 티켓이 정상적으로 생성되었습니다: {ticket_channel.mention}", ephemeral=True)
-
-        if purchase_info_missing:
-            await interaction.followup.send(
-                build_missing_purchase_info_notice(interaction.user.id),
-                ephemeral=True,
-                allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False)
-            )
 
 
 class PurchaseTicketModal(discord.ui.Modal, title="💳 구매 문의 작성"):
@@ -3194,7 +3203,15 @@ async def on_interaction(interaction: discord.Interaction):
     # 티켓 생성 드롭다운
     if custom_id == "select_ticket_type":
         t_type = interaction.data["values"][0]
-        if t_type == "purchase": 
+        if t_type == "purchase":
+            user_data = await get_purchase_info(interaction.user.id)
+            if not has_complete_purchase_info(user_data):
+                await interaction.response.send_message(
+                    build_missing_purchase_info_notice(interaction.user.id),
+                    ephemeral=True,
+                    allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False),
+                )
+                return
             await interaction.response.send_modal(PurchaseTicketModal())
         elif t_type == "general": 
             await interaction.response.send_modal(GeneralTicketModal())
