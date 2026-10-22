@@ -1457,6 +1457,47 @@ async def get_purchase_info(user_id: int):
         )
 
 
+def purchase_info_preview_content(user_data) -> str:
+    return (
+        "## 📋 등록된 구매자 정보\n\n"
+        f"`👤` **이름**\n`{user_data['name']}`\n\n"
+        f"`📞` **연락처**\n`{user_data['contact']}`\n\n"
+        f"`🏠` **주소**\n`{user_data['address']}`\n\n"
+        f"`🏪` **편의점**\n`{user_data['cvs']}`\n\n"
+        "정보가 맞으면 아래 **구매문의 작성** 버튼을 눌러 주세요."
+    )
+
+
+async def show_purchase_info_preview(interaction: discord.Interaction, user_data):
+    payload = {
+        "flags": (1 << 15) | (1 << 6),
+        "components": [
+            {
+                "type": 17,
+                "accent_color": 0x32CD32,
+                "components": [
+                    {"type": 10, "content": purchase_info_preview_content(user_data)},
+                    {
+                        "type": 1,
+                        "components": [
+                            {
+                                "type": 2,
+                                "style": 3,
+                                "label": "구매문의 작성",
+                                "custom_id": "purchase_ticket_continue",
+                            }
+                        ],
+                    },
+                ],
+            }
+        ],
+    }
+    await interaction.client.http.request(
+        discord.http.Route("POST", f"/interactions/{interaction.id}/{interaction.token}/callback"),
+        json={"type": 4, "data": payload},
+    )
+
+
 async def create_ticket_channel(interaction: discord.Interaction, t_type: str, type_kr: str, form_answers: dict):
     if t_type == "purchase":
         user_data = await get_purchase_info(interaction.user.id)
@@ -3212,11 +3253,23 @@ async def on_interaction(interaction: discord.Interaction):
                     allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False),
                 )
                 return
-            await interaction.response.send_modal(PurchaseTicketModal())
+            await show_purchase_info_preview(interaction, user_data)
         elif t_type == "general": 
             await interaction.response.send_modal(GeneralTicketModal())
         elif t_type == "partner": 
             await interaction.response.send_modal(PartnerTicketModal())
+        return
+
+    if custom_id == "purchase_ticket_continue":
+        user_data = await get_purchase_info(interaction.user.id)
+        if not has_complete_purchase_info(user_data):
+            await interaction.response.send_message(
+                build_missing_purchase_info_notice(interaction.user.id),
+                ephemeral=True,
+                allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False),
+            )
+            return
+        await interaction.response.send_modal(PurchaseTicketModal())
         return
 
     # 티켓 닫기 버튼
