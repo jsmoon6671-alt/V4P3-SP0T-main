@@ -2777,7 +2777,7 @@ async def send_admin_review_log(interaction, settings, review_message, review_co
 @app_commands.describe(
     별점="별점을 선택해 주세요.", 
     후기내용="최소 10자 이상 솔직한 후기를 남겨주세요. (미리 복사해 붙여넣거나 \\n 입력 시 줄바꿈 지원)", 
-    사진="후기 사진을 반드시 첨부해 주세요. (필수)"
+    사진="후기 사진을 함께 첨부해 주세요. (선택)"
 )
 @app_commands.choices(별점=[
     app_commands.Choice(name="⭐⭐⭐⭐⭐ (5점)", value=5), 
@@ -2790,16 +2790,12 @@ async def write_review(
     interaction: discord.Interaction, 
     별점: app_commands.Choice[int], 
     후기내용: str, 
-    사진: discord.Attachment
+    사진: discord.Attachment = None
 ):
     if not bot.db_pool: 
         await interaction.response.send_message("❌ DB 오류가 발생했습니다.", ephemeral=True)
         return
 
-    if 사진 is None:
-        await interaction.response.send_message("❌ 후기를 작성하려면 사진을 반드시 첨부해 주세요.", ephemeral=True)
-        return
-        
     async with bot.db_pool.acquire() as conn:
         settings = await conn.fetchrow(
             '''

@@ -113,12 +113,13 @@ class AdminReviewLogTests(unittest.IsolatedAsyncioTestCase):
         args = self.functions['update_setting'].call_args.args
         self.assertEqual(args[:3], (self.interaction, "admin_review_log_channel_id", 33))
 
-    async def test_missing_photo_does_not_publish_review_or_award_points(self):
+    async def test_missing_photo_publishes_review_and_awards_points(self):
         await self.write(None)
-        self.interaction.response.send_message.assert_awaited_once()
-        self.assertIn("사진을 반드시 첨부", self.interaction.response.send_message.call_args.args[0])
-        self.http.request.assert_not_awaited()
-        self.functions['award_review_points'].assert_not_awaited()
+        self.interaction.response.send_message.assert_not_awaited()
+        self.assertEqual(self.http.request.await_count, 2)
+        self.assertIn('json', self.http.request.call_args_list[0].kwargs)
+        self.functions['award_review_points'].assert_awaited_once()
+        self.assertIn("후기 등록이 정상적으로 완료", self.interaction.followup.send.call_args.args[0])
 
     async def test_non_image_attachment_does_not_publish_review_or_award_points(self):
         await self.write(SimpleNamespace(content_type="text/plain"))
@@ -126,10 +127,10 @@ class AdminReviewLogTests(unittest.IsolatedAsyncioTestCase):
         self.http.request.assert_not_awaited()
         self.functions['award_review_points'].assert_not_awaited()
 
-    async def test_discord_command_requires_photo_option(self):
+    async def test_discord_command_photo_option_is_optional(self):
         command = app_commands.Command(name="후기작성", description="test", callback=self.functions['write_review'])
         photo_option = next(parameter for parameter in command.parameters if parameter.name == "사진")
-        self.assertTrue(photo_option.required)
+        self.assertFalse(photo_option.required)
 
 
 if __name__ == "__main__":
