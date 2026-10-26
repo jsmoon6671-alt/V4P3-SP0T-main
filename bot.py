@@ -448,6 +448,14 @@ async def set_buyer_role(interaction: discord.Interaction, 역할: discord.Role)
 async def set_review_channel(interaction: discord.Interaction, 채널: discord.TextChannel):
     await update_setting(interaction, "review_channel_id", 채널.id, f"✅ 후기 채널이 {채널.mention}(으)로 설정되었습니다.")
 
+@bot.tree.command(name="관리자후기로그", description="실제 후기 작성자와 후기 내용을 기록할 관리자 로그 채널을 설정합니다.")
+@app_commands.describe(채널="실제 작성자 정보와 후기를 기록할 관리자 전용 채널입니다.")
+async def set_admin_review_log_channel(interaction: discord.Interaction, 채널: discord.TextChannel):
+    await update_setting(
+        interaction, "admin_review_log_channel_id", 채널.id,
+        f"✅ 관리자 후기 로그 채널이 {채널.mention}(으)로 설정되었습니다.",
+    )
+
 @bot.tree.command(name="구매자정보", description="구매 승인 시 구매자의 상세 배송 정보가 전송될 채널을 설정합니다. (관리자 전용)")
 async def set_buyer_info_channel(interaction: discord.Interaction, 채널: discord.TextChannel):
     if not interaction.user.guild_permissions.administrator and not interaction.user.guild_permissions.manage_channels:
@@ -787,17 +795,27 @@ async def remove_user_points(interaction: discord.Interaction, 유저: discord.M
 
 
 @bot.tree.command(name="구매패널", description="구매 패널을 생성합니다.")
-@app_commands.describe(포인트사용가능="이 주문의 포인트 사용 허용 여부입니다. 허용하면 500~2,000P를 사용할 수 있습니다.")
+@app_commands.describe(
+    입금금액="배송비를 제외한 상품 합계금액입니다. 35,000원 미만이면 배송비 3,000원이 자동 추가됩니다.",
+    포인트사용가능="이 주문의 포인트 사용 허용 여부입니다. 허용하면 500~2,000P를 사용할 수 있습니다.",
+)
 async def send_purchase_panel(interaction: discord.Interaction, 구매자: discord.Member, 입금금액: str, 상품: str, 수량: str, 포인트사용가능: bool = True):
     if not bot.db_pool: 
         await interaction.response.send_message("❌ DB 오류가 발생했습니다.", ephemeral=True)
         return
 
     try:
-        입금금액 = f"{parse_amount(입금금액):,}원"
+        product_amount = parse_amount(입금금액)
     except PointsError as exc:
         await interaction.response.send_message(f"❌ {exc}", ephemeral=True)
         return
+
+    shipping_fee = 0 if product_amount >= 35_000 else 3_000
+    입금금액 = f"{product_amount + shipping_fee:,}원"
+    shipping_notice = (
+        "상품 금액이 35,000원 미만이라 배송비 3,000원이 추가됩니다."
+        if shipping_fee else "상품 금액이 35,000원 이상이라 배송비가 무료입니다."
+    )
 
     def get_rand(length):
         return ''.join(random.choices(string.ascii_lowercase + string.digits, k=length))
@@ -828,7 +846,12 @@ async def send_purchase_panel(interaction: discord.Interaction, 구매자: disco
         f"{formatted_product}\n\n"
         "`◾`**수량**\n"
         f"`{수량}`\n\n"
-        "`💰`**금액**\n"
+        "`💵`**상품 금액**\n"
+        f"`{product_amount:,}원`\n\n"
+        "`🚚`**배송비**\n"
+        f"`{shipping_fee:,}원`\n"
+        f"{shipping_notice}\n\n"
+        "`💰`**입금해야 할 금액 (포인트 사용 전)**\n"
         f"`{입금금액}`\n\n"
         f"{'포인트 사용 가능 (500~2,000P · 1P = 1원)' if 포인트사용가능 else '포인트사용 불가 상품'}\n\n"
         "`⚠️`입금 전 확인해 주세요\n"
@@ -2670,6 +2693,44 @@ async def embed_command(interaction: discord.Interaction):
 # ==========================================
 # [기능 8] 후기 시스템 (파라미터 명령어 방식)
 # ==========================================
+async def send_admin_review_log(interaction, settings, review_message, review_content, stars):
+    channel_id = settings.get('admin_review_log_channel_id')
+    if not channel_id:
+        return
+
+    display_name = discord.utils.escape_markdown(interaction.user.display_name)
+    message_id = review_message['id']
+    review_url = (
+        f"https://discord.com/channels/{interaction.guild.id}/"
+        f"{settings['review_channel_id']}/{message_id}"
+    )
+    content = (
+        "## 📝 관리자 후기 로그\n\n"
+        f"**작성자:** <@{interaction.user.id}> ({display_name})\n"
+        f"**사용자 ID:** `{interaction.user.id}`\n"
+        f"**별점:** {stars}\n"
+        f"**후기 원문:** [후기 바로가기]({review_url})"
+    )
+    # 긴 후기도 각 텍스트 컴포넌트의 4,000자 제한 안에서 전부 기록합니다.
+    children = [{"type": 10, "content": "### 후기 내용"}]
+    children.extend(
+        {"type": 10, "content": review_content[start:start + 3900]}
+        for start in range(0, len(review_content), 3900)
+    )
+    images = [
+        {"media": {"url": attachment['url']}}
+        for attachment in review_message.get('attachments', [])
+        if attachment.get('url')
+    ]
+    if images:
+        children.append({"type": 12, "items": images})
+    payload = create_v2_payload(content, extra_components=children)
+    payload['allowed_mentions'] = {"parse": []}
+    await interaction.client.http.request(
+        discord.http.Route("POST", f"/channels/{channel_id}/messages"), json=payload,
+    )
+
+
 @bot.tree.command(name="후기작성", description="구매 후기와 사진을 작성합니다. (구매자 전용)")
 @app_commands.describe(
     별점="별점을 선택해 주세요.", 
@@ -2696,7 +2757,8 @@ async def write_review(
     async with bot.db_pool.acquire() as conn:
         settings = await conn.fetchrow(
             '''
-            SELECT buyer_role_id, review_channel_id, review_auto_message, anonymous_role_id
+            SELECT buyer_role_id, review_channel_id, review_auto_message, anonymous_role_id,
+                   admin_review_log_channel_id
             FROM guild_settings WHERE guild_id = $1
             ''',
             interaction.guild.id,
@@ -2826,9 +2888,14 @@ async def write_review(
             params.multipart[0]["value"] = json.dumps(
                 review_payload, ensure_ascii=False, separators=(",", ":")
             )
-            await interaction.client.http.request(route, files=params.files, form=params.multipart)
+            review_message = await interaction.client.http.request(route, files=params.files, form=params.multipart)
     else:
-        await interaction.client.http.request(route, json=review_payload)
+        review_message = await interaction.client.http.request(route, json=review_payload)
+
+    try:
+        await send_admin_review_log(interaction, settings, review_message, real_review_content, stars_str)
+    except Exception:
+        logging.exception("관리자 후기 로그 전송 실패: guild=%s user=%s", interaction.guild.id, interaction.user.id)
     
     reward_text = ""
     try:

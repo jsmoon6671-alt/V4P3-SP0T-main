@@ -23,6 +23,7 @@ async def initialize_database(conn):
             tier_log_channel_id BIGINT,
             buyer_role_id BIGINT,
             review_channel_id BIGINT,
+            admin_review_log_channel_id BIGINT,
             leaderboard_channel_id BIGINT,
             leaderboard_message_id BIGINT,
             clock_in_vc BIGINT,
@@ -147,6 +148,10 @@ async def initialize_database(conn):
         except Exception:
             # PostgreSQL 구버전 호환을 위해 이미 존재하는 컬럼 오류는 무시합니다.
             pass
+
+    await conn.execute(
+        'ALTER TABLE guild_settings ADD COLUMN IF NOT EXISTS admin_review_log_channel_id BIGINT;'
+    )
 
     await initialize_points_schema(conn)
     await initialize_chat_points_schema(conn)
