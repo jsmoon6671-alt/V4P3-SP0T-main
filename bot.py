@@ -1466,7 +1466,20 @@ def build_missing_purchase_info_notice(user_id: int) -> str:
     return (
         "## ⚠️ 구매자 정보 미등록\n\n"
         f"<@{user_id}>님, 아직 배송 정보가 등록되지 않았습니다!\n"
-        "빠른 발송을 위해 채널 밖에서 <#1553664818349608960> 채널에서 [정보 등록] 버튼을 눌러 배송지를 등록해 주세요."
+        "빠른 발송을 위해 <#1564198477561593926> 채널에서 [정보 등록] 버튼을 눌러 배송지를 등록해 주세요."
+    )
+
+
+async def send_missing_purchase_info_notice(interaction: discord.Interaction):
+    payload = create_v2_payload(
+        build_missing_purchase_info_notice(interaction.user.id),
+        color=0xFEE75C,
+        ephemeral=True,
+    )
+    payload['allowed_mentions'] = {"parse": [], "users": [str(interaction.user.id)]}
+    await interaction.client.http.request(
+        discord.http.Route("POST", f"/interactions/{interaction.id}/{interaction.token}/callback"),
+        json={"type": 4, "data": payload},
     )
 
 
@@ -1525,11 +1538,7 @@ async def create_ticket_channel(interaction: discord.Interaction, t_type: str, t
     if t_type == "purchase":
         user_data = await get_purchase_info(interaction.user.id)
         if not has_complete_purchase_info(user_data):
-            await interaction.response.send_message(
-                build_missing_purchase_info_notice(interaction.user.id),
-                ephemeral=True,
-                allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False),
-            )
+            await send_missing_purchase_info_notice(interaction)
             return
 
     await interaction.response.defer(ephemeral=True)
@@ -3314,11 +3323,7 @@ async def on_interaction(interaction: discord.Interaction):
         if t_type == "purchase":
             user_data = await get_purchase_info(interaction.user.id)
             if not has_complete_purchase_info(user_data):
-                await interaction.response.send_message(
-                    build_missing_purchase_info_notice(interaction.user.id),
-                    ephemeral=True,
-                    allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False),
-                )
+                await send_missing_purchase_info_notice(interaction)
                 return
             await show_purchase_info_preview(interaction, user_data)
         elif t_type == "general": 
@@ -3330,11 +3335,7 @@ async def on_interaction(interaction: discord.Interaction):
     if custom_id == "purchase_ticket_continue":
         user_data = await get_purchase_info(interaction.user.id)
         if not has_complete_purchase_info(user_data):
-            await interaction.response.send_message(
-                build_missing_purchase_info_notice(interaction.user.id),
-                ephemeral=True,
-                allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False),
-            )
+            await send_missing_purchase_info_notice(interaction)
             return
         await interaction.response.send_modal(PurchaseTicketModal())
         return
