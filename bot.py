@@ -42,6 +42,7 @@ from chat_ranking import (
     register_chat_ranking_commands,
 )
 from database import initialize_database
+from invite_tracking import InviteTracker
 from order_editing import build_purchase_log_payload, register_order_edit_command
 
 # 한국 표준시(KST) 설정
@@ -51,6 +52,7 @@ KST = datetime.timezone(datetime.timedelta(hours=9))
 intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True # 멤버 관리를 위해 (역할 지급 용도)
+intents.invites = True
 
 # ==========================================
 # [핵심 함수] V2 컴포넌트 자동 생성기
@@ -195,6 +197,7 @@ class MyBot(commands.Bot):
         print('✅ 슬래시 명령어 동기화 및 랭킹/인기 시스템이 시작되었습니다!')
 
 bot = MyBot()
+invite_tracker = InviteTracker()
 register_event_command(bot)
 register_admin_role_command(bot)
 register_chat_ranking_commands(bot)
@@ -389,7 +392,33 @@ async def send_join_application_panel(interaction: discord.Interaction, 질문1:
 
 
 @bot.event
+async def on_ready():
+    await asyncio.gather(*(invite_tracker.prime(guild) for guild in bot.guilds))
+
+
+@bot.event
+async def on_guild_join(guild: discord.Guild):
+    await invite_tracker.prime(guild)
+
+
+@bot.event
+async def on_guild_remove(guild: discord.Guild):
+    invite_tracker.forget(guild.id)
+
+
+@bot.event
+async def on_invite_create(invite: discord.Invite):
+    await invite_tracker.invite_created(invite)
+
+
+@bot.event
+async def on_invite_delete(invite: discord.Invite):
+    await invite_tracker.invite_deleted(invite)
+
+
+@bot.event
 async def on_member_join(member: discord.Member):
+    inviter_id = await invite_tracker.find_inviter(member.guild)
     if bot.db_pool is None:
         return
     try:
@@ -411,8 +440,12 @@ async def on_member_join(member: discord.Member):
         if member.guild.icon:
             media.append({"type": 12, "items": [{"media": {"url": str(member.guild.icon.with_size(512).url)},
                                                 "description": "서버 이미지"}]})
+        if inviter_id is not None:
+            media.append({"type": 10, "content": f"-# 초대자: <@{inviter_id}>"})
         payload = create_v2_payload(content, extra_components=media)
         payload["allowed_mentions"] = {"parse": [], "users": [str(member.id)]}
+        if inviter_id is not None:
+            payload["allowed_mentions"]["users"].append(str(inviter_id))
         await bot.http.request(discord.http.Route("POST", f"/channels/{channel_id}/messages"), json=payload)
     except Exception:
         logging.exception("입장로그 전송 실패: guild=%s user=%s", member.guild.id, member.id)
