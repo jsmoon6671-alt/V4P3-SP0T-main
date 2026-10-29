@@ -1084,7 +1084,7 @@ async def issue_waybill(
         f"**- {유저.mention} 귀하의 운송장이 발급되었습니다.\n"
         f"- `◼️` 운송장 : `{waybill_number}`\n"
         f"- `◼️` 주문번호 : `{order_id}`\n"
-        "> 발급받으신 운송장은 <#1553664932485013594> 채널에서 가능 합니다. **"
+        "> 발급받으신 운송장은 <#1564200449542717440> 채널에서 가능 합니다. **"
     )
     payload = create_v2_payload(message)
     payload['allowed_mentions'] = {"parse": [], "users": [str(유저.id)]}
